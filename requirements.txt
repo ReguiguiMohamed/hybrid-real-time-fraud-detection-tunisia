@@ -1,4 +1,4 @@
-﻿# --- requirements.txt ---
+# --- requirements.txt ---
 
 # Networking & Core (Resolved Jan 2026 Conflicts)
 
@@ -17,8 +17,11 @@ faker==40.1.2
 pydantic==2.12.5
 python-dotenv==1.0.0
 
+# RAG & Vector DB
+chromadb==0.5.0
+sentence-transformers==3.0.1
+requests==2.31.0
+
 # AI & RAG
 
 google-generativeai==0.8.6
-chromadb==1.4.1
-sentence-transformers==5.2.0

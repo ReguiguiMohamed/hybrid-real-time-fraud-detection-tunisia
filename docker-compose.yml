@@ -16,3 +16,23 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  chromadb:
+    image: chromadb/chroma:latest
+    volumes:
+      - ./data/vector_db:/chroma/chroma
+    ports:
+      - "8000:8000"
+    environment:
+      - CHROMA_DB_IMPL=clickhouse
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 4G
