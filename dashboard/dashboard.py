@@ -55,7 +55,15 @@ with col1:
 
     # Fetch alerts from API
     try:
-        response = requests.get(f"http://localhost:8001/alerts/high-risk/?limit=50")
+        # Get API URL from environment variable, default to localhost
+        api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+        api_token = os.getenv("COMMAND_CENTER_API_TOKEN")
+
+        headers = {}
+        if api_token:
+            headers["Authorization"] = f"Bearer {api_token}"
+
+        response = requests.get(f"{api_url}/alerts/high-risk/?limit=50", headers=headers)
         if response.status_code == 200:
             alerts = response.json()
 
@@ -96,7 +104,7 @@ with col1:
         else:
             st.error(f"Failed to fetch alerts: {response.status_code}")
     except requests.exceptions.ConnectionError:
-        st.error("Could not connect to the API. Please ensure the FastAPI server is running on http://localhost:8001")
+        st.error(f"Could not connect to the API. Please ensure the FastAPI server is running on {api_url}")
     except Exception as e:
         st.error(f"Error fetching alerts: {str(e)}")
 
@@ -105,7 +113,15 @@ with col2:
 
     # Fetch stats from API
     try:
-        stats_response = requests.get("http://localhost:8001/stats")
+        # Get API URL from environment variable, default to localhost
+        api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+        api_token = os.getenv("COMMAND_CENTER_API_TOKEN")
+
+        headers = {}
+        if api_token:
+            headers["Authorization"] = f"Bearer {api_token}"
+
+        stats_response = requests.get(f"{api_url}/stats", headers=headers)
         if stats_response.status_code == 200:
             stats = stats_response.json()
 
@@ -136,7 +152,7 @@ with col2:
         else:
             st.error(f"Failed to fetch stats: {stats_response.status_code}")
     except requests.exceptions.ConnectionError:
-        st.error("Could not connect to the API for statistics.")
+        st.error(f"Could not connect to the API for statistics on {api_url}.")
     except Exception as e:
         st.error(f"Error fetching stats: {str(e)}")
 
@@ -194,7 +210,15 @@ if st.session_state.selected_transaction:
                     "analyst_comment": analyst_comment
                 }
 
-                response = requests.post("http://localhost:8001/feedback/", json=feedback_payload)
+                # Get API URL from environment variable, default to localhost
+                api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+                api_token = os.getenv("COMMAND_CENTER_API_TOKEN")
+
+                headers = {"Content-Type": "application/json"}
+                if api_token:
+                    headers["Authorization"] = f"Bearer {api_token}"
+
+                response = requests.post(f"{api_url}/feedback/", json=feedback_payload, headers=headers)
 
                 if response.status_code == 200:
                     st.success("Feedback submitted successfully!")
@@ -203,7 +227,8 @@ if st.session_state.selected_transaction:
                 else:
                     st.error(f"Failed to submit feedback: {response.status_code}")
             except requests.exceptions.ConnectionError:
-                st.error("Could not connect to the API. Please ensure the FastAPI server is running.")
+                api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+                st.error(f"Could not connect to the API. Please ensure the FastAPI server is running on {api_url}.")
             except Exception as e:
                 st.error(f"Error submitting feedback: {str(e)}")
 
