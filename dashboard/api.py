@@ -246,7 +246,8 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
         cursor = conn.cursor()
 
         # Get feedback data to calculate performance metrics
-        # Note: This represents performance on the subset of transactions that were reviewed by analysts
+        # IMPORTANT: This represents performance on the subset of transactions that were reviewed by analysts
+        # NOT the overall model performance across all transactions
         cursor.execute("""
             SELECT hra.ml_probability, fl.analyst_label
             FROM high_risk_alerts hra
@@ -263,7 +264,8 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
                 "recall": 0,
                 "f1_score": 0,
                 "total_evaluated": 0,
-                "note": "Metrics calculated only on reviewed alerts, not overall model performance"
+                "note": "Metrics calculated only on reviewed alerts, not overall model performance",
+                "warning": "Cannot calculate true model performance without sampling negative cases"
             }
 
         # Calculate performance metrics properly for the reviewed subset
@@ -295,7 +297,9 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
             "true_negatives": tn,
             "false_negatives": fn,
             "total_evaluated": len(prob_label_pairs),
-            "note": "Metrics calculated only on reviewed alerts, not overall model performance. True recall requires knowing all actual fraud cases."
+            "note": "Metrics calculated only on reviewed alerts, not overall model performance.",
+            "warning": "True model performance requires random sampling of all predictions, including negatives.",
+            "interpretation": "These metrics reflect ALERT PERFORMANCE, not overall model performance."
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

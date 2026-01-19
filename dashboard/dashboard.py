@@ -9,6 +9,13 @@ import json
 import os
 import time
 
+# Add the src directory to the path to import shared utilities
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from shared.utils import get_api_headers, get_api_url
+
 # Set page config
 st.set_page_config(
     page_title="Tunisian Fraud Detection - Command Center",
@@ -55,15 +62,11 @@ with col1:
 
     # Fetch alerts from API
     try:
-        # Get API URL from environment variable, default to localhost
-        api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
-        api_token = os.getenv("COMMAND_CENTER_API_TOKEN")
+        # Use the shared utility functions
+        headers = get_api_headers()
+        api_url = get_api_url("alerts/high-risk/?limit=50")
 
-        headers = {}
-        if api_token:
-            headers["Authorization"] = f"Bearer {api_token}"
-
-        response = requests.get(f"{api_url}/alerts/high-risk/?limit=50", headers=headers)
+        response = requests.get(api_url, headers=headers)
         if response.status_code == 200:
             alerts = response.json()
 
@@ -104,7 +107,8 @@ with col1:
         else:
             st.error(f"Failed to fetch alerts: {response.status_code}")
     except requests.exceptions.ConnectionError:
-        st.error(f"Could not connect to the API. Please ensure the FastAPI server is running on {api_url}")
+        api_url_display = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+        st.error(f"Could not connect to the API. Please ensure the FastAPI server is running on {api_url_display}")
     except Exception as e:
         st.error(f"Error fetching alerts: {str(e)}")
 
@@ -113,15 +117,11 @@ with col2:
 
     # Fetch stats from API
     try:
-        # Get API URL from environment variable, default to localhost
-        api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
-        api_token = os.getenv("COMMAND_CENTER_API_TOKEN")
+        # Use the shared utility functions
+        headers = get_api_headers()
+        api_url = get_api_url("stats")
 
-        headers = {}
-        if api_token:
-            headers["Authorization"] = f"Bearer {api_token}"
-
-        stats_response = requests.get(f"{api_url}/stats", headers=headers)
+        stats_response = requests.get(api_url, headers=headers)
         if stats_response.status_code == 200:
             stats = stats_response.json()
 
@@ -152,7 +152,8 @@ with col2:
         else:
             st.error(f"Failed to fetch stats: {stats_response.status_code}")
     except requests.exceptions.ConnectionError:
-        st.error(f"Could not connect to the API for statistics on {api_url}.")
+        api_url_display = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+        st.error(f"Could not connect to the API for statistics on {api_url_display}.")
     except Exception as e:
         st.error(f"Error fetching stats: {str(e)}")
 
@@ -210,15 +211,12 @@ if st.session_state.selected_transaction:
                     "analyst_comment": analyst_comment
                 }
 
-                # Get API URL from environment variable, default to localhost
-                api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
-                api_token = os.getenv("COMMAND_CENTER_API_TOKEN")
+                # Use the shared utility functions
+                headers = get_api_headers()
+                headers["Content-Type"] = "application/json"
+                api_url = get_api_url("feedback/")
 
-                headers = {"Content-Type": "application/json"}
-                if api_token:
-                    headers["Authorization"] = f"Bearer {api_token}"
-
-                response = requests.post(f"{api_url}/feedback/", json=feedback_payload, headers=headers)
+                response = requests.post(api_url, json=feedback_payload, headers=headers)
 
                 if response.status_code == 200:
                     st.success("Feedback submitted successfully!")
@@ -227,8 +225,8 @@ if st.session_state.selected_transaction:
                 else:
                     st.error(f"Failed to submit feedback: {response.status_code}")
             except requests.exceptions.ConnectionError:
-                api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
-                st.error(f"Could not connect to the API. Please ensure the FastAPI server is running on {api_url}.")
+                api_url_display = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+                st.error(f"Could not connect to the API. Please ensure the FastAPI server is running on {api_url_display}.")
             except Exception as e:
                 st.error(f"Error submitting feedback: {str(e)}")
 
