@@ -12,6 +12,7 @@ os.environ['HADOOP_HOME'] = hadoop_home
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col, window, count, approx_count_distinct, when, lit, to_timestamp, expr
+from pyspark.sql.types import DoubleType
 from shared.schemas import Transaction, TRANSACTION_SPARK_SCHEMA
 from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
 from shared.quality_gates import validate_transaction_quality, apply_d17_rule
@@ -127,7 +128,7 @@ class FraudProcessor:
             final_df = features_df.withColumn("ml_prediction", lit(-1)) \
                                  .withColumn("ml_probability", lit(0.0))
 
-        # For performance, we'll use foreachBatch to handle SAR generation asynchronously
+        # For performance, we'll use foreachBatch to handle SAR generation and alerting asynchronously
         # This avoids blocking the streaming pipeline with HTTP requests to Ollama
         def process_batch(batch_df, epoch_id):
             # Filter for high-confidence fraud predictions
@@ -135,6 +136,9 @@ class FraudProcessor:
 
             if high_risk_df:
                 from rag_engine.sar_generator import SARGenerator
+                import requests
+                import json
+
                 sar_gen = SARGenerator()
 
                 for row in high_risk_df:
@@ -142,10 +146,81 @@ class FraudProcessor:
                         # Convert row to dictionary for SAR generation
                         row_dict = row.asDict()
                         report = sar_gen.generate_report(row_dict, float(row.ml_probability))
+
+                        # Save the SAR report
                         report_path = sar_gen.save_report(row_dict, report, float(row.ml_probability))
                         print(f"SAR generated and saved to: {report_path}")
+
+                        # Send alert to the command center API
+                        alert_payload = {
+                            "transaction_id": str(row_dict.get('transaction_id', 'unknown')),
+                            "user_id": str(row_dict.get('user_id', 'unknown')),
+                            "amount_tnd": float(row_dict.get('amount_tnd', 0.0)),
+                            "governorate": str(row_dict.get('governorate', 'unknown')),
+                            "payment_method": str(row_dict.get('payment_method', 'unknown')),
+                            "timestamp": str(row_dict.get('timestamp', '')),
+                            "ml_probability": float(row.ml_probability),
+                            "sar_report": report
+                        }
+
+                        try:
+                            api_response = requests.post(
+                                "http://localhost:8001/alerts/add/",
+                                json=alert_payload,
+                                timeout=5  # 5 second timeout to avoid blocking
+                            )
+
+                            if api_response.status_code == 200:
+                                print(f"Alert sent to command center for transaction: {row_dict.get('transaction_id')}")
+                            else:
+                                print(f"Failed to send alert to command center: {api_response.status_code}")
+                        except requests.exceptions.RequestException as api_error:
+                            print(f"API connection error when sending alert: {api_error}")
+
                     except Exception as e:
-                        print(f"Error generating SAR for transaction {row.get('transaction_id', 'unknown')}: {e}")
+                        print(f"Error processing high-risk transaction {row.get('transaction_id', 'unknown')}: {e}")
+
+        # Periodically check if we should trigger model retraining based on feedback
+        def check_and_trigger_retraining(batch_df, epoch_id):
+            # Call the process_batch function first
+            process_batch(batch_df, epoch_id)
+
+            # Every few batches, check if we should trigger retraining
+            # We'll use a simple counter to trigger retraining every N batches
+            # In a real system, this could be based on time intervals or feedback accumulation
+            global batch_counter
+            if 'batch_counter' not in globals():
+                batch_counter = 0
+            batch_counter += 1
+
+            # Trigger retraining every 10 batches (this is configurable)
+            if batch_counter % 10 == 0:
+                try:
+                    # Check if we have sufficient feedback to warrant retraining
+                    import sqlite3
+                    conn = sqlite3.connect("./data/feedback.db")
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
+                    feedback_count = cursor.fetchone()[0]
+                    conn.close()
+
+                    # Only trigger retraining if we have enough feedback
+                    if feedback_count >= 50:  # Minimum threshold for meaningful retraining
+                        print(f"Triggering model retraining based on {feedback_count} feedback records")
+
+                        # Call the retraining endpoint
+                        retrain_response = requests.post(
+                            "http://localhost:8001/retrain-model/",
+                            timeout=10  # 10 second timeout for retraining trigger
+                        )
+
+                        if retrain_response.status_code == 200:
+                            print("✅ Model retraining triggered successfully")
+                        else:
+                            print(f"Failed to trigger model retraining: {retrain_response.status_code}")
+
+                except Exception as e:
+                    print(f"Error checking feedback for retraining: {e}")
 
         # 4. Persistence: Using Parquet for streaming (Delta Lake for batch operations)
         # Due to compatibility issues between Spark 4.1.1 and Delta Lake 4.0.1 for streaming sinks
@@ -154,7 +229,7 @@ class FraudProcessor:
             .outputMode("append") \
             .option("path", "./data/parquet/silver_fraud_alerts") \
             .option("checkpointLocation", "./tmp/checkpoint/silver_fraud") \
-            .foreachBatch(process_batch) \
+            .foreachBatch(check_and_trigger_retraining) \
             .start()
 
         return query
