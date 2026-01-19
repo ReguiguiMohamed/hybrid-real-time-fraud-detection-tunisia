@@ -1,32 +1,23 @@
 # src/streaming/consumer.py
 import os
-import sys
-from pathlib import Path
 import logging
+from dotenv import load_dotenv
 
-# Explicitly set HADOOP_HOME for the subprocess (critical for Windows)
-os.environ['HADOOP_HOME'] = r'C:\hadoop-3.4.2'
+# Load environment variables from .env file
+load_dotenv()
 
-# Ensure 'src' is in path for schema import
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+# Set HADOOP_HOME from environment variable
+hadoop_home = os.getenv('HADOOP_HOME', r'C:\hadoop-3.4.2')
+os.environ['HADOOP_HOME'] = hadoop_home
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col, window, count, approx_count_distinct, when, lit, to_timestamp, expr
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
-from shared.schemas import Transaction
+from shared.schemas import Transaction, TRANSACTION_SPARK_SCHEMA
 from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
 from shared.quality_gates import validate_transaction_quality, apply_d17_rule
 
-# Define Spark Schema matching Pydantic Transaction model
-schema = StructType([
-    StructField("transaction_id", StringType(), True),
-    StructField("timestamp", StringType(), True),
-    StructField("user_id", StringType(), True),
-    StructField("amount_tnd", DoubleType(), True),
-    StructField("governorate", StringType(), True),
-    StructField("payment_method", StringType(), True),
-    StructField("fraud_seed", BooleanType(), True)
-])
+# Use the schema from the shared module to ensure consistency
+schema = TRANSACTION_SPARK_SCHEMA
 
 class FraudProcessor:
     def __init__(self, kafka_bootstrap="localhost:9092"):

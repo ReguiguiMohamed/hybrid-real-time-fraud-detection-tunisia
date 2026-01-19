@@ -3,16 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import random
-import sys
 import time
-from pathlib import Path
 from datetime import datetime, timezone
 import uuid
 import argparse
 
 from faker import Faker
-
-sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from shared.schemas import Transaction
 
