@@ -7,6 +7,17 @@ import requests
 import sqlite3
 from datetime import datetime
 
+DLQ_DB_PATH = "./data/dead_letter_queue.db"
+
+
+def get_sqlite_connection(db_path, timeout=30):
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=timeout)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
 
 def get_api_headers():
     """Get headers with authentication token for API requests"""
@@ -48,35 +59,60 @@ def make_authenticated_request(method, endpoint, payload=None, timeout=10):
         return None
 
 
+def ensure_dlq_table(conn):
+    """Ensure the dead letter queue table and required columns exist."""
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS failed_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id TEXT,
+            user_id TEXT,
+            amount_tnd REAL,
+            governorate TEXT,
+            payment_method TEXT,
+            timestamp TEXT,
+            ml_probability REAL,
+            error_code TEXT,
+            error_message TEXT,
+            attempts INTEGER DEFAULT 0,
+            last_attempt TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'PENDING'  -- PENDING, RETRYING, FAILED, SUCCESS
+        )
+    """)
+
+    cursor.execute("PRAGMA table_info(failed_alerts)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+    expected_columns = {
+        "transaction_id": "TEXT",
+        "user_id": "TEXT",
+        "amount_tnd": "REAL",
+        "governorate": "TEXT",
+        "payment_method": "TEXT",
+        "timestamp": "TEXT",
+        "ml_probability": "REAL",
+        "error_code": "TEXT",
+        "error_message": "TEXT",
+        "attempts": "INTEGER DEFAULT 0",
+        "last_attempt": "TIMESTAMP",
+        "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "status": "TEXT DEFAULT 'PENDING'",
+    }
+
+    for column, definition in expected_columns.items():
+        if column not in existing_columns:
+            cursor.execute(f"ALTER TABLE failed_alerts ADD COLUMN {column} {definition}")
+
+    conn.commit()
+
+
 def log_failed_alert(transaction_data, alert_payload, error_code, error_message):
     """Log failed alerts to a dead letter queue for later processing"""
     try:
         # Create dead letter database if it doesn't exist
-        db_path = "./data/dead_letter_queue.db"
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
-        conn = sqlite3.connect(db_path)
+        conn = get_sqlite_connection(DLQ_DB_PATH)
+        ensure_dlq_table(conn)
         cursor = conn.cursor()
-
-        # Create table if it doesn't exist
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS failed_alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                transaction_id TEXT,
-                user_id TEXT,
-                amount_tnd REAL,
-                governorate TEXT,
-                payment_method TEXT,
-                timestamp TEXT,
-                ml_probability REAL,
-                error_code TEXT,
-                error_message TEXT,
-                attempts INTEGER DEFAULT 0,
-                last_attempt TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT 'PENDING'  -- PENDING, RETRYING, FAILED
-            )
-        """)
 
         # Insert failed alert
         cursor.execute("""
@@ -109,18 +145,18 @@ def log_failed_alert(transaction_data, alert_payload, error_code, error_message)
 def retry_failed_alerts(max_attempts=3):
     """Retry failed alerts from the dead letter queue"""
     try:
-        db_path = "./data/dead_letter_queue.db"
-        if not os.path.exists(db_path):
+        if not os.path.exists(DLQ_DB_PATH):
             print("No dead letter queue database found.")
             return
 
-        conn = sqlite3.connect(db_path)
+        conn = get_sqlite_connection(DLQ_DB_PATH)
         cursor = conn.cursor()
+        ensure_dlq_table(conn)
 
         # Get failed alerts that haven't exceeded max attempts
         cursor.execute("""
             SELECT id, transaction_id, user_id, amount_tnd, governorate, payment_method,
-                   timestamp, ml_probability, error_code, error_message
+                   timestamp, ml_probability, error_code, error_message, attempts
             FROM failed_alerts
             WHERE status IN ('PENDING', 'RETRYING') AND attempts < ?
             ORDER BY created_at ASC
@@ -137,7 +173,10 @@ def retry_failed_alerts(max_attempts=3):
 
         for record in failed_records:
             record_id, transaction_id, user_id, amount_tnd, governorate, payment_method, \
-            timestamp, ml_probability, error_code, error_message = record
+            timestamp, ml_probability, error_code, error_message, attempts = record
+            attempt_number = attempts + 1
+            last_attempt_time = datetime.now().isoformat()
+            increment_dlq_attempts(record_id, last_attempt_time, status="RETRYING")
 
             # Construct alert payload
             alert_payload = {
@@ -165,15 +204,21 @@ def retry_failed_alerts(max_attempts=3):
                     update_dlq_status(record_id, "SUCCESS")
                     print(f"Successfully resent alert for transaction: {transaction_id}")
                 else:
-                    # Increment attempt count and update status
-                    increment_dlq_attempts(record_id, datetime.now().isoformat())
+                    # Update status based on remaining attempts
+                    if attempt_number >= max_attempts:
+                        update_dlq_status(record_id, "FAILED")
+                    else:
+                        update_dlq_status(record_id, "PENDING")
                     if api_response:
                         print(f"Failed to resend alert for {transaction_id}: {api_response.status_code}")
                     else:
                         print(f"Failed to resend alert for {transaction_id}: No response")
             except Exception as e:
-                # Increment attempt count and update status
-                increment_dlq_attempts(record_id, datetime.now().isoformat())
+                # Update status based on remaining attempts
+                if attempt_number >= max_attempts:
+                    update_dlq_status(record_id, "FAILED")
+                else:
+                    update_dlq_status(record_id, "PENDING")
                 print(f"Exception resending alert for {transaction_id}: {e}")
 
     except Exception as e:
@@ -183,8 +228,7 @@ def retry_failed_alerts(max_attempts=3):
 def update_dlq_status(record_id, status):
     """Update the status of a record in the dead letter queue"""
     try:
-        db_path = "./data/dead_letter_queue.db"
-        conn = sqlite3.connect(db_path)
+        conn = get_sqlite_connection(DLQ_DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -199,18 +243,24 @@ def update_dlq_status(record_id, status):
         print(f"Error updating DLQ status: {e}")
 
 
-def increment_dlq_attempts(record_id, last_attempt_time):
+def increment_dlq_attempts(record_id, last_attempt_time, status=None):
     """Increment the attempt count for a record in the dead letter queue"""
     try:
-        db_path = "./data/dead_letter_queue.db"
-        conn = sqlite3.connect(db_path)
+        conn = get_sqlite_connection(DLQ_DB_PATH)
         cursor = conn.cursor()
 
-        cursor.execute("""
-            UPDATE failed_alerts
-            SET attempts = attempts + 1, last_attempt = ?
-            WHERE id = ?
-        """, (last_attempt_time, record_id))
+        if status is None:
+            cursor.execute("""
+                UPDATE failed_alerts
+                SET attempts = attempts + 1, last_attempt = ?
+                WHERE id = ?
+            """, (last_attempt_time, record_id))
+        else:
+            cursor.execute("""
+                UPDATE failed_alerts
+                SET attempts = attempts + 1, last_attempt = ?, status = ?
+                WHERE id = ?
+            """, (last_attempt_time, status, record_id))
 
         conn.commit()
         conn.close()

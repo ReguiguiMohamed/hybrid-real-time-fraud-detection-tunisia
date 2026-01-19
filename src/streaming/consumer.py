@@ -1,6 +1,7 @@
 # src/streaming/consumer.py
 import os
 import logging
+import threading
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -16,20 +17,21 @@ from pyspark.sql.types import DoubleType
 from shared.schemas import Transaction, TRANSACTION_SPARK_SCHEMA
 from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
 from shared.quality_gates import validate_transaction_quality, apply_d17_rule
-from shared.utils import make_authenticated_request, log_failed_alert
-import os
+from shared.utils import make_authenticated_request, log_failed_alert, retry_failed_alerts, get_sqlite_connection
 
 # Use the schema from the shared module to ensure consistency
 schema = TRANSACTION_SPARK_SCHEMA
 
 class FraudProcessor:
-    def __init__(self, kafka_bootstrap="localhost:9092"):
+    def __init__(self, kafka_bootstrap=None):
         # Initializing with Kafka support (Delta Lake config removed to avoid streaming conflicts)
         self.spark = SparkSession.builder \
             .appName("Tunisia-Fraud-Silver-Layer") \
             .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1") \
             .config("spark.sql.streaming.checkpointLocation", "./tmp/checkpoint") \
             .getOrCreate()
+        if kafka_bootstrap is None:
+            kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
         self.kafka_bootstrap = kafka_bootstrap
 
         # Load XGBoost model for real-time inference
@@ -40,6 +42,37 @@ class FraudProcessor:
         except Exception as e:
             print(f"⚠️ Fallback to Rule-Based Scoring. Model not available: {e}")
             self.ml_model = None
+
+    def start_dlq_retry_worker(self):
+        if getattr(self, "_dlq_retry_thread", None) and self._dlq_retry_thread.is_alive():
+            return
+
+        interval_env = os.getenv("DLQ_RETRY_INTERVAL_SECONDS", "60")
+        max_attempts_env = os.getenv("DLQ_RETRY_MAX_ATTEMPTS", "3")
+        try:
+            interval = max(1, int(interval_env))
+        except ValueError:
+            interval = 60
+        try:
+            max_attempts = max(1, int(max_attempts_env))
+        except ValueError:
+            max_attempts = 3
+        self._dlq_retry_stop = threading.Event()
+
+        def retry_loop():
+            while not self._dlq_retry_stop.is_set():
+                try:
+                    retry_failed_alerts(max_attempts=max_attempts)
+                except Exception:
+                    logging.exception("DLQ retry worker encountered an error")
+                self._dlq_retry_stop.wait(interval)
+
+        self._dlq_retry_thread = threading.Thread(
+            target=retry_loop,
+            name="dlq-retry-worker",
+            daemon=True
+        )
+        self._dlq_retry_thread.start()
 
     def process_stream(self):
         # 1. Ingest (Bronze Layer)
@@ -132,50 +165,88 @@ class FraudProcessor:
 
         # For performance, we'll use foreachBatch to handle SAR generation and alerting asynchronously
         # This avoids blocking the streaming pipeline with HTTP requests to Ollama
+        random_sample_rate_env = os.getenv("RANDOM_SAMPLE_RATE", "0.01")
+        random_sample_max_prob_env = os.getenv("RANDOM_SAMPLE_MAX_PROB", "0.1")
+        try:
+            random_sample_rate = float(random_sample_rate_env)
+        except ValueError:
+            random_sample_rate = 0.01
+        random_sample_rate = max(0.0, min(random_sample_rate, 1.0))
+        try:
+            random_sample_max_prob = float(random_sample_max_prob_env)
+        except ValueError:
+            random_sample_max_prob = 0.1
+        random_sample_max_prob = max(0.0, min(random_sample_max_prob, 1.0))
+
         def process_batch(batch_df, epoch_id):
             # Filter for high-confidence fraud predictions
-            high_risk_df = batch_df.filter(col("ml_probability") > 0.85).collect()
+            high_risk_rows = batch_df.filter(col("ml_probability") > 0.85).collect()
+            sampled_low_risk_rows = []
 
-            if high_risk_df:
-                from rag_engine.sar_generator import SARGenerator
-                import requests
-                import json
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                import threading
+            if random_sample_rate > 0:
+                low_risk_df = batch_df.filter(col("ml_probability") < random_sample_max_prob)
+                if random_sample_rate < 1:
+                    low_risk_df = low_risk_df.sample(withReplacement=False, fraction=random_sample_rate)
+                sampled_low_risk_rows = low_risk_df.collect()
 
-                sar_gen = SARGenerator()
+            if not high_risk_rows and not sampled_low_risk_rows:
+                return
+
+            from rag_engine.sar_generator import SARGenerator
+            import requests
+            import json
+                from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+
+            sar_gen = SARGenerator() if high_risk_rows else None
 
                 # Create a thread pool with configurable max workers
                 max_workers = int(os.getenv("THREAD_POOL_SIZE", "5"))  # Default to 5 to avoid overwhelming the API
+                async_timeout_env = os.getenv("ALERT_ASYNC_TIMEOUT_SECONDS", "15")
+                try:
+                    async_timeout = max(1, int(async_timeout_env))
+                except ValueError:
+                    async_timeout = 15
 
-                print(f"Processing {len(high_risk_df)} high-risk alerts with {max_workers} workers")
+                print(
+                    f"Processing {len(high_risk_rows)} high-risk alerts and "
+                    f"{len(sampled_low_risk_rows)} random samples with {max_workers} workers"
+                )
 
-                # Submit tasks to thread pool
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # Submit all tasks
-                    future_to_row = {
-                        executor.submit(send_alert_async, row, sar_gen): row
-                        for row in high_risk_df
-                    }
+            # Submit tasks to thread pool
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_row = {}
 
-                    # Wait for all tasks to complete with timeout
-                    for future in as_completed(future_to_row, timeout=60):  # 60 second timeout for all tasks
+                for row in high_risk_rows:
+                    future = executor.submit(send_alert_async, row, sar_gen, "high_risk", True)
+                    future_to_row[future] = row
+
+                for row in sampled_low_risk_rows:
+                    future = executor.submit(send_alert_async, row, sar_gen, "random_sample", False)
+                    future_to_row[future] = row
+
+                # Wait for all tasks to complete with timeout
+                try:
+                    for future in as_completed(future_to_row, timeout=async_timeout):
                         try:
                             future.result()
                         except Exception as e:
                             row = future_to_row[future]
                             print(f"Error in async alert processing for transaction {row['transaction_id']}: {e}")
+                except TimeoutError:
+                    print("Timed out waiting for alert processing tasks to finish")
 
-        def send_alert_async(row, sar_gen):
+        def send_alert_async(row, sar_gen, alert_type="high_risk", generate_sar=True):
             """Function to send alerts asynchronously"""
             try:
                 # Convert row to dictionary for SAR generation
                 row_dict = row.asDict()
-                report = sar_gen.generate_report(row_dict, float(row.ml_probability))
+                report = None
+                if generate_sar and sar_gen is not None:
+                    report = sar_gen.generate_report(row_dict, float(row.ml_probability))
 
-                # Save the SAR report
-                report_path = sar_gen.save_report(row_dict, report, float(row.ml_probability))
-                print(f"SAR generated and saved to: {report_path}")
+                    # Save the SAR report
+                    report_path = sar_gen.save_report(row_dict, report, float(row.ml_probability))
+                    print(f"SAR generated and saved to: {report_path}")
 
                 # Send alert to the command center API
                 alert_payload = {
@@ -186,7 +257,8 @@ class FraudProcessor:
                     "payment_method": str(row_dict.get('payment_method', 'unknown')),
                     "timestamp": str(row_dict.get('timestamp', '')),
                     "ml_probability": float(row.ml_probability),
-                    "sar_report": report
+                    "sar_report": report,
+                    "alert_type": alert_type
                 }
 
                 try:
@@ -199,7 +271,7 @@ class FraudProcessor:
                     )
 
                     if api_response and api_response.status_code == 200:
-                        print(f"Alert sent to command center for transaction: {row_dict.get('transaction_id')}")
+                        print(f"Alert sent to command center for transaction: {row_dict.get('transaction_id')} ({alert_type})")
                     else:
                         if api_response:
                             error_msg = f"{api_response.status_code} - {api_response.text}"
@@ -239,8 +311,7 @@ class FraudProcessor:
             if batch_counter % 10 == 0:
                 try:
                     # Check if we have sufficient feedback to warrant retraining
-                    import sqlite3
-                    conn = sqlite3.connect("./data/feedback.db")
+                    conn = get_sqlite_connection("./data/feedback.db")
                     cursor = conn.cursor()
                     cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
                     feedback_count = cursor.fetchone()[0]
@@ -278,57 +349,7 @@ class FraudProcessor:
             .foreachBatch(check_and_trigger_retraining) \
             .start()
 
-        def log_failed_alert(transaction_data, alert_payload, error_code, error_message):
-            """Log failed alerts to a dead letter queue for later processing"""
-            try:
-                # Create dead letter database if it doesn't exist
-                db_path = "./data/dead_letter_queue.db"
-                os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
-                conn = sqlite3.connect(db_path)
-                cursor = conn.cursor()
-
-                # Create table if it doesn't exist
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS failed_alerts (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        transaction_id TEXT,
-                        user_id TEXT,
-                        amount_tnd REAL,
-                        governorate TEXT,
-                        payment_method TEXT,
-                        timestamp TEXT,
-                        ml_probability REAL,
-                        error_code TEXT,
-                        error_message TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-
-                # Insert failed alert
-                cursor.execute("""
-                    INSERT INTO failed_alerts
-                    (transaction_id, user_id, amount_tnd, governorate, payment_method,
-                     timestamp, ml_probability, error_code, error_message)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    transaction_data.get('transaction_id'),
-                    transaction_data.get('user_id'),
-                    transaction_data.get('amount_tnd'),
-                    transaction_data.get('governorate'),
-                    transaction_data.get('payment_method'),
-                    transaction_data.get('timestamp'),
-                    transaction_data.get('ml_probability', 0.0),
-                    error_code,
-                    error_message
-                ))
-
-                conn.commit()
-                conn.close()
-
-                print(f"Failed alert logged to dead letter queue: {transaction_data.get('transaction_id')}")
-            except Exception as e:
-                print(f"Error logging failed alert to dead letter queue: {e}")
+        self.start_dlq_retry_worker()
 
         return query
 
