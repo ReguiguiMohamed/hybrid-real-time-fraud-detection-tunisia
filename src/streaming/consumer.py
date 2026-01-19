@@ -10,9 +10,11 @@ os.environ['HADOOP_HOME'] = r'C:\hadoop-3.4.2'
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, window, count, approx_count_distinct, current_timestamp, to_timestamp
+from pyspark.sql.functions import from_json, col, window, count, approx_count_distinct, when, lit, to_timestamp, expr
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
 from shared.schemas import Transaction
+from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES
+from shared.quality_gates import validate_transaction_quality, apply_d17_rule
 
 # Define Spark Schema matching Pydantic Transaction model
 schema = StructType([
@@ -25,64 +27,93 @@ schema = StructType([
     StructField("fraud_seed", BooleanType(), True)
 ])
 
-def start_streaming():
-    # Initialize Spark with compatible Kafka packages for Spark 4.1.1
-    # Use a temporary directory for checkpoint that doesn't rely on Hadoop native libraries
-    spark = SparkSession.builder \
-        .appName("TunisianFraudDetection-Ingestion") \
-        .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1") \
-        .config("spark.sql.streaming.checkpointLocation", "./tmp/checkpoint") \
-        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-        .getOrCreate()
+class FraudProcessor:
+    def __init__(self, kafka_bootstrap="localhost:9092"):
+        # Initializing with Kafka support (Delta Lake config removed to avoid streaming conflicts)
+        self.spark = SparkSession.builder \
+            .appName("Tunisia-Fraud-Silver-Layer") \
+            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1") \
+            .config("spark.sql.streaming.checkpointLocation", "./tmp/checkpoint") \
+            .getOrCreate()
+        self.kafka_bootstrap = kafka_bootstrap
 
-    spark.sparkContext.setLogLevel("WARN")
+    def process_stream(self):
+        # 1. Ingest (Bronze Layer)
+        raw_stream = self.spark.readStream.format("kafka") \
+            .option("kafka.bootstrap.servers", self.kafka_bootstrap) \
+            .option("subscribe", "tunisian_transactions") \
+            .load()
 
-    # Read from Kafka topic verified on Day 1
-    raw_df = spark.readStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("subscribe", "tunisian_transactions") \
-        .option("startingOffsets", "latest") \
-        .load()
+        # Deserialize JSON value
+        json_df = raw_stream.selectExpr("CAST(value AS STRING)") \
+            .select(from_json(col("value"), schema).alias("data")) \
+            .select("data.*")
 
-    # Deserialize JSON value
-    json_df = raw_df.selectExpr("CAST(value AS STRING)") \
-        .select(from_json(col("value"), schema).alias("data")) \
-        .select("data.*")
+        # Apply data quality gates
+        validated_df = validate_transaction_quality(json_df)
 
-    # 1. Add a proper timestamp column and define a Watermark (handling late data)
-    # We allow data to be up to 10 minutes late
-    enriched_df = json_df.withColumn("event_time", to_timestamp(col("timestamp"))) \
+        # 2. Enrich & Score (Silver Layer)
+        enriched = validated_df.withColumn("event_time", to_timestamp(col("timestamp"))) \
                          .withWatermark("event_time", "10 minutes")
 
-    # 2. Stateful Aggregation: Detection of Velocity Attacks
-    # Pattern: Count transactions per user in a 5-minute sliding window, updating every 1 minute
-    velocity_checks = enriched_df.groupBy(
-        window(col("event_time"), "5 minutes", "1 minute"),
-        col("user_id")
-    ).agg(
-        count("transaction_id").alias("tx_count"),
-        approx_count_distinct("governorate").alias("distinct_governorates")
-    )
+        # Apply D17 rule for risk boosting
+        enriched_with_d17 = apply_d17_rule(enriched)
 
-    # 3. Flagging Logic: Defining the "Fraud Alert"
-    # Fraud if > 3 transactions in 5 mins OR > 1 city in 5 mins (Impossible Travel)
-    alerts_df = velocity_checks.filter(
-        (col("tx_count") > 3) | (col("distinct_governorates") > 1)
-    ).select(
-        col("window.start").alias("start_time"),
-        col("window.end").alias("end_time"),
-        "user_id", "tx_count", "distinct_governorates"
-    )
+        # Complex Windowing: Velocity + Multi-Gov
+        analytics = enriched_with_d17.groupBy(
+            window(col("event_time"), "5 minutes", "1 minute"),
+            col("user_id")
+        ).agg(
+            count("transaction_id").alias("v_count"),
+            approx_count_distinct("governorate").alias("g_dist"),
+            lit(None).cast(DoubleType()).alias("amount_tnd")  # Placeholder for avg amount
+        )
 
-    # 4. Console Sink for Alerts
-    query = alerts_df.writeStream \
-        .outputMode("update") \
-        .format("console") \
-        .option("truncate", "false") \
-        .start()
+        # Calculate average amount per user in window, including payment method info for D17 rule
+        analytics_with_amount = enriched_with_d17.groupBy(
+            window(col("event_time"), "5 minutes", "1 minute"),
+            col("user_id")
+        ).agg(
+            count("transaction_id").alias("v_count"),
+            approx_count_distinct("governorate").alias("g_dist"),
+            expr("avg(amount_tnd)").alias("avg_amount"),
+            # Check if any transaction in the window used Flouci method
+            expr("sum(case when payment_method = 'Flouci' then 1 else 0 end)").alias("flouci_count")
+        )
 
-    query.awaitTermination()
+        # 3. Weighted Risk Scoring (The Industrial Logic)
+        scored = analytics_with_amount.withColumn(
+            "velocity_risk",
+            when(col("v_count") > 3, lit(1.0)).otherwise(lit(0.0))
+        ).withColumn(
+            "travel_risk",
+            when(col("g_dist") > 1, lit(1.0)).otherwise(lit(0.0))
+        ).withColumn(
+            "high_value_risk",
+            when(col("avg_amount") > 5000, lit(1.0)).otherwise(lit(0.0))  # Threshold for high value
+        ).withColumn(
+            "d17_risk",
+            when((col("avg_amount") > 2000) & (col("flouci_count") > 0), lit(1.0)).otherwise(lit(0.0))
+        ).withColumn(
+            "risk_score",
+            (col("velocity_risk") * RISK_WEIGHTS["velocity"]) +
+            (col("travel_risk") * RISK_WEIGHTS["travel"]) +
+            (col("high_value_risk") * RISK_WEIGHTS["high_value"]) +
+            (col("d17_risk") * RISK_WEIGHTS["d17_limit"])
+        )
+
+        # 4. Persistence: Using Parquet for streaming (Delta Lake for batch operations)
+        # Due to compatibility issues between Spark 4.1.1 and Delta Lake 4.0.1 for streaming sinks
+        query = scored.writeStream \
+            .format("parquet") \
+            .outputMode("append") \
+            .option("path", "./data/parquet/silver_fraud_alerts") \
+            .option("checkpointLocation", "./tmp/checkpoint/silver_fraud") \
+            .start()
+
+        return query
 
 if __name__ == "__main__":
-    start_streaming()
+    processor = FraudProcessor()
+    query = processor.process_stream()
+    query.awaitTermination()
