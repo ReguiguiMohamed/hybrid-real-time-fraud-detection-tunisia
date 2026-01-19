@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 import json
@@ -12,6 +13,11 @@ import threading
 from queue import Queue
 import time
 import hashlib
+import logging
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from shared.utils import get_sqlite_connection, retry_failed_alerts
 
 app = FastAPI(title="Tunisian Fraud Detection - Command Center API")
 
@@ -37,6 +43,20 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
 DB_PATH = Path("./data/feedback.db")
 os.makedirs("./data", exist_ok=True)
 
+def parse_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+def parse_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+RANDOM_SAMPLE_RATE = max(0.0, min(parse_float_env("RANDOM_SAMPLE_RATE", 0.01), 1.0))
+
 class FeedbackRequest(BaseModel):
     transaction_id: str
     analyst_label: str  # "Confirmed Fraud" or "False Positive"
@@ -51,6 +71,7 @@ class TransactionAlert(BaseModel):
     timestamp: str
     ml_probability: float
     sar_report: Optional[str] = None
+    alert_type: Optional[str] = "high_risk"
 
 class ModelMonitor:
     """Simple model monitoring class to track performance metrics"""
@@ -74,7 +95,7 @@ monitor = ModelMonitor()
 @app.on_event("startup")
 def startup_event():
     """Initialize the database on startup"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_sqlite_connection(str(DB_PATH))
     cursor = conn.cursor()
     
     # Create feedback table
@@ -88,7 +109,7 @@ def startup_event():
         )
     """)
     
-    # Create alerts table for high-risk transactions
+    # Create alerts table for review queue entries
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS high_risk_alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,18 +121,56 @@ def startup_event():
             timestamp TEXT,
             ml_probability REAL,
             sar_report TEXT,
+            alert_type TEXT DEFAULT 'high_risk',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
+
+    cursor.execute("PRAGMA table_info(high_risk_alerts)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+    if "alert_type" not in existing_columns:
+        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN alert_type TEXT DEFAULT 'high_risk'")
+        cursor.execute("UPDATE high_risk_alerts SET alert_type = 'high_risk' WHERE alert_type IS NULL")
+
     conn.commit()
     conn.close()
+    start_dlq_retry_worker()
+
+@app.on_event("shutdown")
+def shutdown_event():
+    stop_event = getattr(app.state, "dlq_retry_stop", None)
+    if stop_event:
+        stop_event.set()
+    thread = getattr(app.state, "dlq_retry_thread", None)
+    if thread and thread.is_alive():
+        thread.join(timeout=2)
+
+def start_dlq_retry_worker():
+    if getattr(app.state, "dlq_retry_thread", None) and app.state.dlq_retry_thread.is_alive():
+        return
+
+    interval = max(1, parse_int_env("DLQ_RETRY_INTERVAL_SECONDS", 60))
+    max_attempts = max(1, parse_int_env("DLQ_RETRY_MAX_ATTEMPTS", 3))
+    stop_event = threading.Event()
+    app.state.dlq_retry_stop = stop_event
+
+    def retry_loop():
+        while not stop_event.is_set():
+            try:
+                retry_failed_alerts(max_attempts=max_attempts)
+            except Exception:
+                logging.exception("DLQ retry worker error")
+            stop_event.wait(interval)
+
+    thread = threading.Thread(target=retry_loop, name="dlq-retry-worker", daemon=True)
+    app.state.dlq_retry_thread = thread
+    thread.start()
 
 @app.post("/feedback/")
 async def submit_feedback(feedback: FeedbackRequest, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Endpoint to receive analyst feedback on fraud predictions"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_sqlite_connection(str(DB_PATH))
         cursor = conn.cursor()
 
         # Insert feedback into database
@@ -139,14 +198,14 @@ async def submit_feedback(feedback: FeedbackRequest, credentials: HTTPAuthorizat
 async def get_high_risk_alerts(limit: int = 50, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Endpoint to fetch high-risk alerts for the dashboard"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_sqlite_connection(str(DB_PATH))
         cursor = conn.cursor()
 
         cursor.execute("""
             SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                   timestamp, ml_probability, sar_report
+                   timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk')
             FROM high_risk_alerts
-            WHERE ml_probability > 0.85
+            WHERE COALESCE(alert_type, 'high_risk') = 'high_risk' AND ml_probability > 0.85
             ORDER BY ml_probability DESC
             LIMIT ?
         """, (limit,))
@@ -164,7 +223,56 @@ async def get_high_risk_alerts(limit: int = 50, credentials: HTTPAuthorizationCr
                 "payment_method": row[4],
                 "timestamp": row[5],
                 "ml_probability": row[6],
-                "sar_report": row[7]
+                "sar_report": row[7],
+                "alert_type": row[8]
+            }
+            alerts.append(alert)
+
+        return alerts
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/alerts/review-queue/")
+async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None,
+                           credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+    """Endpoint to fetch review queue alerts, including random samples"""
+    try:
+        conn = get_sqlite_connection(str(DB_PATH))
+        cursor = conn.cursor()
+
+        if alert_type:
+            cursor.execute("""
+                SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
+                       timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk')
+                FROM high_risk_alerts
+                WHERE COALESCE(alert_type, 'high_risk') = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (alert_type, limit))
+        else:
+            cursor.execute("""
+                SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
+                       timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk')
+                FROM high_risk_alerts
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (limit,))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        alerts = []
+        for row in rows:
+            alert = {
+                "transaction_id": row[0],
+                "user_id": row[1],
+                "amount_tnd": row[2],
+                "governorate": row[3],
+                "payment_method": row[4],
+                "timestamp": row[5],
+                "ml_probability": row[6],
+                "sar_report": row[7],
+                "alert_type": row[8]
             }
             alerts.append(alert)
 
@@ -176,7 +284,7 @@ async def get_high_risk_alerts(limit: int = 50, credentials: HTTPAuthorizationCr
 async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Get system statistics for monitoring"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_sqlite_connection(str(DB_PATH))
         cursor = conn.cursor()
 
         # Get total feedback count
@@ -188,8 +296,20 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
         label_counts = dict(cursor.fetchall())
 
         # Get high-risk alert count
-        cursor.execute("SELECT COUNT(*) FROM high_risk_alerts WHERE ml_probability > 0.85")
+        cursor.execute("""
+            SELECT COUNT(*) FROM high_risk_alerts
+            WHERE COALESCE(alert_type, 'high_risk') = 'high_risk' AND ml_probability > 0.85
+        """)
         high_risk_count = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM high_risk_alerts
+            WHERE COALESCE(alert_type, 'high_risk') = 'random_sample'
+        """)
+        random_sample_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM high_risk_alerts")
+        review_queue_total = cursor.fetchone()[0]
 
         conn.close()
 
@@ -201,6 +321,9 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
         return {
             "total_feedback": total_feedback,
             "high_risk_alerts": high_risk_count,
+            "random_sample_alerts": random_sample_count,
+            "review_queue_total": review_queue_total,
+            "random_sample_rate": RANDOM_SAMPLE_RATE,
             "feedback_breakdown": label_counts,
             "precision": round(precision, 3),
             "monitoring_stats": {
@@ -216,19 +339,21 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
 async def add_high_risk_alert(alert: TransactionAlert, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Endpoint to add high-risk alerts from the streaming pipeline"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_sqlite_connection(str(DB_PATH))
         cursor = conn.cursor()
+
+        alert_type = alert.alert_type or "high_risk"
 
         # Insert alert into database
         cursor.execute("""
             INSERT OR IGNORE INTO high_risk_alerts
             (transaction_id, user_id, amount_tnd, governorate, payment_method,
-             timestamp, ml_probability, sar_report)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             timestamp, ml_probability, sar_report, alert_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             alert.transaction_id, alert.user_id, alert.amount_tnd,
             alert.governorate, alert.payment_method, alert.timestamp,
-            alert.ml_probability, alert.sar_report
+            alert.ml_probability, alert.sar_report, alert_type
         ))
 
         conn.commit()
@@ -242,14 +367,14 @@ async def add_high_risk_alert(alert: TransactionAlert, credentials: HTTPAuthoriz
 async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Get model performance metrics based on human feedback"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_sqlite_connection(str(DB_PATH))
         cursor = conn.cursor()
 
         # Get feedback data to calculate performance metrics
         # IMPORTANT: This represents performance on the subset of transactions that were reviewed by analysts
         # NOT the overall model performance across all transactions
         cursor.execute("""
-            SELECT hra.ml_probability, fl.analyst_label
+            SELECT hra.ml_probability, COALESCE(hra.alert_type, 'high_risk'), fl.analyst_label
             FROM high_risk_alerts hra
             JOIN feedback_labels fl ON hra.transaction_id = fl.transaction_id
             WHERE fl.analyst_label IS NOT NULL
@@ -269,37 +394,48 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
             }
 
         # Calculate performance metrics properly for the reviewed subset
-        # True Positives: Model predicted fraud (prob > 0.5) and analyst confirmed fraud
-        # False Positives: Model predicted fraud (prob > 0.5) but analyst said false positive
-        # Note: We cannot calculate True Negatives or Recall properly without knowing all ground truth
-        # In a fraud system, we typically only review high-risk alerts, so TN is unknown
-
-        threshold = 0.5
-        tp = sum(1 for prob, label in prob_label_pairs if prob > threshold and label == "Confirmed Fraud")  # True positives
-        fp = sum(1 for prob, label in prob_label_pairs if prob > threshold and label == "False Positive")  # False positives
-        tn = sum(1 for prob, label in prob_label_pairs if prob <= threshold and label == "False Positive")  # True negatives (on reviewed subset)
-        fn = sum(1 for prob, label in prob_label_pairs if prob <= threshold and label == "Confirmed Fraud")  # False negatives (on reviewed subset)
+        # High-risk alerts are model-flagged fraud; random samples are low-risk reviews
+        tp = sum(1 for _, alert_type, label in prob_label_pairs
+                 if alert_type == "high_risk" and label == "Confirmed Fraud")
+        fp = sum(1 for _, alert_type, label in prob_label_pairs
+                 if alert_type == "high_risk" and label == "False Positive")
+        tn = sum(1 for _, alert_type, label in prob_label_pairs
+                 if alert_type == "random_sample" and label == "False Positive")
+        fn_sampled = sum(1 for _, alert_type, label in prob_label_pairs
+                         if alert_type == "random_sample" and label == "Confirmed Fraud")
 
         # Calculate precision based only on reviewed alerts where model predicted fraud
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
 
-        # Calculate recall based only on reviewed alerts where analyst confirmed fraud
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        # Calculate recall using sampled false negatives
+        random_sample_reviewed = tn + fn_sampled
+        if random_sample_reviewed == 0:
+            reviewed_recall = 0
+            estimated_fn = 0
+            estimated_recall = 0
+        else:
+            reviewed_recall = tp / (tp + fn_sampled) if (tp + fn_sampled) > 0 else 0
+            estimated_fn = fn_sampled / RANDOM_SAMPLE_RATE if RANDOM_SAMPLE_RATE > 0 else 0
+            estimated_recall = tp / (tp + estimated_fn) if (tp + estimated_fn) > 0 else 0
 
-        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        f1_score = 2 * (precision * estimated_recall) / (precision + estimated_recall) if (precision + estimated_recall) > 0 else 0
 
         return {
             "precision": round(precision, 3),
-            "recall": round(recall, 3),
+            "recall": round(estimated_recall, 3),
+            "reviewed_recall": round(reviewed_recall, 3),
             "f1_score": round(f1_score, 3),
             "true_positives": tp,
             "false_positives": fp,
             "true_negatives": tn,
-            "false_negatives": fn,
+            "false_negatives": fn_sampled,
+            "estimated_false_negatives": round(estimated_fn, 3),
+            "random_sample_reviewed": random_sample_reviewed,
+            "random_sample_rate": RANDOM_SAMPLE_RATE,
             "total_evaluated": len(prob_label_pairs),
-            "note": "Metrics calculated only on reviewed alerts, not overall model performance.",
-            "warning": "True model performance requires random sampling of all predictions, including negatives.",
-            "interpretation": "These metrics reflect ALERT PERFORMANCE, not overall model performance."
+            "note": "Metrics combine high-risk reviews with random-sample reviews to estimate recall.",
+            "warning": "Estimated recall assumes random samples represent low-risk traffic.",
+            "interpretation": "Precision reflects alert performance; recall is sampling-adjusted."
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
