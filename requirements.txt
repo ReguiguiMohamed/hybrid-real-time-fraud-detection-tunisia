@@ -9,7 +9,7 @@ protobuf==5.29.5
 
 # Data Engineering
 
-pyspark==3.5.3
+pyspark==4.1.1
 confluent-kafka==2.3.0
 faker==40.1.2
 pydantic==2.12.5
