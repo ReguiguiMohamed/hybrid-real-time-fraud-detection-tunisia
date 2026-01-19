@@ -1,6 +1,5 @@
 # src/ml/train_model.py
 import os
-import sqlite3
 import numpy as np
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, when, lit, stddev, mean, count
@@ -12,6 +11,7 @@ from datetime import datetime
 import shutil
 from pathlib import Path
 from pyspark.sql.types import DoubleType, IntegerType, FloatType
+from shared.utils import get_sqlite_connection
 
 
 class DriftDetector:
@@ -158,7 +158,7 @@ class FraudModelTrainer:
     def check_feedback_availability(self):
         """Check if enough human feedback is available to retrain"""
         try:
-            conn = sqlite3.connect(self.feedback_db_path)
+            conn = get_sqlite_connection(self.feedback_db_path)
             cursor = conn.cursor()
 
             # Count total feedback records
@@ -174,7 +174,7 @@ class FraudModelTrainer:
     def load_feedback_data(self):
         """Load human-verified feedback data for retraining"""
         try:
-            conn = sqlite3.connect(self.feedback_db_path)
+            conn = get_sqlite_connection(self.feedback_db_path)
             cursor = conn.cursor()
 
             # Get feedback data with proper label mapping

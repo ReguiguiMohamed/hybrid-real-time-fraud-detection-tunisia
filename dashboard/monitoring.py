@@ -1,5 +1,6 @@
 # dashboard/monitoring.py
-import sqlite3
+import os
+import sys
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -13,6 +14,10 @@ import statistics
 from typing import Dict, List, Tuple
 import plotly.graph_objects as go
 import plotly.express as px
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from shared.utils import get_sqlite_connection
 
 class ModelMonitor:
     def __init__(self, db_path: Path = Path("./data/feedback.db")):
@@ -45,7 +50,7 @@ class ModelMonitor:
     def get_feedback_analysis(self):
         """Analyze feedback patterns"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_connection(str(self.db_path))
             cursor = conn.cursor()
 
             # Get feedback counts
@@ -152,7 +157,7 @@ class ModelMonitor:
     def get_distribution_comparison(self, feature_name: str, current_period_days: int = 7, baseline_period_days: int = 30):
         """Compare current feature distribution to baseline"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = get_sqlite_connection(str(self.db_path))
             cursor = conn.cursor()
 
             # Get current period data
