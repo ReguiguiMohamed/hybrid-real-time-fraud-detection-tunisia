@@ -16,6 +16,9 @@ from pyspark.sql.types import DoubleType
 from shared.schemas import Transaction, TRANSACTION_SPARK_SCHEMA
 from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
 from shared.quality_gates import validate_transaction_quality, apply_d17_rule
+import sqlite3
+import os
+from datetime import datetime
 
 # Use the schema from the shared module to ensure consistency
 schema = TRANSACTION_SPARK_SCHEMA
@@ -138,26 +141,29 @@ class FraudProcessor:
                 from rag_engine.sar_generator import SARGenerator
                 import requests
                 import json
-                from concurrent.futures import ThreadPoolExecutor
+                from concurrent.futures import ThreadPoolExecutor, as_completed
                 import threading
 
                 sar_gen = SARGenerator()
 
-                # Create a thread pool for handling HTTP requests
-                with ThreadPoolExecutor(max_workers=5) as executor:
-                    futures = []
+                # Create a thread pool with configurable max workers
+                max_workers = int(os.getenv("THREAD_POOL_SIZE", "10"))
 
-                    for row in high_risk_df:
-                        # Submit each alert as a separate task to the thread pool
-                        future = executor.submit(send_alert_async, row, sar_gen)
-                        futures.append(future)
+                # Submit tasks to thread pool
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # Submit all tasks
+                    future_to_row = {
+                        executor.submit(send_alert_async, row, sar_gen): row
+                        for row in high_risk_df
+                    }
 
-                    # Wait for all tasks to complete
-                    for future in futures:
+                    # Wait for all tasks to complete with timeout
+                    for future in as_completed(future_to_row, timeout=30):  # 30 second timeout for all tasks
                         try:
-                            future.result(timeout=10)  # 10 second timeout per request
+                            future.result()
                         except Exception as e:
-                            print(f"Error in async alert processing: {e}")
+                            row = future_to_row[future]
+                            print(f"Error in async alert processing for transaction {row['transaction_id']}: {e}")
 
         def send_alert_async(row, sar_gen):
             """Function to send alerts asynchronously"""
@@ -183,21 +189,37 @@ class FraudProcessor:
                 }
 
                 try:
+                    # Get API URL from environment variable, default to localhost
+                    api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+                    api_token = os.getenv("COMMAND_CENTER_API_TOKEN")
+
+                    headers = {"Content-Type": "application/json"}
+                    if api_token:
+                        headers["Authorization"] = f"Bearer {api_token}"
+
                     api_response = requests.post(
-                        "http://localhost:8001/alerts/add/",
+                        f"{api_url}/alerts/add/",
                         json=alert_payload,
+                        headers=headers,
                         timeout=5  # 5 second timeout to avoid blocking
                     )
 
                     if api_response.status_code == 200:
                         print(f"Alert sent to command center for transaction: {row_dict.get('transaction_id')}")
                     else:
-                        print(f"Failed to send alert to command center: {api_response.status_code}")
+                        print(f"Failed to send alert to command center: {api_response.status_code} - {api_response.text}")
+                        # Log to dead letter queue
+                        log_failed_alert(row_dict, alert_payload, str(api_response.status_code), api_response.text)
                 except requests.exceptions.RequestException as api_error:
                     print(f"API connection error when sending alert: {api_error}")
+                    # Log to dead letter queue
+                    log_failed_alert(row_dict, alert_payload, "CONNECTION_ERROR", str(api_error))
 
             except Exception as e:
                 print(f"Error processing high-risk transaction {row.get('transaction_id', 'unknown')}: {e}")
+                # Log to dead letter queue
+                row_dict = row.asDict() if 'row' in locals() else {"transaction_id": "unknown"}
+                log_failed_alert(row_dict, {}, "PROCESSING_ERROR", str(e))
 
         # Periodically check if we should trigger model retraining based on feedback
         def check_and_trigger_retraining(batch_df, epoch_id):
@@ -227,16 +249,24 @@ class FraudProcessor:
                     if feedback_count >= 50:  # Minimum threshold for meaningful retraining
                         print(f"Triggering model retraining based on {feedback_count} feedback records")
 
-                        # Call the retraining endpoint
+                        # Call the retraining endpoint with proper authentication
+                        api_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+                        api_token = os.getenv("COMMAND_CENTER_API_TOKEN")
+
+                        headers = {"Content-Type": "application/json"}
+                        if api_token:
+                            headers["Authorization"] = f"Bearer {api_token}"
+
                         retrain_response = requests.post(
-                            "http://localhost:8001/retrain-model/",
+                            f"{api_url}/retrain-model/",
+                            headers=headers,
                             timeout=10  # 10 second timeout for retraining trigger
                         )
 
                         if retrain_response.status_code == 200:
                             print("✅ Model retraining triggered successfully")
                         else:
-                            print(f"Failed to trigger model retraining: {retrain_response.status_code}")
+                            print(f"Failed to trigger model retraining: {retrain_response.status_code} - {retrain_response.text}")
 
                 except Exception as e:
                     print(f"Error checking feedback for retraining: {e}")
@@ -250,6 +280,58 @@ class FraudProcessor:
             .option("checkpointLocation", "./tmp/checkpoint/silver_fraud") \
             .foreachBatch(check_and_trigger_retraining) \
             .start()
+
+        def log_failed_alert(transaction_data, alert_payload, error_code, error_message):
+            """Log failed alerts to a dead letter queue for later processing"""
+            try:
+                # Create dead letter database if it doesn't exist
+                db_path = "./data/dead_letter_queue.db"
+                os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+
+                # Create table if it doesn't exist
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS failed_alerts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        transaction_id TEXT,
+                        user_id TEXT,
+                        amount_tnd REAL,
+                        governorate TEXT,
+                        payment_method TEXT,
+                        timestamp TEXT,
+                        ml_probability REAL,
+                        error_code TEXT,
+                        error_message TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                # Insert failed alert
+                cursor.execute("""
+                    INSERT INTO failed_alerts
+                    (transaction_id, user_id, amount_tnd, governorate, payment_method,
+                     timestamp, ml_probability, error_code, error_message)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    transaction_data.get('transaction_id'),
+                    transaction_data.get('user_id'),
+                    transaction_data.get('amount_tnd'),
+                    transaction_data.get('governorate'),
+                    transaction_data.get('payment_method'),
+                    transaction_data.get('timestamp'),
+                    transaction_data.get('ml_probability', 0.0),
+                    error_code,
+                    error_message
+                ))
+
+                conn.commit()
+                conn.close()
+
+                print(f"Failed alert logged to dead letter queue: {transaction_data.get('transaction_id')}")
+            except Exception as e:
+                print(f"Error logging failed alert to dead letter queue: {e}")
 
         return query
 

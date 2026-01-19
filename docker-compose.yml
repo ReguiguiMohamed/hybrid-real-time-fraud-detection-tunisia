@@ -47,7 +47,7 @@ services:
       - ./data:/app/data
       - ./models:/app/models
     environment:
-      - API_TOKEN_HASH=${API_TOKEN_HASH:-default_hash_value}
+      - API_TOKEN=${API_TOKEN:-default_dev_token}
     depends_on:
       - kafka
       - ollama
@@ -62,8 +62,40 @@ services:
       - "8501:8501"
     volumes:
       - ./data:/app/data
+    environment:
+      - COMMAND_CENTER_API_URL=http://api:8001
+      - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
     depends_on:
       - api
+    networks:
+      - fraudnet
+
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.producer
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - COMMAND_CENTER_API_URL=http://api:8001
+      - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
+    depends_on:
+      - kafka
+      - api
+    networks:
+      - fraudnet
+
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - COMMAND_CENTER_API_URL=http://api:8001
+      - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
+    depends_on:
+      - kafka
+      - api
+      - ollama
     networks:
       - fraudnet
 

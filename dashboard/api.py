@@ -17,8 +17,14 @@ app = FastAPI(title="Tunisian Fraud Detection - Command Center API")
 
 # Authentication setup
 security = HTTPBearer()
-# In production, store this securely (e.g., in environment variables or secure vault)
-API_TOKEN_HASH = os.getenv("API_TOKEN_HASH", hashlib.sha256(b"default_secret_token").hexdigest())
+
+# Load API token from environment variable
+API_TOKEN = os.getenv("API_TOKEN")
+if not API_TOKEN:
+    print("WARNING: API_TOKEN environment variable not set. Using default token for development.")
+    API_TOKEN = "default_dev_token"
+
+API_TOKEN_HASH = hashlib.sha256(API_TOKEN.encode()).hexdigest()
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify the API token"""
@@ -240,6 +246,7 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
         cursor = conn.cursor()
 
         # Get feedback data to calculate performance metrics
+        # Note: This represents performance on the subset of transactions that were reviewed by analysts
         cursor.execute("""
             SELECT hra.ml_probability, fl.analyst_label
             FROM high_risk_alerts hra
@@ -255,32 +262,40 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
                 "precision": 0,
                 "recall": 0,
                 "f1_score": 0,
-                "total_evaluated": 0
+                "total_evaluated": 0,
+                "note": "Metrics calculated only on reviewed alerts, not overall model performance"
             }
 
-        # Calculate performance metrics properly
+        # Calculate performance metrics properly for the reviewed subset
         # True Positives: Model predicted fraud (prob > 0.5) and analyst confirmed fraud
         # False Positives: Model predicted fraud (prob > 0.5) but analyst said false positive
-        # True Negatives: Model predicted non-fraud (prob <= 0.5) and analyst said false positive
-        # False Negatives: Model predicted non-fraud (prob <= 0.5) but analyst confirmed fraud
+        # Note: We cannot calculate True Negatives or Recall properly without knowing all ground truth
+        # In a fraud system, we typically only review high-risk alerts, so TN is unknown
 
-        # For this calculation, we need to know what the model originally predicted
-        # Since we only have the probability, we'll use a threshold of 0.5 to determine predictions
         threshold = 0.5
         tp = sum(1 for prob, label in prob_label_pairs if prob > threshold and label == "Confirmed Fraud")  # True positives
         fp = sum(1 for prob, label in prob_label_pairs if prob > threshold and label == "False Positive")  # False positives
-        tn = sum(1 for prob, label in prob_label_pairs if prob <= threshold and label == "False Positive")  # True negatives
-        fn = sum(1 for prob, label in prob_label_pairs if prob <= threshold and label == "Confirmed Fraud")  # False negatives
+        tn = sum(1 for prob, label in prob_label_pairs if prob <= threshold and label == "False Positive")  # True negatives (on reviewed subset)
+        fn = sum(1 for prob, label in prob_label_pairs if prob <= threshold and label == "Confirmed Fraud")  # False negatives (on reviewed subset)
 
+        # Calculate precision based only on reviewed alerts where model predicted fraud
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+
+        # Calculate recall based only on reviewed alerts where analyst confirmed fraud
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+
         f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
 
         return {
             "precision": round(precision, 3),
             "recall": round(recall, 3),
             "f1_score": round(f1_score, 3),
-            "total_evaluated": len(prob_label_pairs)
+            "true_positives": tp,
+            "false_positives": fp,
+            "true_negatives": tn,
+            "false_negatives": fn,
+            "total_evaluated": len(prob_label_pairs),
+            "note": "Metrics calculated only on reviewed alerts, not overall model performance. True recall requires knowing all actual fraud cases."
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

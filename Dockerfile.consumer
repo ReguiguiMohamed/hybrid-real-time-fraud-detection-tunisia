@@ -1,0 +1,23 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    openjdk11-jdk \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sfn /usr/share/zoneinfo/UTC /etc/localtime
+
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Expose any port if needed for health checks
+EXPOSE 8080
+
+CMD ["python", "-u", "src/streaming/consumer.py"]
