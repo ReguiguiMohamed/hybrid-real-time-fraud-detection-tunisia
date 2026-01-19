@@ -10,7 +10,7 @@ os.environ['HADOOP_HOME'] = r'C:\hadoop-3.4.2'
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col
+from pyspark.sql.functions import from_json, col, window, count, approx_count_distinct, current_timestamp, to_timestamp
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
 from shared.schemas import Transaction
 
@@ -50,11 +50,36 @@ def start_streaming():
         .select(from_json(col("value"), schema).alias("data")) \
         .select("data.*")
 
-    # Console Sink for Verification
-    query = json_df.writeStream \
-        .outputMode("append") \
+    # 1. Add a proper timestamp column and define a Watermark (handling late data)
+    # We allow data to be up to 10 minutes late
+    enriched_df = json_df.withColumn("event_time", to_timestamp(col("timestamp"))) \
+                         .withWatermark("event_time", "10 minutes")
+
+    # 2. Stateful Aggregation: Detection of Velocity Attacks
+    # Pattern: Count transactions per user in a 5-minute sliding window, updating every 1 minute
+    velocity_checks = enriched_df.groupBy(
+        window(col("event_time"), "5 minutes", "1 minute"),
+        col("user_id")
+    ).agg(
+        count("transaction_id").alias("tx_count"),
+        approx_count_distinct("governorate").alias("distinct_governorates")
+    )
+
+    # 3. Flagging Logic: Defining the "Fraud Alert"
+    # Fraud if > 3 transactions in 5 mins OR > 1 city in 5 mins (Impossible Travel)
+    alerts_df = velocity_checks.filter(
+        (col("tx_count") > 3) | (col("distinct_governorates") > 1)
+    ).select(
+        col("window.start").alias("start_time"),
+        col("window.end").alias("end_time"),
+        "user_id", "tx_count", "distinct_governorates"
+    )
+
+    # 4. Console Sink for Alerts
+    query = alerts_df.writeStream \
+        .outputMode("update") \
         .format("console") \
-        .option("truncate", False) \
+        .option("truncate", "false") \
         .start()
 
     query.awaitTermination()
