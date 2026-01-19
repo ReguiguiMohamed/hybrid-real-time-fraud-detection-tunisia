@@ -164,6 +164,10 @@ with col2:
             with col2_2:
                 st.metric("Alert Precision", f"{stats.get('precision', 0):.3f}")
 
+            random_sample_fraud_rate = stats.get("random_sample_fraud_rate")
+            if random_sample_fraud_rate is not None:
+                st.metric("Random Sample Fraud Rate", f"{random_sample_fraud_rate:.3f}")
+
             st.metric("High-Risk Alerts", stats.get('high_risk_alerts', 0))
             st.metric("Random Samples", stats.get('random_sample_alerts', 0))
             st.metric("Review Queue Total", stats.get('review_queue_total', 0))

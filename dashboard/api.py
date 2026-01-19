@@ -330,7 +330,15 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
         high_risk_counts = label_counts_by_type.get("high_risk", {})
         confirmed_fraud = high_risk_counts.get("Confirmed Fraud", 0)
         false_positive = high_risk_counts.get("False Positive", 0)
-        precision = confirmed_fraud / (confirmed_fraud + false_positive) if (confirmed_fraud + false_positive) > 0 else 0
+        high_risk_precision = confirmed_fraud / (confirmed_fraud + false_positive) if (confirmed_fraud + false_positive) > 0 else 0
+
+        random_sample_counts = label_counts_by_type.get("random_sample", {})
+        random_sample_fraud = random_sample_counts.get("Confirmed Fraud", 0)
+        random_sample_non_fraud = random_sample_counts.get("False Positive", 0)
+        random_sample_fraud_rate = (
+            random_sample_fraud / (random_sample_fraud + random_sample_non_fraud)
+            if (random_sample_fraud + random_sample_non_fraud) > 0 else 0
+        )
 
         return {
             "total_feedback": total_feedback,
@@ -340,8 +348,10 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
             "random_sample_rate": RANDOM_SAMPLE_RATE,
             "feedback_breakdown": label_counts,
             "feedback_breakdown_by_type": label_counts_by_type,
-            "precision": round(precision, 3),
+            "precision": round(high_risk_precision, 3),
             "precision_scope": "high_risk_only",
+            "high_risk_precision": round(high_risk_precision, 3),
+            "random_sample_fraud_rate": round(random_sample_fraud_rate, 3),
             "monitoring_stats": {
                 "feedback_processed": monitor.feedback_processed,
                 "confirmed_fraud_count": monitor.confirmed_fraud_count,
