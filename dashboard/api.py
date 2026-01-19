@@ -295,6 +295,19 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
         cursor.execute("SELECT analyst_label, COUNT(*) FROM feedback_labels GROUP BY analyst_label")
         label_counts = dict(cursor.fetchall())
 
+        cursor.execute("""
+            SELECT COALESCE(hra.alert_type, 'unknown') AS alert_type,
+                   fl.analyst_label,
+                   COUNT(*)
+            FROM feedback_labels fl
+            LEFT JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
+            WHERE fl.analyst_label IS NOT NULL
+            GROUP BY alert_type, fl.analyst_label
+        """)
+        label_counts_by_type = {}
+        for alert_type, analyst_label, count in cursor.fetchall():
+            label_counts_by_type.setdefault(alert_type, {})[analyst_label] = count
+
         # Get high-risk alert count
         cursor.execute("""
             SELECT COUNT(*) FROM high_risk_alerts
@@ -313,10 +326,11 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
 
         conn.close()
 
-        # Calculate precision based on feedback
-        confirmed_fraud = label_counts.get("Confirmed Fraud", 0)
-        total_labeled = sum(label_counts.values()) if label_counts else 0
-        precision = confirmed_fraud / total_labeled if total_labeled > 0 else 0
+        # Calculate precision based on high-risk alerts only
+        high_risk_counts = label_counts_by_type.get("high_risk", {})
+        confirmed_fraud = high_risk_counts.get("Confirmed Fraud", 0)
+        false_positive = high_risk_counts.get("False Positive", 0)
+        precision = confirmed_fraud / (confirmed_fraud + false_positive) if (confirmed_fraud + false_positive) > 0 else 0
 
         return {
             "total_feedback": total_feedback,
@@ -325,7 +339,9 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
             "review_queue_total": review_queue_total,
             "random_sample_rate": RANDOM_SAMPLE_RATE,
             "feedback_breakdown": label_counts,
+            "feedback_breakdown_by_type": label_counts_by_type,
             "precision": round(precision, 3),
+            "precision_scope": "high_risk_only",
             "monitoring_stats": {
                 "feedback_processed": monitor.feedback_processed,
                 "confirmed_fraud_count": monitor.confirmed_fraud_count,

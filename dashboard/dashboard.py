@@ -162,7 +162,7 @@ with col2:
             with col2_1:
                 st.metric("Total Feedback", stats.get('total_feedback', 0))
             with col2_2:
-                st.metric("Precision", f"{stats.get('precision', 0):.3f}")
+                st.metric("Alert Precision", f"{stats.get('precision', 0):.3f}")
 
             st.metric("High-Risk Alerts", stats.get('high_risk_alerts', 0))
             st.metric("Random Samples", stats.get('random_sample_alerts', 0))
