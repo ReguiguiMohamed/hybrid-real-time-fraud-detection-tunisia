@@ -103,13 +103,12 @@ class FraudProcessor:
             (col("d17_risk") * RISK_WEIGHTS["d17_limit"])
         )
 
+        # Prepare features for ML model regardless of model availability to ensure consistent schema
+        features_df = scored.withColumn("is_smurfing", when(col("avg_amount").between(1400, 1500), 1).otherwise(0)) \
+                            .withColumn("high_velocity_flag", when(col("v_count") > D17_VELOCITY_CAP, 1).otherwise(0))
+
         # Apply ML inference if model is available
         if self.ml_model:
-            # Prepare features for ML model
-            features_df = scored.withColumn("is_smurfing", when(col("avg_amount").between(1400, 1500), 1).otherwise(0)) \
-                                .withColumn("high_velocity_flag", when(col("v_count") > D17_VELOCITY_CAP, 1).otherwise(0))
-
-            # Apply ML model for prediction
             from pyspark.ml.feature import VectorAssembler
 
             # Create feature vector for ML model
@@ -123,35 +122,30 @@ class FraudProcessor:
             predictions = self.ml_model.transform(assembled_df)
             final_df = predictions.withColumnRenamed("prediction", "ml_prediction") \
                                  .withColumnRenamed("probability", "ml_probability")
-
-            # Trigger SAR generation for high-confidence fraud predictions
-            from pyspark.sql.functions import udf
-            from pyspark.sql.types import StringType
-            from rag_engine.sar_generator import SARGenerator
-
-            # Initialize SAR generator
-            sar_gen = SARGenerator()
-
-            # Function to trigger SAR generation
-            def generate_sar_if_needed(row_dict, ml_prob_val):
-                if ml_prob_val > 0.85:  # High confidence threshold
-                    try:
-                        report = sar_gen.generate_report(row_dict, ml_prob_val)
-                        report_path = sar_gen.save_report(row_dict, report, ml_prob_val)
-                        print(f"SAR generated and saved to: {report_path}")
-                        return report_path
-                    except Exception as e:
-                        print(f"Error generating SAR: {e}")
-                        return None
-                return None
-
-            # Create UDF for SAR generation
-            sar_udf = udf(lambda row_dict, prob: generate_sar_if_needed(row_dict, prob), StringType())
-
         else:
-            # Fallback to rule-based scoring
-            final_df = scored.withColumn("ml_prediction", lit(-1)) \
-                            .withColumn("ml_probability", lit(0.0))
+            # Fallback to rule-based scoring but maintain consistent schema
+            final_df = features_df.withColumn("ml_prediction", lit(-1)) \
+                                 .withColumn("ml_probability", lit(0.0))
+
+        # For performance, we'll use foreachBatch to handle SAR generation asynchronously
+        # This avoids blocking the streaming pipeline with HTTP requests to Ollama
+        def process_batch(batch_df, epoch_id):
+            # Filter for high-confidence fraud predictions
+            high_risk_df = batch_df.filter(col("ml_probability") > 0.85).collect()
+
+            if high_risk_df:
+                from rag_engine.sar_generator import SARGenerator
+                sar_gen = SARGenerator()
+
+                for row in high_risk_df:
+                    try:
+                        # Convert row to dictionary for SAR generation
+                        row_dict = row.asDict()
+                        report = sar_gen.generate_report(row_dict, float(row.ml_probability))
+                        report_path = sar_gen.save_report(row_dict, report, float(row.ml_probability))
+                        print(f"SAR generated and saved to: {report_path}")
+                    except Exception as e:
+                        print(f"Error generating SAR for transaction {row.get('transaction_id', 'unknown')}: {e}")
 
         # 4. Persistence: Using Parquet for streaming (Delta Lake for batch operations)
         # Due to compatibility issues between Spark 4.1.1 and Delta Lake 4.0.1 for streaming sinks
@@ -160,6 +154,7 @@ class FraudProcessor:
             .outputMode("append") \
             .option("path", "./data/parquet/silver_fraud_alerts") \
             .option("checkpointLocation", "./tmp/checkpoint/silver_fraud") \
+            .foreachBatch(process_batch) \
             .start()
 
         return query
