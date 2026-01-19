@@ -138,47 +138,66 @@ class FraudProcessor:
                 from rag_engine.sar_generator import SARGenerator
                 import requests
                 import json
+                from concurrent.futures import ThreadPoolExecutor
+                import threading
 
                 sar_gen = SARGenerator()
 
-                for row in high_risk_df:
-                    try:
-                        # Convert row to dictionary for SAR generation
-                        row_dict = row.asDict()
-                        report = sar_gen.generate_report(row_dict, float(row.ml_probability))
+                # Create a thread pool for handling HTTP requests
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = []
 
-                        # Save the SAR report
-                        report_path = sar_gen.save_report(row_dict, report, float(row.ml_probability))
-                        print(f"SAR generated and saved to: {report_path}")
+                    for row in high_risk_df:
+                        # Submit each alert as a separate task to the thread pool
+                        future = executor.submit(send_alert_async, row, sar_gen)
+                        futures.append(future)
 
-                        # Send alert to the command center API
-                        alert_payload = {
-                            "transaction_id": str(row_dict.get('transaction_id', 'unknown')),
-                            "user_id": str(row_dict.get('user_id', 'unknown')),
-                            "amount_tnd": float(row_dict.get('amount_tnd', 0.0)),
-                            "governorate": str(row_dict.get('governorate', 'unknown')),
-                            "payment_method": str(row_dict.get('payment_method', 'unknown')),
-                            "timestamp": str(row_dict.get('timestamp', '')),
-                            "ml_probability": float(row.ml_probability),
-                            "sar_report": report
-                        }
-
+                    # Wait for all tasks to complete
+                    for future in futures:
                         try:
-                            api_response = requests.post(
-                                "http://localhost:8001/alerts/add/",
-                                json=alert_payload,
-                                timeout=5  # 5 second timeout to avoid blocking
-                            )
+                            future.result(timeout=10)  # 10 second timeout per request
+                        except Exception as e:
+                            print(f"Error in async alert processing: {e}")
 
-                            if api_response.status_code == 200:
-                                print(f"Alert sent to command center for transaction: {row_dict.get('transaction_id')}")
-                            else:
-                                print(f"Failed to send alert to command center: {api_response.status_code}")
-                        except requests.exceptions.RequestException as api_error:
-                            print(f"API connection error when sending alert: {api_error}")
+        def send_alert_async(row, sar_gen):
+            """Function to send alerts asynchronously"""
+            try:
+                # Convert row to dictionary for SAR generation
+                row_dict = row.asDict()
+                report = sar_gen.generate_report(row_dict, float(row.ml_probability))
 
-                    except Exception as e:
-                        print(f"Error processing high-risk transaction {row.get('transaction_id', 'unknown')}: {e}")
+                # Save the SAR report
+                report_path = sar_gen.save_report(row_dict, report, float(row.ml_probability))
+                print(f"SAR generated and saved to: {report_path}")
+
+                # Send alert to the command center API
+                alert_payload = {
+                    "transaction_id": str(row_dict.get('transaction_id', 'unknown')),
+                    "user_id": str(row_dict.get('user_id', 'unknown')),
+                    "amount_tnd": float(row_dict.get('amount_tnd', 0.0)),
+                    "governorate": str(row_dict.get('governorate', 'unknown')),
+                    "payment_method": str(row_dict.get('payment_method', 'unknown')),
+                    "timestamp": str(row_dict.get('timestamp', '')),
+                    "ml_probability": float(row.ml_probability),
+                    "sar_report": report
+                }
+
+                try:
+                    api_response = requests.post(
+                        "http://localhost:8001/alerts/add/",
+                        json=alert_payload,
+                        timeout=5  # 5 second timeout to avoid blocking
+                    )
+
+                    if api_response.status_code == 200:
+                        print(f"Alert sent to command center for transaction: {row_dict.get('transaction_id')}")
+                    else:
+                        print(f"Failed to send alert to command center: {api_response.status_code}")
+                except requests.exceptions.RequestException as api_error:
+                    print(f"API connection error when sending alert: {api_error}")
+
+            except Exception as e:
+                print(f"Error processing high-risk transaction {row.get('transaction_id', 'unknown')}: {e}")
 
         # Periodically check if we should trigger model retraining based on feedback
         def check_and_trigger_retraining(batch_df, epoch_id):

@@ -1,5 +1,6 @@
 # dashboard/api.py
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional, List
 import sqlite3
@@ -10,8 +11,21 @@ import json
 import threading
 from queue import Queue
 import time
+import hashlib
 
 app = FastAPI(title="Tunisian Fraud Detection - Command Center API")
+
+# Authentication setup
+security = HTTPBearer()
+# In production, store this securely (e.g., in environment variables or secure vault)
+API_TOKEN_HASH = os.getenv("API_TOKEN_HASH", hashlib.sha256(b"default_secret_token").hexdigest())
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify the API token"""
+    token_hash = hashlib.sha256(credentials.credentials.encode()).hexdigest()
+    if token_hash != API_TOKEN_HASH:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return credentials
 
 # Database setup
 DB_PATH = Path("./data/feedback.db")
@@ -88,52 +102,52 @@ def startup_event():
     conn.close()
 
 @app.post("/feedback/")
-async def submit_feedback(feedback: FeedbackRequest):
+async def submit_feedback(feedback: FeedbackRequest, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Endpoint to receive analyst feedback on fraud predictions"""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         # Insert feedback into database
         cursor.execute("""
-            INSERT INTO feedback_labels 
+            INSERT INTO feedback_labels
             (transaction_id, analyst_label, analyst_comment)
             VALUES (?, ?, ?)
         """, (
-            feedback.transaction_id, 
-            feedback.analyst_label, 
+            feedback.transaction_id,
+            feedback.analyst_label,
             feedback.analyst_comment
         ))
-        
+
         conn.commit()
         conn.close()
-        
+
         # Update monitoring metrics
         monitor.record_feedback(feedback)
-        
+
         return {"status": "success", "message": "Feedback recorded successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/alerts/high-risk/")
-async def get_high_risk_alerts(limit: int = 50):
+async def get_high_risk_alerts(limit: int = 50, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Endpoint to fetch high-risk alerts for the dashboard"""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
-            SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, 
+            SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
                    timestamp, ml_probability, sar_report
-            FROM high_risk_alerts 
+            FROM high_risk_alerts
             WHERE ml_probability > 0.85
             ORDER BY ml_probability DESC
             LIMIT ?
         """, (limit,))
-        
+
         rows = cursor.fetchall()
         conn.close()
-        
+
         alerts = []
         for row in rows:
             alert = {
@@ -147,37 +161,37 @@ async def get_high_risk_alerts(limit: int = 50):
                 "sar_report": row[7]
             }
             alerts.append(alert)
-        
+
         return alerts
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/stats/")
-async def get_system_stats():
+async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Get system statistics for monitoring"""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         # Get total feedback count
         cursor.execute("SELECT COUNT(*) FROM feedback_labels")
         total_feedback = cursor.fetchone()[0]
-        
+
         # Get fraud vs false positive counts
         cursor.execute("SELECT analyst_label, COUNT(*) FROM feedback_labels GROUP BY analyst_label")
         label_counts = dict(cursor.fetchall())
-        
+
         # Get high-risk alert count
         cursor.execute("SELECT COUNT(*) FROM high_risk_alerts WHERE ml_probability > 0.85")
         high_risk_count = cursor.fetchone()[0]
-        
+
         conn.close()
-        
+
         # Calculate precision based on feedback
         confirmed_fraud = label_counts.get("Confirmed Fraud", 0)
         total_labeled = sum(label_counts.values()) if label_counts else 0
         precision = confirmed_fraud / total_labeled if total_labeled > 0 else 0
-        
+
         return {
             "total_feedback": total_feedback,
             "high_risk_alerts": high_risk_count,
@@ -193,16 +207,16 @@ async def get_system_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/alerts/add/")
-async def add_high_risk_alert(alert: TransactionAlert):
+async def add_high_risk_alert(alert: TransactionAlert, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Endpoint to add high-risk alerts from the streaming pipeline"""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         # Insert alert into database
         cursor.execute("""
-            INSERT OR IGNORE INTO high_risk_alerts 
-            (transaction_id, user_id, amount_tnd, governorate, payment_method, 
+            INSERT OR IGNORE INTO high_risk_alerts
+            (transaction_id, user_id, amount_tnd, governorate, payment_method,
              timestamp, ml_probability, sar_report)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
@@ -210,16 +224,16 @@ async def add_high_risk_alert(alert: TransactionAlert):
             alert.governorate, alert.payment_method, alert.timestamp,
             alert.ml_probability, alert.sar_report
         ))
-        
+
         conn.commit()
         conn.close()
-        
+
         return {"status": "success", "message": "Alert added successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/monitoring/model-performance/")
-async def get_model_performance():
+async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Get model performance metrics based on human feedback"""
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -244,24 +258,22 @@ async def get_model_performance():
                 "total_evaluated": 0
             }
 
-        # Calculate performance metrics
-        tp = sum(1 for prob, label in prob_label_pairs if label == "Confirmed Fraud")  # True positives
-        fp = sum(1 for prob, label in prob_label_pairs if label == "False Positive")  # False positives
-        tn = sum(1 for prob, label in prob_label_pairs if label == "False Positive")  # In this case, we consider all non-fraud as TN
-        # Calculate true negatives correctly - these are cases where model predicted non-fraud and analyst confirmed it
-        # For now, we'll focus on precision and recall for fraud detection
-        fn = 0  # For fraud detection, false negatives would be cases labeled as non-fraud but were actually fraud
+        # Calculate performance metrics properly
+        # True Positives: Model predicted fraud (prob > 0.5) and analyst confirmed fraud
+        # False Positives: Model predicted fraud (prob > 0.5) but analyst said false positive
+        # True Negatives: Model predicted non-fraud (prob <= 0.5) and analyst said false positive
+        # False Negatives: Model predicted non-fraud (prob <= 0.5) but analyst confirmed fraud
 
-        # Calculate recall based on actual fraud cases identified by analysts
-        # Need to query for all confirmed fraud cases vs total actual fraud cases
-        # For now, using a simplified approach focusing on precision of positive predictions
+        # For this calculation, we need to know what the model originally predicted
+        # Since we only have the probability, we'll use a threshold of 0.5 to determine predictions
+        threshold = 0.5
+        tp = sum(1 for prob, label in prob_label_pairs if prob > threshold and label == "Confirmed Fraud")  # True positives
+        fp = sum(1 for prob, label in prob_label_pairs if prob > threshold and label == "False Positive")  # False positives
+        tn = sum(1 for prob, label in prob_label_pairs if prob <= threshold and label == "False Positive")  # True negatives
+        fn = sum(1 for prob, label in prob_label_pairs if prob <= threshold and label == "Confirmed Fraud")  # False negatives
+
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-
-        # Calculate recall: fraction of actual fraud cases that were correctly identified
-        # This requires knowing total actual fraud cases, which we can estimate from feedback
-        total_actual_fraud = sum(1 for prob, label in prob_label_pairs if label == "Confirmed Fraud")
-        recall = tp / total_actual_fraud if total_actual_fraud > 0 else 0
-
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
         f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
 
         return {
@@ -274,7 +286,7 @@ async def get_model_performance():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/retrain-model/")
-async def trigger_model_retraining(background_tasks: BackgroundTasks):
+async def trigger_model_retraining(background_tasks: BackgroundTasks, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
     """Trigger model retraining based on accumulated feedback"""
     try:
         # Import here to avoid circular dependencies

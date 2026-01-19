@@ -13,162 +13,6 @@ import shutil
 from pathlib import Path
 from pyspark.sql.types import DoubleType, IntegerType, FloatType
 
-class FraudModelTrainer:
-    def __init__(self, silver_path="./data/parquet/silver_fraud_alerts", feedback_db_path="./data/feedback.db"):
-        self.spark = SparkSession.builder.appName("TunisianFraud-ModelTrainer").getOrCreate()
-        self.silver_path = silver_path
-        self.feedback_db_path = feedback_db_path
-
-    def check_feedback_availability(self):
-        """Check if enough human feedback is available to retrain"""
-        try:
-            conn = sqlite3.connect(self.feedback_db_path)
-            cursor = conn.cursor()
-
-            # Count total feedback records
-            cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
-            total_feedback = cursor.fetchone()[0]
-
-            conn.close()
-            return total_feedback
-        except Exception as e:
-            print(f"Error checking feedback availability: {e}")
-            return 0
-
-    def load_feedback_data(self):
-        """Load human-verified feedback data for retraining"""
-        try:
-            conn = sqlite3.connect(self.feedback_db_path)
-            cursor = conn.cursor()
-
-            # Get feedback data with proper label mapping
-            cursor.execute("""
-                SELECT
-                    transaction_id,
-                    user_id,
-                    amount_tnd,
-                    governorate,
-                    payment_method,
-                    ml_probability,
-                    CASE
-                        WHEN analyst_label = 'Confirmed Fraud' THEN 1
-                        WHEN analyst_label = 'False Positive' THEN 0
-                        ELSE -1  -- Invalid/missing label
-                    END as verified_label
-                FROM feedback_labels
-                WHERE analyst_label IS NOT NULL
-                AND (analyst_label = 'Confirmed Fraud' OR analyst_label = 'False Positive')
-            """)
-
-            feedback_records = cursor.fetchall()
-            conn.close()
-
-            # Convert to DataFrame if records exist
-            if feedback_records:
-                # Create a temporary view for SQL operations
-                feedback_df = self.spark.createDataFrame(
-                    feedback_records,
-                    ["transaction_id", "user_id", "amount_tnd", "governorate", "payment_method", "ml_probability", "verified_label"]
-                )
-
-                # Process feedback data to create features
-                enriched_feedback = feedback_df.withColumn("is_smurfing", when(col("amount_tnd").between(1400, 1500), 1).otherwise(0)) \
-                                              .withColumn("high_velocity_flag", lit(0))  # Placeholder - would need to compute from history
-                return enriched_feedback
-            else:
-                return None
-        except Exception as e:
-            print(f"Error loading feedback data: {e}")
-            return None
-
-    def load_and_enrich(self):
-        """Load and enrich data from both silver layer and feedback"""
-        # Load original silver layer data
-        try:
-            silver_df = self.spark.read.parquet(self.silver_path)
-            print(f"Loaded {silver_df.count()} records from silver layer")
-
-            # Check if required columns exist in silver data
-            required_silver_cols = ["transaction_id", "user_id", "amount_tnd", "governorate",
-                                   "payment_method", "ml_probability", "is_smurfing",
-                                   "high_velocity_flag", "label"]
-            available_cols = silver_df.columns
-
-            # Select only columns that exist
-            cols_to_select = [col for col in required_silver_cols if col in available_cols]
-            silver_df = silver_df.select(*cols_to_select)
-
-        except Exception as e:
-            print(f"Warning: Could not load silver layer data: {e}")
-            silver_df = None
-
-        # Load human feedback data
-        feedback_df = self.load_feedback_data()
-
-        if feedback_df is not None:
-            print(f"Loaded {feedback_df.count()} records from human feedback")
-        else:
-            print("No feedback data available")
-
-        # Combine both datasets if both exist
-        if silver_df is not None and feedback_df is not None:
-            # Ensure both dataframes have compatible schemas for union
-            # Get common columns
-            silver_cols = set(silver_df.columns)
-            feedback_cols = set(feedback_df.columns)
-            common_cols = silver_cols.intersection(feedback_cols)
-
-            # Select only common columns
-            silver_for_union = silver_df.select(*common_cols)
-            feedback_for_union = feedback_df.select(*common_cols)
-
-            combined_df = silver_for_union.union(feedback_for_union)
-        elif silver_df is not None:
-            combined_df = silver_df
-        elif feedback_df is not None:
-            # Use feedback data with verified_label as the target
-            feedback_cols = feedback_df.columns
-            if "verified_label" in feedback_cols:
-                # Rename verified_label to label for consistency
-                combined_df = feedback_df.withColumnRenamed("verified_label", "label")
-            else:
-                combined_df = feedback_df
-        else:
-            raise Exception("No data available for training")
-
-        return combined_df
-
-    def evaluate_model(self, model, test_data):
-        """Evaluate model performance"""
-        predictions = model.transform(test_data)
-
-        # Calculate AUC
-        evaluator = BinaryClassificationEvaluator(labelCol="label", rawPredictionCol="rawPrediction")
-        auc = evaluator.evaluate(predictions, {evaluator.metricName: "areaUnderROC"})
-
-        # Calculate precision, recall, and F1 manually
-        from pyspark.sql.functions import sum as spark_sum, count
-
-        # Calculate TP, FP, TN, FN
-        tp = predictions.filter((col("prediction") == 1) & (col("label") == 1)).count()
-        fp = predictions.filter((col("prediction") == 1) & (col("label") == 0)).count()
-        tn = predictions.filter((col("prediction") == 0) & (col("label") == 0)).count()
-        fn = predictions.filter((col("prediction") == 0) & (col("label") == 1)).count()
-
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-
-        return {
-            "auc": auc,
-            "precision": precision,
-            "recall": recall,
-            "f1_score": f1_score,
-            "tp": tp,
-            "fp": fp,
-            "tn": tn,
-            "fn": fn
-        }
 
 class DriftDetector:
     """Class to detect data drift in streaming fraud detection"""
@@ -307,59 +151,44 @@ class FraudModelTrainer:
             return None
 
     def load_and_enrich(self):
-        """Load and enrich data from both silver layer and feedback"""
-        # Load original silver layer data
-        try:
-            silver_df = self.spark.read.parquet(self.silver_path)
-            print(f"Loaded {silver_df.count()} records from silver layer")
-
-            # Check if required columns exist in silver data
-            required_silver_cols = ["transaction_id", "user_id", "amount_tnd", "governorate",
-                                   "payment_method", "ml_probability", "is_smurfing",
-                                   "high_velocity_flag", "label"]
-            available_cols = silver_df.columns
-
-            # Select only columns that exist
-            cols_to_select = [col for col in required_silver_cols if col in available_cols]
-            silver_df = silver_df.select(*cols_to_select)
-
-        except Exception as e:
-            print(f"Warning: Could not load silver layer data: {e}")
-            silver_df = None
-
-        # Load human feedback data
+        """Load and enrich data - PRIORITY: Use only verified feedback data for training"""
+        # Load human feedback data (this is the only data with verified labels)
         feedback_df = self.load_feedback_data()
 
-        if feedback_df is not None:
-            print(f"Loaded {feedback_df.count()} records from human feedback")
-        else:
-            print("No feedback data available")
+        if feedback_df is not None and feedback_df.count() > 0:
+            print(f"Loaded {feedback_df.count()} records from human feedback (verified labels)")
 
-        # Combine both datasets if both exist
-        if silver_df is not None and feedback_df is not None:
-            # Ensure both dataframes have compatible schemas for union
-            # Get common columns
-            silver_cols = set(silver_df.columns)
-            feedback_cols = set(feedback_df.columns)
-            common_cols = silver_cols.intersection(feedback_cols)
-
-            # Select only common columns
-            silver_for_union = silver_df.select(*common_cols)
-            feedback_for_union = feedback_df.select(*common_cols)
-
-            combined_df = silver_for_union.union(feedback_for_union)
-        elif silver_df is not None:
-            combined_df = silver_df
-        elif feedback_df is not None:
-            # Use feedback data with verified_label as the target
+            # Use only feedback data with verified labels for training
             feedback_cols = feedback_df.columns
             if "verified_label" in feedback_cols:
                 # Rename verified_label to label for consistency
                 combined_df = feedback_df.withColumnRenamed("verified_label", "label")
             else:
                 combined_df = feedback_df
+
+            print(f"Using {combined_df.count()} verified records for model training")
         else:
-            raise Exception("No data available for training")
+            print("No verified feedback data available for training")
+
+            # As a fallback (for initial training), we can use silver data with heuristic labels
+            # But this should be avoided in production once feedback is available
+            try:
+                silver_df = self.spark.read.parquet(self.silver_path)
+                print(f"Using {silver_df.count()} records from silver layer with heuristic labels (NOT RECOMMENDED in production)")
+
+                # Create heuristic labels based on ml_probability threshold
+                # This is only for initial model training before feedback is available
+                combined_df = silver_df.withColumn(
+                    "label",
+                    when(col("ml_probability") > 0.9, 1).otherwise(0)  # Higher threshold for heuristic labeling
+                )
+
+                # Only use records with heuristic labels
+                combined_df = combined_df.filter(col("label").isin([0, 1]))
+
+            except Exception as e:
+                print(f"Error: Could not load silver layer data as fallback: {e}")
+                raise Exception("No data available for training - need either feedback data or silver layer data")
 
         return combined_df
 
