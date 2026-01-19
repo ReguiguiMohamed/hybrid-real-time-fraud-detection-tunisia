@@ -16,3 +16,6 @@ Thumbs.db
 
 # Notebooks
 .ipynb_checkpoints/
+
+# Temporary files
+tmp/
