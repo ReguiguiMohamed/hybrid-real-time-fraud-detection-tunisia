@@ -2,6 +2,7 @@
 import os
 import sys
 from pathlib import Path
+import logging
 
 # Explicitly set HADOOP_HOME for the subprocess (critical for Windows)
 os.environ['HADOOP_HOME'] = r'C:\hadoop-3.4.2'
@@ -13,7 +14,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col, window, count, approx_count_distinct, when, lit, to_timestamp, expr
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
 from shared.schemas import Transaction
-from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES
+from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
 from shared.quality_gates import validate_transaction_quality, apply_d17_rule
 
 # Define Spark Schema matching Pydantic Transaction model
@@ -36,6 +37,15 @@ class FraudProcessor:
             .config("spark.sql.streaming.checkpointLocation", "./tmp/checkpoint") \
             .getOrCreate()
         self.kafka_bootstrap = kafka_bootstrap
+
+        # Load XGBoost model for real-time inference
+        try:
+            from xgboost.spark import SparkXGBClassifierModel
+            self.ml_model = SparkXGBClassifierModel.load("models/fraud_xgb_v1")
+            print("✅ XGBoost Model loaded for Real-Time Inference")
+        except Exception as e:
+            print(f"⚠️ Fallback to Rule-Based Scoring. Model not available: {e}")
+            self.ml_model = None
 
     def process_stream(self):
         # 1. Ingest (Bronze Layer)
@@ -102,9 +112,34 @@ class FraudProcessor:
             (col("d17_risk") * RISK_WEIGHTS["d17_limit"])
         )
 
+        # Apply ML inference if model is available
+        if self.ml_model:
+            # Prepare features for ML model
+            features_df = scored.withColumn("is_smurfing", when(col("avg_amount").between(1400, 1500), 1).otherwise(0)) \
+                                .withColumn("high_velocity_flag", when(col("v_count") > D17_VELOCITY_CAP, 1).otherwise(0))
+
+            # Apply ML model for prediction
+            from pyspark.ml.feature import VectorAssembler
+
+            # Create feature vector for ML model
+            assembler = VectorAssembler(
+                inputCols=["v_count", "g_dist", "avg_amount", "is_smurfing", "high_velocity_flag"],
+                outputCol="features"
+            )
+
+            # Transform the streaming data on-the-fly
+            assembled_df = assembler.transform(features_df)
+            predictions = self.ml_model.transform(assembled_df)
+            final_df = predictions.withColumnRenamed("prediction", "ml_prediction") \
+                                 .withColumnRenamed("probability", "ml_probability")
+        else:
+            # Fallback to rule-based scoring
+            final_df = scored.withColumn("ml_prediction", lit(-1)) \
+                            .withColumn("ml_probability", lit(0.0))
+
         # 4. Persistence: Using Parquet for streaming (Delta Lake for batch operations)
         # Due to compatibility issues between Spark 4.1.1 and Delta Lake 4.0.1 for streaming sinks
-        query = scored.writeStream \
+        query = final_df.writeStream \
             .format("parquet") \
             .outputMode("append") \
             .option("path", "./data/parquet/silver_fraud_alerts") \
