@@ -15,11 +15,27 @@ from pyspark.sql.types import DoubleType, IntegerType, FloatType
 
 
 class DriftDetector:
-    """Class to detect data drift in streaming fraud detection"""
+    """Class to detect data drift in streaming fraud detection using statistical tests"""
 
-    def __init__(self, threshold=0.1):
-        self.threshold = threshold
-        self.reference_stats = {}
+    def __init__(self, threshold=0.05, ks_alpha=0.05):
+        self.threshold = threshold  # For simple statistical differences
+        self.ks_alpha = ks_alpha   # Significance level for KS test
+        self.reference_samples = {}  # Store samples for KS test
+        self.reference_stats = {}    # Store stats for simple comparison
+
+    def collect_samples(self, df, sample_size=1000):
+        """Collect samples for statistical testing"""
+        import random
+        samples = {}
+        numeric_cols = [field.name for field in df.schema.fields
+                       if isinstance(field.dataType, (DoubleType, IntegerType, FloatType))]
+
+        for col_name in numeric_cols:
+            # Sample data from the column
+            sampled_df = df.select(col(col_name)).filter(col(col_name).isNotNull()).sample(fraction=min(sample_size/df.count(), 1.0))
+            samples[col_name] = [row[0] for row in sampled_df.collect()]
+
+        return samples
 
     def calculate_statistics(self, df):
         """Calculate statistical measures for a dataframe"""
@@ -43,40 +59,91 @@ class DriftDetector:
         return stats
 
     def detect_drift(self, current_stats, reference_stats=None):
-        """Detect drift between current and reference statistics"""
+        """Detect drift using both statistical comparison and KS test"""
+        import scipy.stats as stats
+
+        # Collect samples for KS test
+        current_samples = self.collect_samples(self.current_df) if hasattr(self, 'current_df') else {}
+
         if not reference_stats:
-            # Store current stats as reference
+            # Store current stats and samples as reference
             self.reference_stats = current_stats
-            return False, "Reference stats initialized"
+            self.reference_samples = current_samples
+            return False, "Reference stats and samples initialized"
 
         drift_detected = False
         drift_details = []
 
+        # 1. Simple statistical comparison (mean/std changes)
         for col_name, curr_stat in current_stats.items():
             if col_name in reference_stats:
                 ref_stat = reference_stats[col_name]
 
                 # Calculate relative change in mean
-                if ref_stat["mean"] != 0:
+                if ref_stat["mean"] != 0 and ref_stat["mean"] is not None:
                     mean_change = abs(curr_stat["mean"] - ref_stat["mean"]) / abs(ref_stat["mean"])
-                else:
+                elif curr_stat["mean"] != 0 and curr_stat["mean"] is not None:
                     mean_change = abs(curr_stat["mean"] - ref_stat["mean"])
+                else:
+                    mean_change = 0
 
                 # Calculate relative change in std dev
-                if ref_stat["stddev"] != 0:
+                if ref_stat["stddev"] != 0 and ref_stat["stddev"] is not None:
                     std_change = abs(curr_stat["stddev"] - ref_stat["stddev"]) / abs(ref_stat["stddev"])
-                else:
+                elif curr_stat["stddev"] != 0 and curr_stat["stddev"] is not None:
                     std_change = abs(curr_stat["stddev"] - ref_stat["stddev"])
+                else:
+                    std_change = 0
 
                 if mean_change > self.threshold or std_change > self.threshold:
                     drift_detected = True
                     drift_details.append({
                         "column": col_name,
+                        "test_type": "statistical_comparison",
                         "mean_change": mean_change,
                         "std_change": std_change,
                         "current_mean": curr_stat["mean"],
-                        "reference_mean": ref_stat["mean"]
+                        "reference_mean": ref_stat["mean"],
+                        "significance": "high" if (mean_change > self.threshold or std_change > self.threshold) else "low"
                     })
+
+        # 2. Kolmogorov-Smirnov test for distribution similarity
+        for col_name, current_sample in current_samples.items():
+            if col_name in self.reference_samples:
+                ref_sample = self.reference_samples[col_name]
+
+                if len(current_sample) > 10 and len(ref_sample) > 10:  # Minimum sample size for KS test
+                    try:
+                        ks_statistic, p_value = stats.ks_2samp(ref_sample, current_sample)
+
+                        if p_value < self.ks_alpha:  # Reject null hypothesis (distributions are different)
+                            drift_detected = True
+                            drift_details.append({
+                                "column": col_name,
+                                "test_type": "kolmogorov_smirnov",
+                                "ks_statistic": ks_statistic,
+                                "p_value": p_value,
+                                "significant": True,
+                                "message": f"Distribution drift detected (p={p_value:.4f} < alpha={self.ks_alpha})"
+                            })
+                        else:
+                            drift_details.append({
+                                "column": col_name,
+                                "test_type": "kolmogorov_smirnov",
+                                "ks_statistic": ks_statistic,
+                                "p_value": p_value,
+                                "significant": False,
+                                "message": f"No significant distribution drift (p={p_value:.4f} >= alpha={self.ks_alpha})"
+                            })
+                    except Exception as e:
+                        print(f"Error in KS test for {col_name}: {e}")
+                        drift_details.append({
+                            "column": col_name,
+                            "test_type": "kolmogorov_smirnov",
+                            "error": str(e),
+                            "significant": False,
+                            "message": f"KS test failed: {e}"
+                        })
 
         return drift_detected, drift_details
 
@@ -232,6 +299,9 @@ class FraudModelTrainer:
 
             # Calculate statistics for recent data
             recent_stats = self.drift_detector.calculate_statistics(recent_df)
+
+            # Store the dataframe for sample collection in drift detector
+            self.drift_detector.current_df = recent_df
 
             # Detect drift
             drift_detected, drift_details = self.drift_detector.detect_drift(
