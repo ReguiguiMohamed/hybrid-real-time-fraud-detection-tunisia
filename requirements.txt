@@ -18,9 +18,9 @@ pydantic==2.12.5
 python-dotenv==1.0.0
 
 # RAG & Vector DB
-chromadb==0.5.0
-sentence-transformers==3.0.1
-requests==2.31.0
+chromadb>=0.5.0
+sentence-transformers>=3.0.1
+requests>=2.31.0
 
 # AI & RAG
 

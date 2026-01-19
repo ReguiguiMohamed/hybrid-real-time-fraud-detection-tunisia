@@ -16,6 +16,10 @@ setup(
         "faker==40.1.2",
         "pydantic==2.12.5",
         "python-dotenv==1.0.0",
+        "chromadb>=0.5.0",
+        "sentence-transformers==3.0.1",
+        "requests==2.31.0",
+        "google-generativeai==0.8.6",
     ],
     python_requires=">=3.8",
     extras_require={
