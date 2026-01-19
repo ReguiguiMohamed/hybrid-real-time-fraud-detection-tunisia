@@ -123,6 +123,31 @@ class FraudProcessor:
             predictions = self.ml_model.transform(assembled_df)
             final_df = predictions.withColumnRenamed("prediction", "ml_prediction") \
                                  .withColumnRenamed("probability", "ml_probability")
+
+            # Trigger SAR generation for high-confidence fraud predictions
+            from pyspark.sql.functions import udf
+            from pyspark.sql.types import StringType
+            from rag_engine.sar_generator import SARGenerator
+
+            # Initialize SAR generator
+            sar_gen = SARGenerator()
+
+            # Function to trigger SAR generation
+            def generate_sar_if_needed(row_dict, ml_prob_val):
+                if ml_prob_val > 0.85:  # High confidence threshold
+                    try:
+                        report = sar_gen.generate_report(row_dict, ml_prob_val)
+                        report_path = sar_gen.save_report(row_dict, report, ml_prob_val)
+                        print(f"SAR generated and saved to: {report_path}")
+                        return report_path
+                    except Exception as e:
+                        print(f"Error generating SAR: {e}")
+                        return None
+                return None
+
+            # Create UDF for SAR generation
+            sar_udf = udf(lambda row_dict, prob: generate_sar_if_needed(row_dict, prob), StringType())
+
         else:
             # Fallback to rule-based scoring
             final_df = scored.withColumn("ml_prediction", lit(-1)) \
