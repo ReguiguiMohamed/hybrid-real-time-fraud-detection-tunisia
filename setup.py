@@ -25,6 +25,8 @@ setup(
         "streamlit>=1.39.0",
         "plotly>=5.24.0",
         "pandas>=2.2.0",
+        "scipy>=1.14.0",
+        "httpx>=0.27.0",
     ],
     python_requires=">=3.8",
     extras_require={
