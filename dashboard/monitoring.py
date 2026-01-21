@@ -1,25 +1,18 @@
 # dashboard/monitoring.py
 import os
 import sys
-import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
-import json
-import time
-import threading
-import requests
 from collections import deque
 import statistics
-from typing import Dict, List, Tuple
-import plotly.graph_objects as go
-import plotly.express as px
+from typing import List
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from shared.utils import get_sqlite_connection
 
-class ModelMonitor:
+class ForensicAnalyticEngine:
     def __init__(self, db_path: Path = Path("./data/feedback.db")):
         self.db_path = db_path
         self.inference_latencies = deque(maxlen=1000)  # Keep last 1000 measurements
@@ -201,58 +194,3 @@ class ModelMonitor:
                 "current_median": 0,
                 "baseline_median": 0
             }
-
-# Global monitor instance
-monitor = ModelMonitor()
-
-def start_monitoring_server():
-    """Start a simple monitoring server to expose metrics"""
-    from fastapi import FastAPI
-    import uvicorn
-    
-    app = FastAPI(title="Model Monitoring API")
-    
-    @app.get("/metrics/performance")
-    async def get_performance_metrics():
-        return monitor.get_performance_metrics()
-    
-    @app.get("/metrics/feedback")
-    async def get_feedback_analysis():
-        return monitor.get_feedback_analysis()
-    
-    @app.get("/metrics/threshold-analysis")
-    async def get_threshold_analysis():
-        return monitor.get_ml_threshold_analysis()
-    
-    @app.get("/metrics/system-overview")
-    async def get_system_overview():
-        perf_metrics = monitor.get_performance_metrics()
-        feedback_analysis = monitor.get_feedback_analysis()
-        threshold_analysis = monitor.get_ml_threshold_analysis()
-        
-        return {
-            "performance": perf_metrics,
-            "feedback": feedback_analysis,
-            "threshold_recommendation": threshold_analysis
-        }
-    
-    # Run the server in a separate thread
-    def run_server():
-        uvicorn.run(app, host="0.0.0.0", port=8002, log_level="info")
-    
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
-    
-    return server_thread
-
-if __name__ == "__main__":
-    # Example usage
-    monitor = ModelMonitor()
-    
-    # Record some sample latencies
-    for i in range(100):
-        monitor.record_inference_latency(np.random.normal(500, 100))  # Simulated latencies
-    
-    print("Performance Metrics:", monitor.get_performance_metrics())
-    print("Feedback Analysis:", monitor.get_feedback_analysis())
-    print("Threshold Analysis:", monitor.get_ml_threshold_analysis())
