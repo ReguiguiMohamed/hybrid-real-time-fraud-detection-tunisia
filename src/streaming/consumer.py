@@ -118,7 +118,8 @@ class FraudProcessor:
                 auc REAL,
                 is_champion INTEGER DEFAULT 0,
                 promoted_at DATETIME,
-                training_samples_count INTEGER
+                training_samples_count INTEGER,
+                feature_importance TEXT
             )
         """)
         conn.commit()
