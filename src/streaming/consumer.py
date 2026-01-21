@@ -34,16 +34,21 @@ class FraudProcessor:
             kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
         self.kafka_bootstrap = kafka_bootstrap
 
+        self._feedback_db_path = "./data/feedback.db"
+
         # Load XGBoost model for real-time inference
         try:
             from xgboost.spark import SparkXGBClassifierModel
-            self.ml_model = SparkXGBClassifierModel.load("models/fraud_xgb_v1")
-            print("✅ XGBoost Model loaded for Real-Time Inference")
+            model_path = self._get_champion_model_path()
+            if model_path:
+                self.ml_model = SparkXGBClassifierModel.load(model_path)
+                print(f"Model loaded from registry: {model_path}")
+            else:
+                print("No champion model registered. Using rule-based scoring.")
+                self.ml_model = None
         except Exception as e:
-            print(f"⚠️ Fallback to Rule-Based Scoring. Model not available: {e}")
+            print(f"Fallback to Rule-Based Scoring. Model not available: {e}")
             self.ml_model = None
-        self._batch_counter = 0
-        self._feedback_db_path = "./data/feedback.db"
 
     def start_dlq_retry_worker(self):
         if getattr(self, "_dlq_retry_thread", None) and self._dlq_retry_thread.is_alive():
@@ -101,6 +106,85 @@ class FraudProcessor:
         max_workers = max(1, self._parse_int_env("THREAD_POOL_SIZE", 5))
         async_timeout = max(1, self._parse_int_env("ALERT_ASYNC_TIMEOUT_SECONDS", 15))
         return max_workers, async_timeout
+
+    def _ensure_model_registry_table(self):
+        conn = get_sqlite_connection(self._feedback_db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS model_registry (
+                version_id TEXT PRIMARY KEY,
+                model_path TEXT NOT NULL,
+                f1_score REAL,
+                auc REAL,
+                is_champion INTEGER DEFAULT 0,
+                promoted_at DATETIME,
+                training_samples_count INTEGER
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def _get_champion_model_path(self):
+        try:
+            self._ensure_model_registry_table()
+            conn = get_sqlite_connection(self._feedback_db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT model_path
+                FROM model_registry
+                WHERE is_champion = 1
+                ORDER BY promoted_at DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+            conn.close()
+            return row[0] if row else None
+        except Exception:
+            logging.exception("Unable to read champion model from registry")
+            return None
+
+    def _load_uncertainty_zone(self):
+        raw_zone = os.getenv("UNCERTAINTY_ZONE", "0.4,0.6")
+        parts = [part.strip() for part in raw_zone.split(",") if part.strip()]
+        if len(parts) != 2:
+            return 0.4, 0.6
+        try:
+            low = float(parts[0])
+            high = float(parts[1])
+        except ValueError:
+            return 0.4, 0.6
+        low = max(0.0, min(low, 1.0))
+        high = max(0.0, min(high, 1.0))
+        if low > high:
+            low, high = high, low
+        return low, high
+
+    def _count_new_feedback_since_promotion(self):
+        try:
+            self._ensure_model_registry_table()
+            conn = get_sqlite_connection(self._feedback_db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT promoted_at
+                FROM model_registry
+                WHERE is_champion = 1
+                ORDER BY promoted_at DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+            if row and row[0]:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL AND timestamp > ?",
+                    (row[0],)
+                )
+            else:
+                cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception:
+            logging.exception("Unable to count new feedback for retraining trigger")
+            return 0
 
     def _send_alert_async(self, row, sar_gen, alert_type="high_risk", generate_sar=True):
         """Send an alert to the command center API."""
@@ -166,9 +250,11 @@ class FraudProcessor:
 
     def _process_batch(self, batch_df, epoch_id):
         random_sample_rate, random_sample_max_prob = self._load_sampling_config()
+        uncertainty_low, uncertainty_high = self._load_uncertainty_zone()
 
         high_risk_rows = batch_df.filter(col("ml_probability") > 0.85).collect()
         sampled_low_risk_rows = []
+        uncertainty_rows = []
 
         if random_sample_rate > 0:
             low_risk_df = batch_df.filter(col("ml_probability") < random_sample_max_prob)
@@ -176,7 +262,11 @@ class FraudProcessor:
                 low_risk_df = low_risk_df.sample(withReplacement=False, fraction=random_sample_rate)
             sampled_low_risk_rows = low_risk_df.collect()
 
-        if not high_risk_rows and not sampled_low_risk_rows:
+        uncertainty_rows = batch_df.filter(
+            (col("ml_probability") >= uncertainty_low) & (col("ml_probability") <= uncertainty_high)
+        ).collect()
+
+        if not high_risk_rows and not sampled_low_risk_rows and not uncertainty_rows:
             return
 
         from rag_engine.sar_generator import SARGenerator
@@ -186,8 +276,9 @@ class FraudProcessor:
 
         max_workers, async_timeout = self._load_alerting_config()
         print(
-            f"Processing {len(high_risk_rows)} high-risk alerts and "
-            f"{len(sampled_low_risk_rows)} random samples with {max_workers} workers"
+            f"Processing {len(high_risk_rows)} high-risk alerts, "
+            f"{len(sampled_low_risk_rows)} random samples, and "
+            f"{len(uncertainty_rows)} uncertainty samples with {max_workers} workers"
         )
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -199,6 +290,10 @@ class FraudProcessor:
 
             for row in sampled_low_risk_rows:
                 future = executor.submit(self._send_alert_async, row, sar_gen, "random_sample", False)
+                future_to_row[future] = row
+
+            for row in uncertainty_rows:
+                future = executor.submit(self._send_alert_async, row, sar_gen, "uncertainty_sample", False)
                 future_to_row[future] = row
 
             try:
@@ -218,36 +313,30 @@ class FraudProcessor:
     def _check_and_trigger_retraining(self, batch_df, epoch_id):
         self._process_batch(batch_df, epoch_id)
 
-        self._batch_counter += 1
-        if self._batch_counter % 10 != 0:
-            return
-
         try:
-            conn = get_sqlite_connection(self._feedback_db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
-            feedback_count = cursor.fetchone()[0]
-            conn.close()
+            new_feedback_count = self._count_new_feedback_since_promotion()
+            threshold = max(1, self._parse_int_env("RETRAIN_FEEDBACK_THRESHOLD", 100))
+            if new_feedback_count < threshold:
+                return
 
-            if feedback_count >= 50:
-                print(f"Triggering model retraining based on {feedback_count} feedback records")
+            print(f"Triggering model retraining based on {new_feedback_count} new feedback records")
 
-                retrain_response = make_authenticated_request(
-                    "POST",
-                    "/retrain-model/",
-                    timeout=10  # 10 second timeout for retraining trigger
-                )
+            retrain_response = make_authenticated_request(
+                "POST",
+                "/retrain-model/",
+                timeout=10  # 10 second timeout for retraining trigger
+            )
 
-                if retrain_response and retrain_response.status_code == 200:
-                    print("ƒo. Model retraining triggered successfully")
+            if retrain_response and retrain_response.status_code == 200:
+                print("Model retraining triggered successfully")
+            else:
+                if retrain_response:
+                    print(
+                        "Failed to trigger model retraining: "
+                        f"{retrain_response.status_code} - {retrain_response.text}"
+                    )
                 else:
-                    if retrain_response:
-                        print(
-                            "Failed to trigger model retraining: "
-                            f"{retrain_response.status_code} - {retrain_response.text}"
-                        )
-                    else:
-                        print("Failed to trigger model retraining: No response received")
+                    print("Failed to trigger model retraining: No response received")
 
         except Exception as e:
             print(f"Error checking feedback for retraining: {e}")

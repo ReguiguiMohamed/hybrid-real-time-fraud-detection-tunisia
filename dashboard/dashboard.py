@@ -50,7 +50,7 @@ with st.sidebar:
     show_sar = st.checkbox("Show SAR Reports", value=True)
     alert_type_filter = st.selectbox(
         "Alert Type",
-        options=["All", "High Risk", "Random Sample"],
+        options=["All", "High Risk", "Random Sample", "Uncertainty Sample"],
         index=0
     )
 
@@ -74,6 +74,8 @@ with col1:
             alert_type_param = "high_risk"
         elif alert_type_filter == "Random Sample":
             alert_type_param = "random_sample"
+        elif alert_type_filter == "Uncertainty Sample":
+            alert_type_param = "uncertainty_sample"
 
         if alert_type_param:
             api_url = get_api_url(f"alerts/review-queue/?limit=50&alert_type={alert_type_param}")
@@ -100,7 +102,8 @@ with col1:
                     df_display = df_filtered.copy()
                     df_display['alert_type_display'] = df_display['alert_type'].map({
                         "high_risk": "High Risk",
-                        "random_sample": "Random Sample"
+                        "random_sample": "Random Sample",
+                        "uncertainty_sample": "Uncertainty Sample"
                     }).fillna("High Risk")
 
                     # Display alerts in a table
@@ -170,6 +173,7 @@ with col2:
 
             st.metric("High-Risk Alerts", stats.get('high_risk_alerts', 0))
             st.metric("Random Samples", stats.get('random_sample_alerts', 0))
+            st.metric("Uncertainty Samples", stats.get('uncertainty_sample_alerts', 0))
             st.metric("Review Queue Total", stats.get('review_queue_total', 0))
             if stats.get('random_sample_rate') is not None:
                 st.caption(f"Random sample rate: {stats.get('random_sample_rate'):.3f}")
@@ -206,10 +210,17 @@ if st.session_state.selected_transaction:
 
     trans = st.session_state.selected_transaction
     alert_type = trans.get('alert_type', 'high_risk')
-    alert_type_display = "Random Sample" if alert_type == "random_sample" else "High Risk"
+    if alert_type == "random_sample":
+        alert_type_display = "Random Sample"
+    elif alert_type == "uncertainty_sample":
+        alert_type_display = "Uncertainty Sample"
+    else:
+        alert_type_display = "High Risk"
 
     if alert_type == "random_sample":
         st.info("Random sample review. Use 'False Positive' for non-fraud cases.")
+    if alert_type == "uncertainty_sample":
+        st.info("Uncertainty sample review. Provide analyst label to refine the model.")
 
     # Display transaction details
     col1, col2 = st.columns(2)
@@ -229,6 +240,30 @@ if st.session_state.selected_transaction:
         # Color-coded probability indicator
         prob_color = "red" if trans['ml_probability'] > 0.9 else "orange" if trans['ml_probability'] > 0.8 else "yellow"
         st.markdown(f"<span style='color:{prob_color}; font-weight:bold;'>Risk Level: {'HIGH' if trans['ml_probability'] > 0.9 else 'MODERATE' if trans['ml_probability'] > 0.8 else 'LOW'}</span>", unsafe_allow_html=True)
+
+    # Explainability: top risk factors
+    try:
+        headers = get_api_headers()
+        explain_url = get_api_url(f"alerts/{trans['transaction_id']}/explain")
+        explain_response = requests.get(explain_url, headers=headers)
+        if explain_response.status_code == 200:
+            explanation = explain_response.json()
+            factors = explanation.get("top_risk_factors", [])
+            if factors:
+                st.subheader("Top Risk Factors")
+                for factor in factors:
+                    description = factor.get("description", factor.get("feature", ""))
+                    score = factor.get("score")
+                    if score is not None:
+                        st.write(f"- {description} (score: {score})")
+                    else:
+                        st.write(f"- {description}")
+            else:
+                st.caption("No explainability data available.")
+        else:
+            st.caption("Explainability unavailable.")
+    except Exception:
+        st.caption("Explainability unavailable.")
 
     # Show SAR report if available
     if trans.get('sar_report') and show_sar:
