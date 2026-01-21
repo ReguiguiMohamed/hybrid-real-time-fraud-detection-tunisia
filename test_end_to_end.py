@@ -58,67 +58,38 @@ def setup_test_environment():
 
 def simulate_analyst_feedback():
     """Simulate analyst providing feedback on alerts"""
-    print("\nSimulating analyst feedback...")
+    print("\nSimulating analyst feedback (Generating 105 entries to trigger retraining)...")
     
-    # Sample high-risk transactions to provide feedback on
-    sample_transactions = [
-        {
-            "transaction_id": "txn_001",
-            "user_id": "user_123",
-            "amount_tnd": 2500.0,
-            "governorate": "Tunis",
-            "payment_method": "Flouci",
-            "timestamp": "2024-01-19T15:30:00Z",
-            "ml_probability": 0.88,
-            "sar_report": "Suspicious transaction flagged by ML model"
-        },
-        {
-            "transaction_id": "txn_002",
-            "user_id": "user_456",
-            "amount_tnd": 1800.0,
-            "governorate": "Sfax",
-            "payment_method": "Credit Card",
-            "timestamp": "2024-01-19T15:32:00Z",
-            "ml_probability": 0.91,
-            "sar_report": "High velocity transaction pattern detected"
-        },
-        {
-            "transaction_id": "txn_003",
-            "user_id": "user_789",
-            "amount_tnd": 3200.0,
-            "governorate": "Bizerte",
-            "payment_method": "Mobile Wallet",
-            "timestamp": "2024-01-19T15:35:00Z",
-            "ml_probability": 0.86,
-            "sar_report": "Unusual geographic pattern detected"
-        },
-        {
-            "transaction_id": "txn_004",
-            "user_id": "user_101",
-            "amount_tnd": 950.0,
-            "governorate": "Sousse",
-            "payment_method": "Debit Card",
-            "timestamp": "2024-01-19T15:38:00Z",
-            "ml_probability": 0.87,
-            "sar_report": "Velocity anomaly detected"
-        },
-        {
-            "transaction_id": "txn_005",
-            "user_id": "user_202",
-            "amount_tnd": 4100.0,
-            "governorate": "Monastir",
-            "payment_method": "Flouci",
-            "timestamp": "2024-01-19T15:40:00Z",
-            "ml_probability": 0.93,
-            "sar_report": "High-value transaction with unusual pattern"
-        }
-    ]
+    # Generate 105 sample transactions programmatically
+    sample_transactions = []
+    feedback_data = []
     
-    # Add these transactions to the alerts table
+    import random
+    
+    payment_methods = ["Flouci", "Credit Card", "Mobile Wallet", "Debit Card", "eDinar"]
+    governorates = ["Tunis", "Sfax", "Bizerte", "Sousse", "Monastir", "Ariana", "Ben Arous"]
+    
     conn = sqlite3.connect("./data/feedback.db")
     cursor = conn.cursor()
-    
-    for tx in sample_transactions:
+
+    for i in range(1, 106):
+        tx_id = f"txn_{i:03d}"
+        is_fraud = random.choice([True, False])
+        
+        # Create transaction
+        tx = {
+            "transaction_id": tx_id,
+            "user_id": f"user_{random.randint(100, 999)}",
+            "amount_tnd": round(random.uniform(50.0, 5000.0), 2),
+            "governorate": random.choice(governorates),
+            "payment_method": random.choice(payment_methods),
+            "timestamp": datetime.now().isoformat(),
+            "ml_probability": random.uniform(0.7, 0.99) if is_fraud else random.uniform(0.1, 0.4),
+            "sar_report": "Auto-generated test report"
+        }
+        sample_transactions.append(tx)
+        
+        # Insert into high_risk_alerts
         try:
             cursor.execute("""
                 INSERT OR IGNORE INTO high_risk_alerts
@@ -132,20 +103,21 @@ def simulate_analyst_feedback():
             ))
         except sqlite3.Error as e:
             print(f"Error inserting transaction {tx['transaction_id']}: {e}")
-    
+
+        # Create feedback
+        label = "Confirmed Fraud" if is_fraud else "False Positive"
+        feedback = {
+            "transaction_id": tx_id, 
+            "analyst_label": label, 
+            "analyst_comment": "Auto-generated feedback"
+        }
+        feedback_data.append(feedback)
+
     conn.commit()
     conn.close()
     
-    # Simulate analyst feedback (some confirmed fraud, some false positives)
-    feedback_data = [
-        {"transaction_id": "txn_001", "analyst_label": "Confirmed Fraud", "analyst_comment": "Verified fraudulent activity"},
-        {"transaction_id": "txn_002", "analyst_label": "False Positive", "analyst_comment": "Legitimate business transaction"},
-        {"transaction_id": "txn_003", "analyst_label": "Confirmed Fraud", "analyst_comment": "Part of money laundering scheme"},
-        {"transaction_id": "txn_004", "analyst_label": "False Positive", "analyst_comment": "Valid e-commerce purchase"},
-        {"transaction_id": "txn_005", "analyst_label": "Confirmed Fraud", "analyst_comment": "Card not present fraud"}
-    ]
-    
-    # Submit feedback via API
+    # Submit feedback via API (or direct insert)
+    print(f"Submitting {len(feedback_data)} feedback records...")
     for feedback in feedback_data:
         try:
             response = requests.post(

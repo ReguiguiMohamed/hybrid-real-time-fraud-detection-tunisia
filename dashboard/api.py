@@ -54,6 +54,33 @@ def parse_int_env(name: str, default: int) -> int:
 
 RANDOM_SAMPLE_RATE = max(0.0, min(parse_float_env("RANDOM_SAMPLE_RATE", 0.01), 1.0))
 
+FEATURE_LABELS = {
+    "v_count": "High velocity (v_count)",
+    "g_dist": "Multi-governorate travel (g_dist)",
+    "avg_amount": "High value transfer (avg_amount)",
+    "is_smurfing": "Structuring pattern (is_smurfing)",
+    "high_velocity_flag": "D17 velocity cap (high_velocity_flag)",
+    "velocity_risk": "Velocity risk flag",
+    "travel_risk": "Travel risk flag",
+    "high_value_risk": "High value risk flag",
+    "d17_risk": "D17 Flouci risk flag",
+    "risk_score": "Composite risk score"
+}
+
+def get_champion_model_path():
+    conn = get_sqlite_connection(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT model_path
+        FROM model_registry
+        WHERE is_champion = 1
+        ORDER BY promoted_at DESC
+        LIMIT 1
+    """)
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 class FeedbackRequest(BaseModel):
     transaction_id: str
     analyst_label: str  # "Confirmed Fraud" or "False Positive"
@@ -103,6 +130,18 @@ def startup_event():
             sar_report TEXT,
             alert_type TEXT DEFAULT 'high_risk',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS model_registry (
+            version_id TEXT PRIMARY KEY,
+            model_path TEXT NOT NULL,
+            f1_score REAL,
+            auc REAL,
+            is_champion INTEGER DEFAULT 0,
+            promoted_at DATETIME,
+            training_samples_count INTEGER
         )
     """)
 
@@ -298,6 +337,12 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
         """)
         random_sample_count = cursor.fetchone()[0]
 
+        cursor.execute("""
+            SELECT COUNT(*) FROM high_risk_alerts
+            WHERE COALESCE(alert_type, 'high_risk') = 'uncertainty_sample'
+        """)
+        uncertainty_sample_count = cursor.fetchone()[0]
+
         cursor.execute("SELECT COUNT(*) FROM high_risk_alerts")
         review_queue_total = cursor.fetchone()[0]
 
@@ -321,6 +366,7 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
             "total_feedback": total_feedback,
             "high_risk_alerts": high_risk_count,
             "random_sample_alerts": random_sample_count,
+            "uncertainty_sample_alerts": uncertainty_sample_count,
             "review_queue_total": review_queue_total,
             "random_sample_rate": RANDOM_SAMPLE_RATE,
             "feedback_breakdown": label_counts,
@@ -376,6 +422,7 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
             FROM high_risk_alerts hra
             JOIN feedback_labels fl ON hra.transaction_id = fl.transaction_id
             WHERE fl.analyst_label IS NOT NULL
+            AND COALESCE(hra.alert_type, 'high_risk') IN ('high_risk', 'random_sample')
         """)
 
         prob_label_pairs = cursor.fetchall()
@@ -435,6 +482,59 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
             "warning": "Estimated recall assumes random samples represent low-risk traffic.",
             "interpretation": "Precision reflects alert performance; recall is sampling-adjusted."
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/alerts/{transaction_id}/explain")
+async def explain_alert(transaction_id: str, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+    """Explain the top risk factors for a transaction using model feature importance."""
+    try:
+        conn = get_sqlite_connection(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT transaction_id, COALESCE(alert_type, 'high_risk')
+            FROM high_risk_alerts
+            WHERE transaction_id = ?
+        """, (transaction_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+
+        model_path = get_champion_model_path()
+        if not model_path:
+            return {
+                "transaction_id": transaction_id,
+                "alert_type": row[1],
+                "top_risk_factors": [],
+                "note": "No champion model registered yet."
+            }
+
+        from pyspark.sql import SparkSession
+        from pyspark.ml import PipelineModel
+        from src.ml.train_model import FraudModelTrainer
+
+        SparkSession.builder.appName("FraudExplainability").getOrCreate()
+        model = PipelineModel.load(model_path)
+        feature_scores = FraudModelTrainer.get_feature_scores(model)
+        top_features = feature_scores[:3]
+        factors = [
+            {
+                "feature": feature_name,
+                "description": FEATURE_LABELS.get(feature_name, feature_name),
+                "score": round(score, 4)
+            }
+            for feature_name, score in top_features
+        ]
+
+        return {
+            "transaction_id": transaction_id,
+            "alert_type": row[1],
+            "top_risk_factors": factors
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

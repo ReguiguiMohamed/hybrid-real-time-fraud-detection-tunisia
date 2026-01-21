@@ -1,14 +1,14 @@
 # src/ml/train_model.py
 import os
+import uuid
 import numpy as np
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, when, lit, stddev, mean, count
 from xgboost.spark import SparkXGBClassifier
-from pyspark.ml import Pipeline
+from pyspark.ml import Pipeline, PipelineModel
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from datetime import datetime
-import shutil
 from pathlib import Path
 from pyspark.sql.types import DoubleType, IntegerType, FloatType
 from shared.utils import get_sqlite_connection
@@ -155,6 +155,82 @@ class FraudModelTrainer:
         self.feedback_db_path = feedback_db_path
         self.drift_detector = DriftDetector(threshold=0.1)
 
+    @staticmethod
+    def _parse_float_env(name, default):
+        try:
+            return float(os.getenv(name, str(default)))
+        except ValueError:
+            return default
+
+    def _ensure_model_registry(self):
+        conn = get_sqlite_connection(self.feedback_db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS model_registry (
+                version_id TEXT PRIMARY KEY,
+                model_path TEXT NOT NULL,
+                f1_score REAL,
+                auc REAL,
+                is_champion INTEGER DEFAULT 0,
+                promoted_at DATETIME,
+                training_samples_count INTEGER
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def _get_current_champion(self):
+        conn = get_sqlite_connection(self.feedback_db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT version_id, model_path, f1_score, auc, promoted_at
+            FROM model_registry
+            WHERE is_champion = 1
+            ORDER BY promoted_at DESC
+            LIMIT 1
+        """)
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "version_id": row[0],
+            "model_path": row[1],
+            "f1_score": row[2],
+            "auc": row[3],
+            "promoted_at": row[4]
+        }
+
+    def _record_model_registry_entry(
+        self,
+        version_id,
+        model_path,
+        f1_score,
+        auc,
+        is_champion,
+        promoted_at,
+        training_samples_count
+    ):
+        conn = get_sqlite_connection(self.feedback_db_path)
+        cursor = conn.cursor()
+        if is_champion:
+            cursor.execute("UPDATE model_registry SET is_champion = 0 WHERE is_champion = 1")
+        cursor.execute("""
+            INSERT INTO model_registry
+            (version_id, model_path, f1_score, auc, is_champion, promoted_at, training_samples_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            version_id,
+            model_path,
+            f1_score,
+            auc,
+            1 if is_champion else 0,
+            promoted_at,
+            training_samples_count
+        ))
+        conn.commit()
+        conn.close()
+
     def check_feedback_availability(self):
         """Check if enough human feedback is available to retrain"""
         try:
@@ -291,6 +367,47 @@ class FraudModelTrainer:
             "fn": fn
         }
 
+    @staticmethod
+    def get_feature_scores(model):
+        """Extract feature importance scores from an XGBoost pipeline model."""
+        try:
+            feature_cols = None
+            xgb_model = None
+
+            if hasattr(model, "stages"):
+                for stage in model.stages:
+                    if hasattr(stage, "getInputCols"):
+                        feature_cols = stage.getInputCols()
+                    if hasattr(stage, "get_booster"):
+                        xgb_model = stage
+            else:
+                xgb_model = model
+
+            if not xgb_model:
+                return []
+
+            booster = xgb_model.get_booster()
+            scores = booster.get_score(importance_type="gain")
+            if not scores:
+                return []
+
+            items = []
+            for key, score in scores.items():
+                if key.startswith("f") and key[1:].isdigit() and feature_cols:
+                    idx = int(key[1:])
+                    if idx < len(feature_cols):
+                        items.append((feature_cols[idx], float(score)))
+                    else:
+                        items.append((key, float(score)))
+                else:
+                    items.append((key, float(score)))
+
+            items.sort(key=lambda item: item[1], reverse=True)
+            return items
+        except Exception as e:
+            print(f"Error extracting feature scores: {e}")
+            return []
+
     def detect_data_drift(self):
         """Detect data drift in the incoming data"""
         try:
@@ -321,35 +438,43 @@ class FraudModelTrainer:
 
     def train_champion_challenger(self):
         """Implement champion-challenger model retraining logic"""
-        # Check if we have enough feedback to trigger retraining
+        self._ensure_model_registry()
+
         feedback_count = self.check_feedback_availability()
         print(f"Available feedback records: {feedback_count}")
 
-        # Also check for data drift
         drift_detected, drift_details = self.detect_data_drift()
 
-        # Trigger retraining if we have enough feedback OR data drift is detected
-        if feedback_count < 100 and not drift_detected:  # Lower threshold for testing purposes
-            print(f"Not enough feedback for retraining ({feedback_count}/{100}) and no drift detected. Skipping...")
+        min_feedback = max(1, int(self._parse_float_env("RETRAIN_MIN_FEEDBACK", 100)))
+        if feedback_count < min_feedback and not drift_detected:
+            print(
+                "Not enough feedback for retraining "
+                f"({feedback_count}/{min_feedback}) and no drift detected. Skipping..."
+            )
             return False
 
         print("Starting champion-challenger model training...")
 
-        # Load combined training data
         dataset = self.load_and_enrich()
-
-        # Split data for training and evaluation
         train_data, test_data = dataset.randomSplit([0.8, 0.2], seed=42)
+        training_samples_count = train_data.count()
 
-        # Train challenger model
         print("Training challenger model...")
 
-        # Dynamically determine available feature columns from the training data
         available_cols = set(train_data.columns)
-        potential_feature_cols = ["v_count", "g_dist", "avg_amount", "is_smurfing", "high_velocity_flag",
-                                  "velocity_risk", "travel_risk", "high_value_risk", "d17_risk", "risk_score"]
+        potential_feature_cols = [
+            "v_count",
+            "g_dist",
+            "avg_amount",
+            "is_smurfing",
+            "high_velocity_flag",
+            "velocity_risk",
+            "travel_risk",
+            "high_value_risk",
+            "d17_risk",
+            "risk_score"
+        ]
 
-        # Only use features that actually exist in the data
         feature_cols = [col for col in potential_feature_cols if col in available_cols and col != "label"]
 
         print(f"Using features: {feature_cols}")
@@ -370,48 +495,50 @@ class FraudModelTrainer:
         pipeline = Pipeline(stages=[assembler, xgb])
         challenger_model = pipeline.fit(train_data)
 
-        # Evaluate challenger model
         challenger_metrics = self.evaluate_model(challenger_model, test_data)
         print(f"Challenger model metrics: {challenger_metrics}")
 
-        # Load champion model if it exists and evaluate it
-        champion_model_path = "models/fraud_xgb_v1"
-        champion_exists = Path(champion_model_path).exists()
-
-        if champion_exists:
+        champion_entry = self._get_current_champion()
+        champion_metrics = None
+        if champion_entry:
             print("Evaluating champion model...")
             try:
-                champion_model = Pipeline.load(champion_model_path)
+                champion_model = PipelineModel.load(champion_entry["model_path"])
                 champion_metrics = self.evaluate_model(champion_model, test_data)
                 print(f"Champion model metrics: {champion_metrics}")
-
-                # Compare models and decide which to promote
-                if challenger_metrics["f1_score"] > champion_metrics["f1_score"]:
-                    print("✅ Challenger model performs better. Promoting to champion...")
-                    # Backup old champion
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    backup_path = f"models/fraud_xgb_v1_backup_{timestamp}"
-                    if Path(champion_model_path).exists():
-                        shutil.copytree(champion_model_path, backup_path)
-                        print(f"Backed up old champion to {backup_path}")
-
-                    # Save new champion
-                    challenger_model.write().overwrite().save(champion_model_path)
-                    print(f"✅ New champion model saved to {champion_model_path}")
-                    return True
-                else:
-                    print("❌ Champion model performs better. Keeping current champion.")
-                    return False
             except Exception as e:
                 print(f"Error evaluating champion model: {e}")
-                # If champion evaluation fails, save the new model anyway
-                print("Saving new model as champion (champion evaluation failed)...")
-                challenger_model.write().overwrite().save(champion_model_path)
-                return True
+
+        promotion_threshold = self._parse_float_env("CHAMPION_PROMOTION_THRESHOLD", 0.02)
+        promote = False
+        if not champion_entry or not champion_metrics:
+            promote = True
         else:
-            print("No champion model found. Saving first model as champion...")
-            challenger_model.write().overwrite().save(champion_model_path)
+            improvement = challenger_metrics["f1_score"] - champion_metrics["f1_score"]
+            promote = improvement >= promotion_threshold
+
+        version_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        model_path = str(Path("models") / "registry" / f"fraud_xgb_{version_id}")
+        Path(model_path).parent.mkdir(parents=True, exist_ok=True)
+        challenger_model.write().overwrite().save(model_path)
+
+        promoted_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") if promote else None
+        self._record_model_registry_entry(
+            version_id=version_id,
+            model_path=model_path,
+            f1_score=challenger_metrics["f1_score"],
+            auc=challenger_metrics["auc"],
+            is_champion=promote,
+            promoted_at=promoted_at,
+            training_samples_count=training_samples_count
+        )
+
+        if promote:
+            print("Challenger model promoted to champion.")
             return True
+
+        print("Champion model retained. Challenger registered for audit.")
+        return False
 
     def schedule_retraining(self, interval_minutes=60):
         """Schedule periodic retraining of the model"""
