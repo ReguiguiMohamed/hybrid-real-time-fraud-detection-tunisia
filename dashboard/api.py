@@ -10,6 +10,7 @@ from pathlib import Path
 import threading
 import hashlib
 import logging
+import json
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -141,9 +142,15 @@ def startup_event():
             auc REAL,
             is_champion INTEGER DEFAULT 0,
             promoted_at DATETIME,
-            training_samples_count INTEGER
+            training_samples_count INTEGER,
+            feature_importance TEXT
         )
     """)
+    cursor.execute("PRAGMA table_info(model_registry)")
+    registry_columns = {row[1] for row in cursor.fetchall()}
+    if "feature_importance" not in registry_columns:
+        cursor.execute("ALTER TABLE model_registry ADD COLUMN feature_importance TEXT")
+
 
     cursor.execute("PRAGMA table_info(high_risk_alerts)")
     existing_columns = {row[1] for row in cursor.fetchall()}
@@ -497,33 +504,57 @@ async def explain_alert(transaction_id: str, credentials: HTTPAuthorizationCrede
             WHERE transaction_id = ?
         """, (transaction_id,))
         row = cursor.fetchone()
-        conn.close()
-
         if not row:
+            conn.close()
             raise HTTPException(status_code=404, detail="Transaction not found")
 
-        model_path = get_champion_model_path()
-        if not model_path:
+        cursor.execute("""
+            SELECT feature_importance
+            FROM model_registry
+            WHERE is_champion = 1
+            ORDER BY promoted_at DESC
+            LIMIT 1
+        """)
+        registry_row = cursor.fetchone()
+        conn.close()
+
+        if not registry_row or not registry_row[0]:
             return {
                 "transaction_id": transaction_id,
                 "alert_type": row[1],
                 "top_risk_factors": [],
-                "note": "No champion model registered yet."
+                "note": "No champion feature importance registered yet."
             }
 
-        from pyspark.sql import SparkSession
-        from pyspark.ml import PipelineModel
-        from src.ml.train_model import FraudModelTrainer
+        try:
+            feature_items = json.loads(registry_row[0])
+        except json.JSONDecodeError:
+            feature_items = []
 
-        SparkSession.builder.appName("FraudExplainability").getOrCreate()
-        model = PipelineModel.load(model_path)
-        feature_scores = FraudModelTrainer.get_feature_scores(model)
-        top_features = feature_scores[:3]
+        normalized = []
+        for item in feature_items:
+            if isinstance(item, dict):
+                feature_name = item.get("feature")
+                score = item.get("score")
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                feature_name, score = item
+            else:
+                continue
+            if feature_name is None:
+                continue
+            try:
+                score_value = float(score)
+            except (TypeError, ValueError):
+                score_value = None
+            normalized.append((feature_name, score_value))
+
+        normalized.sort(key=lambda item: item[1] if item[1] is not None else 0, reverse=True)
+        top_features = normalized[:3]
         factors = [
             {
                 "feature": feature_name,
                 "description": FEATURE_LABELS.get(feature_name, feature_name),
-                "score": round(score, 4)
+                "score": round(score, 4) if score is not None else None
             }
             for feature_name, score in top_features
         ]

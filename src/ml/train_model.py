@@ -1,9 +1,10 @@
 # src/ml/train_model.py
 import os
 import uuid
+import json
 import numpy as np
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, when, lit, stddev, mean, count
+from pyspark.sql.functions import col, when, lit, stddev, mean, count, current_timestamp, expr, to_timestamp
 from xgboost.spark import SparkXGBClassifier
 from pyspark.ml import Pipeline, PipelineModel
 from pyspark.ml.feature import VectorAssembler
@@ -162,6 +163,14 @@ class FraudModelTrainer:
         except ValueError:
             return default
 
+    @staticmethod
+    def _parse_int_env(name, default):
+        try:
+            return int(os.getenv(name, str(default)))
+        except ValueError:
+            return default
+
+
     def _ensure_model_registry(self):
         conn = get_sqlite_connection(self.feedback_db_path)
         cursor = conn.cursor()
@@ -173,9 +182,14 @@ class FraudModelTrainer:
                 auc REAL,
                 is_champion INTEGER DEFAULT 0,
                 promoted_at DATETIME,
-                training_samples_count INTEGER
+                training_samples_count INTEGER,
+                feature_importance TEXT
             )
         """)
+        cursor.execute("PRAGMA table_info(model_registry)")
+        registry_columns = {row[1] for row in cursor.fetchall()}
+        if "feature_importance" not in registry_columns:
+            cursor.execute("ALTER TABLE model_registry ADD COLUMN feature_importance TEXT")
         conn.commit()
         conn.close()
 
@@ -209,7 +223,8 @@ class FraudModelTrainer:
         auc,
         is_champion,
         promoted_at,
-        training_samples_count
+        training_samples_count,
+        feature_importance
     ):
         conn = get_sqlite_connection(self.feedback_db_path)
         cursor = conn.cursor()
@@ -217,8 +232,8 @@ class FraudModelTrainer:
             cursor.execute("UPDATE model_registry SET is_champion = 0 WHERE is_champion = 1")
         cursor.execute("""
             INSERT INTO model_registry
-            (version_id, model_path, f1_score, auc, is_champion, promoted_at, training_samples_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (version_id, model_path, f1_score, auc, is_champion, promoted_at, training_samples_count, feature_importance)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             version_id,
             model_path,
@@ -226,7 +241,8 @@ class FraudModelTrainer:
             auc,
             1 if is_champion else 0,
             promoted_at,
-            training_samples_count
+            training_samples_count,
+            feature_importance
         ))
         conn.commit()
         conn.close()
@@ -414,6 +430,13 @@ class FraudModelTrainer:
             # Load recent data to compare
             recent_df = self.spark.read.parquet(self.silver_path)
 
+            if "timestamp" in recent_df.columns:
+                window_hours = max(1, self._parse_int_env("DRIFT_WINDOW_HOURS", 24))
+                recent_df = recent_df.withColumn("event_time", to_timestamp(col("timestamp")))
+                recent_df = recent_df.filter(
+                    col("event_time") >= (current_timestamp() - expr(f"INTERVAL {window_hours} HOURS"))
+                )
+
             # Calculate statistics for recent data
             recent_stats = self.drift_detector.calculate_statistics(recent_df)
 
@@ -496,6 +519,11 @@ class FraudModelTrainer:
         challenger_model = pipeline.fit(train_data)
 
         challenger_metrics = self.evaluate_model(challenger_model, test_data)
+        feature_scores = self.get_feature_scores(challenger_model)
+        feature_importance = json.dumps([
+            {"feature": name, "score": float(score)}
+            for name, score in feature_scores
+        ])
         print(f"Challenger model metrics: {challenger_metrics}")
 
         champion_entry = self._get_current_champion()
@@ -530,7 +558,8 @@ class FraudModelTrainer:
             auc=challenger_metrics["auc"],
             is_champion=promote,
             promoted_at=promoted_at,
-            training_samples_count=training_samples_count
+            training_samples_count=training_samples_count,
+            feature_importance=feature_importance
         )
 
         if promote:
