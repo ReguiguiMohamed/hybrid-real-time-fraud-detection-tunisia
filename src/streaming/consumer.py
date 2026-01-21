@@ -42,6 +42,8 @@ class FraudProcessor:
         except Exception as e:
             print(f"⚠️ Fallback to Rule-Based Scoring. Model not available: {e}")
             self.ml_model = None
+        self._batch_counter = 0
+        self._feedback_db_path = "./data/feedback.db"
 
     def start_dlq_retry_worker(self):
         if getattr(self, "_dlq_retry_thread", None) and self._dlq_retry_thread.is_alive():
@@ -73,6 +75,182 @@ class FraudProcessor:
             daemon=True
         )
         self._dlq_retry_thread.start()
+
+    @staticmethod
+    def _parse_float_env(name, default):
+        try:
+            return float(os.getenv(name, str(default)))
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _parse_int_env(name, default):
+        try:
+            return int(os.getenv(name, str(default)))
+        except ValueError:
+            return default
+
+    def _load_sampling_config(self):
+        random_sample_rate = self._parse_float_env("RANDOM_SAMPLE_RATE", 0.01)
+        random_sample_max_prob = self._parse_float_env("RANDOM_SAMPLE_MAX_PROB", 0.1)
+        random_sample_rate = max(0.0, min(random_sample_rate, 1.0))
+        random_sample_max_prob = max(0.0, min(random_sample_max_prob, 1.0))
+        return random_sample_rate, random_sample_max_prob
+
+    def _load_alerting_config(self):
+        max_workers = max(1, self._parse_int_env("THREAD_POOL_SIZE", 5))
+        async_timeout = max(1, self._parse_int_env("ALERT_ASYNC_TIMEOUT_SECONDS", 15))
+        return max_workers, async_timeout
+
+    def _send_alert_async(self, row, sar_gen, alert_type="high_risk", generate_sar=True):
+        """Send an alert to the command center API."""
+        try:
+            row_dict = row.asDict()
+            ml_probability = row_dict.get("ml_probability", 0.0)
+            if ml_probability is None:
+                ml_probability = 0.0
+            ml_probability = float(ml_probability)
+
+            report = None
+            if generate_sar and sar_gen is not None:
+                report = sar_gen.generate_report(row_dict, ml_probability)
+                report_path = sar_gen.save_report(row_dict, report, ml_probability)
+                print(f"SAR generated and saved to: {report_path}")
+
+            alert_payload = {
+                "transaction_id": str(row_dict.get("transaction_id", "unknown")),
+                "user_id": str(row_dict.get("user_id", "unknown")),
+                "amount_tnd": float(row_dict.get("amount_tnd", 0.0) or 0.0),
+                "governorate": str(row_dict.get("governorate", "unknown")),
+                "payment_method": str(row_dict.get("payment_method", "unknown")),
+                "timestamp": str(row_dict.get("timestamp", "")),
+                "ml_probability": ml_probability,
+                "sar_report": report,
+                "alert_type": alert_type
+            }
+
+            try:
+                api_response = make_authenticated_request(
+                    "POST",
+                    "/alerts/add/",
+                    payload=alert_payload,
+                    timeout=5  # 5 second timeout to avoid blocking
+                )
+
+                if api_response and api_response.status_code == 200:
+                    print(
+                        "Alert sent to command center for transaction: "
+                        f"{row_dict.get('transaction_id')} ({alert_type})"
+                    )
+                else:
+                    if api_response:
+                        error_msg = f"{api_response.status_code} - {api_response.text}"
+                        error_code = str(api_response.status_code)
+                    else:
+                        error_msg = "No response object returned"
+                        error_code = "NO_RESPONSE"
+
+                    print(f"Failed to send alert to command center: {error_msg}")
+                    log_failed_alert(row_dict, alert_payload, error_code, error_msg)
+            except Exception as api_error:
+                print(f"API connection error when sending alert: {api_error}")
+                log_failed_alert(row_dict, alert_payload, "CONNECTION_ERROR", str(api_error))
+
+        except Exception as e:
+            try:
+                row_dict = row.asDict()
+            except Exception:
+                row_dict = {"transaction_id": "unknown"}
+            print(f"Error processing transaction {row_dict.get('transaction_id', 'unknown')}: {e}")
+            log_failed_alert(row_dict, {}, "PROCESSING_ERROR", str(e))
+
+    def _process_batch(self, batch_df, epoch_id):
+        random_sample_rate, random_sample_max_prob = self._load_sampling_config()
+
+        high_risk_rows = batch_df.filter(col("ml_probability") > 0.85).collect()
+        sampled_low_risk_rows = []
+
+        if random_sample_rate > 0:
+            low_risk_df = batch_df.filter(col("ml_probability") < random_sample_max_prob)
+            if random_sample_rate < 1:
+                low_risk_df = low_risk_df.sample(withReplacement=False, fraction=random_sample_rate)
+            sampled_low_risk_rows = low_risk_df.collect()
+
+        if not high_risk_rows and not sampled_low_risk_rows:
+            return
+
+        from rag_engine.sar_generator import SARGenerator
+        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+
+        sar_gen = SARGenerator() if high_risk_rows else None
+
+        max_workers, async_timeout = self._load_alerting_config()
+        print(
+            f"Processing {len(high_risk_rows)} high-risk alerts and "
+            f"{len(sampled_low_risk_rows)} random samples with {max_workers} workers"
+        )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_row = {}
+
+            for row in high_risk_rows:
+                future = executor.submit(self._send_alert_async, row, sar_gen, "high_risk", True)
+                future_to_row[future] = row
+
+            for row in sampled_low_risk_rows:
+                future = executor.submit(self._send_alert_async, row, sar_gen, "random_sample", False)
+                future_to_row[future] = row
+
+            try:
+                for future in as_completed(future_to_row, timeout=async_timeout):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        row = future_to_row[future]
+                        try:
+                            transaction_id = row.asDict().get("transaction_id", "unknown")
+                        except Exception:
+                            transaction_id = "unknown"
+                        print(f"Error in async alert processing for transaction {transaction_id}: {e}")
+            except TimeoutError:
+                print("Timed out waiting for alert processing tasks to finish")
+
+    def _check_and_trigger_retraining(self, batch_df, epoch_id):
+        self._process_batch(batch_df, epoch_id)
+
+        self._batch_counter += 1
+        if self._batch_counter % 10 != 0:
+            return
+
+        try:
+            conn = get_sqlite_connection(self._feedback_db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
+            feedback_count = cursor.fetchone()[0]
+            conn.close()
+
+            if feedback_count >= 50:
+                print(f"Triggering model retraining based on {feedback_count} feedback records")
+
+                retrain_response = make_authenticated_request(
+                    "POST",
+                    "/retrain-model/",
+                    timeout=10  # 10 second timeout for retraining trigger
+                )
+
+                if retrain_response and retrain_response.status_code == 200:
+                    print("ƒo. Model retraining triggered successfully")
+                else:
+                    if retrain_response:
+                        print(
+                            "Failed to trigger model retraining: "
+                            f"{retrain_response.status_code} - {retrain_response.text}"
+                        )
+                    else:
+                        print("Failed to trigger model retraining: No response received")
+
+        except Exception as e:
+            print(f"Error checking feedback for retraining: {e}")
 
     def process_stream(self):
         # 1. Ingest (Bronze Layer)
@@ -163,181 +341,7 @@ class FraudProcessor:
             final_df = features_df.withColumn("ml_prediction", lit(-1)) \
                                  .withColumn("ml_probability", lit(0.0))
 
-        # For performance, we'll use foreachBatch to handle SAR generation and alerting asynchronously
-        # This avoids blocking the streaming pipeline with HTTP requests to Ollama
-        random_sample_rate_env = os.getenv("RANDOM_SAMPLE_RATE", "0.01")
-        random_sample_max_prob_env = os.getenv("RANDOM_SAMPLE_MAX_PROB", "0.1")
-        try:
-            random_sample_rate = float(random_sample_rate_env)
-        except ValueError:
-            random_sample_rate = 0.01
-        random_sample_rate = max(0.0, min(random_sample_rate, 1.0))
-        try:
-            random_sample_max_prob = float(random_sample_max_prob_env)
-        except ValueError:
-            random_sample_max_prob = 0.1
-        random_sample_max_prob = max(0.0, min(random_sample_max_prob, 1.0))
-
-        def process_batch(batch_df, epoch_id):
-            # Filter for high-confidence fraud predictions
-            high_risk_rows = batch_df.filter(col("ml_probability") > 0.85).collect()
-            sampled_low_risk_rows = []
-
-            if random_sample_rate > 0:
-                low_risk_df = batch_df.filter(col("ml_probability") < random_sample_max_prob)
-                if random_sample_rate < 1:
-                    low_risk_df = low_risk_df.sample(withReplacement=False, fraction=random_sample_rate)
-                sampled_low_risk_rows = low_risk_df.collect()
-
-            if not high_risk_rows and not sampled_low_risk_rows:
-                return
-
-            from rag_engine.sar_generator import SARGenerator
-            import requests
-            import json
-                from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
-
-            sar_gen = SARGenerator() if high_risk_rows else None
-
-                # Create a thread pool with configurable max workers
-                max_workers = int(os.getenv("THREAD_POOL_SIZE", "5"))  # Default to 5 to avoid overwhelming the API
-                async_timeout_env = os.getenv("ALERT_ASYNC_TIMEOUT_SECONDS", "15")
-                try:
-                    async_timeout = max(1, int(async_timeout_env))
-                except ValueError:
-                    async_timeout = 15
-
-                print(
-                    f"Processing {len(high_risk_rows)} high-risk alerts and "
-                    f"{len(sampled_low_risk_rows)} random samples with {max_workers} workers"
-                )
-
-            # Submit tasks to thread pool
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_row = {}
-
-                for row in high_risk_rows:
-                    future = executor.submit(send_alert_async, row, sar_gen, "high_risk", True)
-                    future_to_row[future] = row
-
-                for row in sampled_low_risk_rows:
-                    future = executor.submit(send_alert_async, row, sar_gen, "random_sample", False)
-                    future_to_row[future] = row
-
-                # Wait for all tasks to complete with timeout
-                try:
-                    for future in as_completed(future_to_row, timeout=async_timeout):
-                        try:
-                            future.result()
-                        except Exception as e:
-                            row = future_to_row[future]
-                            print(f"Error in async alert processing for transaction {row['transaction_id']}: {e}")
-                except TimeoutError:
-                    print("Timed out waiting for alert processing tasks to finish")
-
-        def send_alert_async(row, sar_gen, alert_type="high_risk", generate_sar=True):
-            """Function to send alerts asynchronously"""
-            try:
-                # Convert row to dictionary for SAR generation
-                row_dict = row.asDict()
-                report = None
-                if generate_sar and sar_gen is not None:
-                    report = sar_gen.generate_report(row_dict, float(row.ml_probability))
-
-                    # Save the SAR report
-                    report_path = sar_gen.save_report(row_dict, report, float(row.ml_probability))
-                    print(f"SAR generated and saved to: {report_path}")
-
-                # Send alert to the command center API
-                alert_payload = {
-                    "transaction_id": str(row_dict.get('transaction_id', 'unknown')),
-                    "user_id": str(row_dict.get('user_id', 'unknown')),
-                    "amount_tnd": float(row_dict.get('amount_tnd', 0.0)),
-                    "governorate": str(row_dict.get('governorate', 'unknown')),
-                    "payment_method": str(row_dict.get('payment_method', 'unknown')),
-                    "timestamp": str(row_dict.get('timestamp', '')),
-                    "ml_probability": float(row.ml_probability),
-                    "sar_report": report,
-                    "alert_type": alert_type
-                }
-
-                try:
-                    # Use the shared utility to make authenticated request
-                    api_response = make_authenticated_request(
-                        "POST",
-                        "/alerts/add/",
-                        payload=alert_payload,
-                        timeout=5  # 5 second timeout to avoid blocking
-                    )
-
-                    if api_response and api_response.status_code == 200:
-                        print(f"Alert sent to command center for transaction: {row_dict.get('transaction_id')} ({alert_type})")
-                    else:
-                        if api_response:
-                            error_msg = f"{api_response.status_code} - {api_response.text}"
-                            error_code = str(api_response.status_code)
-                        else:
-                            error_msg = "No response object returned"
-                            error_code = "NO_RESPONSE"
-
-                        print(f"Failed to send alert to command center: {error_msg}")
-                        # Log to dead letter queue
-                        log_failed_alert(row_dict, alert_payload, error_code, error_msg)
-                except Exception as api_error:
-                    print(f"API connection error when sending alert: {api_error}")
-                    # Log to dead letter queue
-                    log_failed_alert(row_dict, alert_payload, "CONNECTION_ERROR", str(api_error))
-
-            except Exception as e:
-                print(f"Error processing high-risk transaction {row.get('transaction_id', 'unknown')}: {e}")
-                # Log to dead letter queue
-                row_dict = row.asDict() if 'row' in locals() else {"transaction_id": "unknown"}
-                log_failed_alert(row_dict, {}, "PROCESSING_ERROR", str(e))
-
-        # Periodically check if we should trigger model retraining based on feedback
-        def check_and_trigger_retraining(batch_df, epoch_id):
-            # Call the process_batch function first
-            process_batch(batch_df, epoch_id)
-
-            # Every few batches, check if we should trigger retraining
-            # We'll use a simple counter to trigger retraining every N batches
-            # In a real system, this could be based on time intervals or feedback accumulation
-            global batch_counter
-            if 'batch_counter' not in globals():
-                batch_counter = 0
-            batch_counter += 1
-
-            # Trigger retraining every 10 batches (this is configurable)
-            if batch_counter % 10 == 0:
-                try:
-                    # Check if we have sufficient feedback to warrant retraining
-                    conn = get_sqlite_connection("./data/feedback.db")
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
-                    feedback_count = cursor.fetchone()[0]
-                    conn.close()
-
-                    # Only trigger retraining if we have enough feedback
-                    if feedback_count >= 50:  # Minimum threshold for meaningful retraining
-                        print(f"Triggering model retraining based on {feedback_count} feedback records")
-
-                        # Use the shared utility to make authenticated request
-                        retrain_response = make_authenticated_request(
-                            "POST",
-                            "/retrain-model/",
-                            timeout=10  # 10 second timeout for retraining trigger
-                        )
-
-                        if retrain_response and retrain_response.status_code == 200:
-                            print("✅ Model retraining triggered successfully")
-                        else:
-                            if retrain_response:
-                                print(f"Failed to trigger model retraining: {retrain_response.status_code} - {retrain_response.text}")
-                            else:
-                                print("Failed to trigger model retraining: No response received")
-
-                except Exception as e:
-                    print(f"Error checking feedback for retraining: {e}")
+        # For performance, use foreachBatch to handle SAR generation and alerting asynchronously.
 
         # 4. Persistence: Using Parquet for streaming (Delta Lake for batch operations)
         # Due to compatibility issues between Spark 4.1.1 and Delta Lake 4.0.1 for streaming sinks
@@ -346,7 +350,7 @@ class FraudProcessor:
             .outputMode("append") \
             .option("path", "./data/parquet/silver_fraud_alerts") \
             .option("checkpointLocation", "./tmp/checkpoint/silver_fraud") \
-            .foreachBatch(check_and_trigger_retraining) \
+            .foreachBatch(self._check_and_trigger_retraining) \
             .start()
 
         self.start_dlq_retry_worker()

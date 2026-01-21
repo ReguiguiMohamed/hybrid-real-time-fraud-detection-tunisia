@@ -3,21 +3,18 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional, List
-import sqlite3
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
-import json
 import threading
-from queue import Queue
-import time
 import hashlib
 import logging
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from shared.utils import get_sqlite_connection, retry_failed_alerts
+from monitoring import ForensicAnalyticEngine
 
 app = FastAPI(title="Tunisian Fraud Detection - Command Center API")
 
@@ -73,24 +70,7 @@ class TransactionAlert(BaseModel):
     sar_report: Optional[str] = None
     alert_type: Optional[str] = "high_risk"
 
-class ModelMonitor:
-    """Simple model monitoring class to track performance metrics"""
-    def __init__(self):
-        self.feedback_queue = Queue()
-        self.feedback_processed = 0
-        self.false_positive_count = 0
-        self.confirmed_fraud_count = 0
-
-    def record_feedback(self, feedback: FeedbackRequest):
-        """Record feedback and update metrics"""
-        if feedback.analyst_label == "Confirmed Fraud":
-            self.confirmed_fraud_count += 1
-        elif feedback.analyst_label == "False Positive":
-            self.false_positive_count += 1
-        self.feedback_processed += 1
-
-# Global monitor instance
-monitor = ModelMonitor()
+monitoring_engine = ForensicAnalyticEngine(DB_PATH)
 
 @app.on_event("startup")
 def startup_event():
@@ -186,9 +166,6 @@ async def submit_feedback(feedback: FeedbackRequest, credentials: HTTPAuthorizat
 
         conn.commit()
         conn.close()
-
-        # Update monitoring metrics
-        monitor.record_feedback(feedback)
 
         return {"status": "success", "message": "Feedback recorded successfully"}
     except Exception as e:
@@ -351,12 +328,7 @@ async def get_system_stats(credentials: HTTPAuthorizationCredentials = Depends(v
             "precision": round(high_risk_precision, 3),
             "precision_scope": "high_risk_only",
             "high_risk_precision": round(high_risk_precision, 3),
-            "random_sample_fraud_rate": round(random_sample_fraud_rate, 3),
-            "monitoring_stats": {
-                "feedback_processed": monitor.feedback_processed,
-                "confirmed_fraud_count": monitor.confirmed_fraud_count,
-                "false_positive_count": monitor.false_positive_count
-            }
+            "random_sample_fraud_rate": round(random_sample_fraud_rate, 3)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -465,6 +437,26 @@ async def get_model_performance(credentials: HTTPAuthorizationCredentials = Depe
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics/performance")
+async def get_performance_metrics(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+    return monitoring_engine.get_performance_metrics()
+
+@app.get("/metrics/feedback")
+async def get_feedback_analysis(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+    return monitoring_engine.get_feedback_analysis()
+
+@app.get("/metrics/threshold-analysis")
+async def get_threshold_analysis(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+    return monitoring_engine.get_ml_threshold_analysis()
+
+@app.get("/metrics/system-overview")
+async def get_system_overview(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+    return {
+        "performance": monitoring_engine.get_performance_metrics(),
+        "feedback": monitoring_engine.get_feedback_analysis(),
+        "threshold_recommendation": monitoring_engine.get_ml_threshold_analysis()
+    }
 
 @app.post("/retrain-model/")
 async def trigger_model_retraining(background_tasks: BackgroundTasks, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):

@@ -182,13 +182,6 @@ with col2:
                 fig = px.pie(breakdown_df, values='Count', names='Label', title='Feedback Distribution')
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Show monitoring stats
-                if 'monitoring_stats' in stats:
-                    monitoring = stats['monitoring_stats']
-                    st.subheader("🔍 Monitoring Stats")
-                    st.write(f"Feedback Processed: {monitoring.get('feedback_processed', 0)}")
-                    st.write(f"Confirmed Fraud: {monitoring.get('confirmed_fraud_count', 0)}")
-                    st.write(f"False Positives: {monitoring.get('false_positive_count', 0)}")
 
             perf_url = get_api_url("monitoring/model-performance/")
             perf_response = requests.get(perf_url, headers=headers)
