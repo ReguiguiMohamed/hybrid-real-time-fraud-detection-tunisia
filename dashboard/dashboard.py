@@ -44,8 +44,41 @@ with st.sidebar:
         index=1
     )
 
+    # Role selection
+    role = st.selectbox(
+        "Role",
+        options=["Admin", "Branch Manager"],
+        index=0
+    )
+
+    user_id = st.text_input("User ID", value=os.getenv("DASHBOARD_USER_ID", ""))
+
     # Filter options
     st.subheader("Filters")
+    branch_id_filter = None
+    branches = []
+    try:
+        headers = get_api_headers()
+        branch_url = get_api_url("branches/")
+        branch_response = requests.get(branch_url, headers=headers)
+        if branch_response.status_code == 200:
+            branches = branch_response.json()
+    except Exception:
+        branches = []
+
+    if role == "Admin":
+        branch_options = ["All"] + branches
+        selected_branch = st.selectbox("Branch", options=branch_options, index=0)
+        if selected_branch != "All":
+            branch_id_filter = selected_branch
+    else:
+        if branches:
+            branch_id_filter = st.selectbox("Branch", options=branches, index=0)
+        else:
+            branch_id_filter = st.text_input("Branch", value="")
+            if not branch_id_filter:
+                branch_id_filter = None
+
     min_prob = st.slider("Minimum ML Probability (High Risk)", 0.0, 1.0, 0.85)
     show_sar = st.checkbox("Show SAR Reports", value=True)
     alert_type_filter = st.selectbox(
@@ -81,6 +114,8 @@ with col1:
             api_url = get_api_url(f"alerts/review-queue/?limit=50&alert_type={alert_type_param}")
         else:
             api_url = get_api_url("alerts/review-queue/?limit=50")
+        if branch_id_filter:
+            api_url = f"{api_url}&branch_id={branch_id_filter}"
 
         response = requests.get(api_url, headers=headers)
         if response.status_code == 200:
@@ -108,7 +143,7 @@ with col1:
 
                     # Display alerts in a table
                     df_table = df_display[['transaction_id', 'user_id', 'amount_tnd', 'governorate',
-                                           'payment_method', 'ml_probability', 'alert_type_display']].rename(
+                                           'payment_method', 'branch_id', 'ml_probability', 'alert_type_display']].rename(
                         columns={"alert_type_display": "alert_type"}
                     )
                     st.dataframe(
@@ -155,6 +190,8 @@ with col2:
         # Use the shared utility functions
         headers = get_api_headers()
         api_url = get_api_url("stats")
+        if branch_id_filter:
+            api_url = f"{api_url}?branch_id={branch_id_filter}"
 
         stats_response = requests.get(api_url, headers=headers)
         if stats_response.status_code == 200:
@@ -187,7 +224,27 @@ with col2:
                 st.plotly_chart(fig, use_container_width=True)
 
 
+            if role == "Admin":
+                st.subheader("CTAF Export")
+                export_url = get_api_url("alerts/ctaf-export")
+                if branch_id_filter:
+                    export_url = f"{export_url}?branch_id={branch_id_filter}"
+                if st.button("Download CTAF Report"):
+                    export_response = requests.get(export_url, headers=headers)
+                    if export_response.status_code == 200:
+                        export_payload = export_response.json()
+                        st.download_button(
+                            "Download JSON",
+                            data=json.dumps(export_payload, indent=2),
+                            file_name="ctaf_report.json",
+                            mime="application/json"
+                        )
+                    else:
+                        st.error("Failed to export CTAF report")
+
             perf_url = get_api_url("monitoring/model-performance/")
+            if branch_id_filter:
+                perf_url = f"{perf_url}?branch_id={branch_id_filter}"
             perf_response = requests.get(perf_url, headers=headers)
             if perf_response.status_code == 200:
                 perf = perf_response.json()
@@ -231,6 +288,7 @@ if st.session_state.selected_transaction:
         st.write(f"**Amount:** {trans['amount_tnd']:.2f} TND")
         st.write(f"**Governorate:** {trans['governorate']}")
         st.write(f"**Payment Method:** {trans['payment_method']}")
+        st.write(f"**Branch:** {trans.get('branch_id', 'N/A')}")
         st.write(f"**Review Type:** {alert_type_display}")
 
     with col2:
@@ -291,12 +349,15 @@ if st.session_state.selected_transaction:
                 feedback_payload = {
                     "transaction_id": trans['transaction_id'],
                     "analyst_label": analyst_label,
-                    "analyst_comment": analyst_comment
+                    "analyst_comment": analyst_comment,
+                    "branch_id": trans.get('branch_id')
                 }
 
                 # Use the shared utility functions
                 headers = get_api_headers()
                 headers["Content-Type"] = "application/json"
+                if user_id:
+                    headers["X-User-Id"] = user_id
                 api_url = get_api_url("feedback/")
 
                 response = requests.post(api_url, json=feedback_payload, headers=headers)

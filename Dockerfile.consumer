@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -6,11 +6,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    openjdk11-jdk \
+    openjdk-21-jdk \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sfn /usr/share/zoneinfo/UTC /etc/localtime
 
-ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
