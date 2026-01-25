@@ -15,6 +15,7 @@ class Transaction(BaseModel):
     amount_tnd: float
     governorate: str
     payment_method: str
+    branch_id: str
     fraud_seed: bool = False
 
 

@@ -13,11 +13,11 @@ from faker import Faker
 from shared.schemas import Transaction
 
 try:
-    from kafka import KafkaProducer
+    from confluent_kafka import Producer
     KAFKA_AVAILABLE = True
 except ImportError:
     KAFKA_AVAILABLE = False
-    print("Warning: kafka-python not installed. Install with 'pip install kafka-python' for Kafka publishing.")
+    print("Warning: confluent-kafka not installed. Install with 'pip install confluent-kafka' for Kafka publishing.")
 
 
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +30,7 @@ except AttributeError:
 
 GOVERNORATES = ["Tunis", "Sfax", "Sousse", "Ariana", "Bizerte", "Gabes", "Kairouan"]
 METHODS = ["eDinar", "Flouci", "Konnect", "Carte Bancaire", "Cash on Delivery"]
+BRANCHES = ["Tunis-GNC", "Sfax-Agency", "Sousse-Agency", "Ariana-Desk", "Bizerte-Unit"]
 
 
 def generate_tx() -> dict:
@@ -42,6 +43,7 @@ def generate_tx() -> dict:
         amount_tnd=amount,
         governorate=random.choice(GOVERNORATES),
         payment_method=random.choice(METHODS),
+        branch_id=random.choice(BRANCHES),
         fraud_seed=is_fraud,
     )
     return tx.model_dump()
@@ -49,31 +51,41 @@ def generate_tx() -> dict:
 
 def publish_to_kafka(bootstrap_servers: str = "localhost:9092"):
     if not KAFKA_AVAILABLE:
-        logger.error("Kafka library not available. Please install kafka-python.")
+        logger.error("Kafka library not available. Please install confluent-kafka.")
         return
     
     try:
-        producer = KafkaProducer(
-            bootstrap_servers=[bootstrap_servers],
-            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-            acks='all',  # Wait for all replicas to acknowledge
-            retries=3,
-            linger_ms=5,  # Small delay to allow batching
-        )
+        conf = {
+            'bootstrap.servers': bootstrap_servers,
+            'client.id': 'tunisia-producer-1',
+            'acks': 'all',
+            'retries': 3,
+            'linger.ms': 5
+        }
+        producer = Producer(conf)
         
         logger.info(f"Starting Tunisian Transaction Stream with Kafka publishing to {bootstrap_servers}")
         
+        def delivery_report(err, msg):
+            """ Called once for each message produced to indicate delivery result.
+                Triggered by poll() or flush(). """
+            if err is not None:
+                logger.error(f'Message delivery failed: {err}')
+            else:
+                logger.info(f'Message delivered to {msg.topic()} [{msg.partition()}] at offset {msg.offset()}')
+
         while True:
             tx = generate_tx()
             
             # Publish to Kafka
-            future = producer.send('tunisian_transactions', tx)
-            try:
-                # Block for 'synchronous' sends
-                record_metadata = future.get(timeout=10)
-                logger.info(f"Sent transaction {tx['transaction_id']} to topic {record_metadata.topic}, partition {record_metadata.partition}, offset {record_metadata.offset}")
-            except Exception as e:
-                logger.error(f"Failed to send message: {e}")
+            # confluent-kafka uses poll() to handle callbacks
+            producer.poll(0)
+            
+            producer.produce(
+                topic='tunisian_transactions', 
+                value=json.dumps(tx).encode('utf-8'), 
+                callback=delivery_report
+            )
             
             # Adjust sleep based on desired rate
             time.sleep(random.uniform(0.1, 0.5))  # Faster for testing
@@ -84,7 +96,7 @@ def publish_to_kafka(bootstrap_servers: str = "localhost:9092"):
         logger.error(f"Error in Kafka producer: {e}")
     finally:
         if 'producer' in locals():
-            producer.close()
+            producer.flush()
 
 
 def simulate_locally(rate: float = 1.0):

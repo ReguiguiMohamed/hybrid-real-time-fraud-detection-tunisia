@@ -208,6 +208,7 @@ class FraudProcessor:
                 "amount_tnd": float(row_dict.get("amount_tnd", 0.0) or 0.0),
                 "governorate": str(row_dict.get("governorate", "unknown")),
                 "payment_method": str(row_dict.get("payment_method", "unknown")),
+                "branch_id": str(row_dict.get("branch_id", "unknown")),
                 "timestamp": str(row_dict.get("timestamp", "")),
                 "ml_probability": ml_probability,
                 "sar_report": report,

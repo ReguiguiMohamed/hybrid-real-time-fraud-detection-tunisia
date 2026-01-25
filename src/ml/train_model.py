@@ -215,6 +215,43 @@ class FraudModelTrainer:
             "promoted_at": row[4]
         }
 
+    def _ensure_audit_logs(self):
+        conn = get_sqlite_connection(self.feedback_db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT,
+                entity_id TEXT,
+                action TEXT,
+                user_id TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                previous_state TEXT,
+                new_state TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def _log_audit_event(self, entity_type, entity_id, action, user_id, previous_state, new_state):
+        self._ensure_audit_logs()
+        conn = get_sqlite_connection(self.feedback_db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO audit_logs
+            (entity_type, entity_id, action, user_id, previous_state, new_state)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            entity_type,
+            entity_id,
+            action,
+            user_id,
+            previous_state,
+            new_state
+        ))
+        conn.commit()
+        conn.close()
+
     def _record_model_registry_entry(
         self,
         version_id,
@@ -564,6 +601,21 @@ class FraudModelTrainer:
 
         if promote:
             print("Challenger model promoted to champion.")
+            previous_state = json.dumps(champion_entry) if champion_entry else None
+            new_state = json.dumps({
+                "version_id": version_id,
+                "model_path": model_path,
+                "f1_score": challenger_metrics["f1_score"],
+                "auc": challenger_metrics["auc"]
+            })
+            self._log_audit_event(
+                "MODEL",
+                version_id,
+                "PROMOTE",
+                os.getenv("MODEL_PROMOTION_USER", "system"),
+                previous_state,
+                new_state
+            )
             return True
 
         print("Champion model retained. Challenger registered for audit.")
