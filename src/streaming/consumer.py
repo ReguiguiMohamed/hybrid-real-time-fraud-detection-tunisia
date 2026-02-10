@@ -18,6 +18,7 @@ from shared.schemas import Transaction, TRANSACTION_SPARK_SCHEMA
 from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
 from shared.quality_gates import validate_transaction_quality, apply_d17_rule
 from shared.utils import make_authenticated_request, log_failed_alert, retry_failed_alerts, get_sqlite_connection
+import time
 
 # Use the schema from the shared module to ensure consistency
 schema = TRANSACTION_SPARK_SCHEMA
@@ -196,6 +197,20 @@ class FraudProcessor:
                 ml_probability = 0.0
             ml_probability = float(ml_probability)
 
+            # Calculate ingestion latency: time from event timestamp to processing time
+            import datetime
+            event_timestamp_str = str(row_dict.get("timestamp", ""))
+            if event_timestamp_str:
+                try:
+                    # Parse the event timestamp
+                    event_time = datetime.datetime.fromisoformat(event_timestamp_str.replace('Z', '+00:00'))
+                    processing_time = datetime.datetime.now(datetime.timezone.utc)
+                    ingestion_latency = (processing_time - event_time).total_seconds()
+                except:
+                    ingestion_latency = 0.0  # Default if parsing fails
+            else:
+                ingestion_latency = 0.0
+
             report = None
             if generate_sar and sar_gen is not None:
                 report = sar_gen.generate_report(row_dict, ml_probability)
@@ -209,23 +224,26 @@ class FraudProcessor:
                 "governorate": str(row_dict.get("governorate", "unknown")),
                 "payment_method": str(row_dict.get("payment_method", "unknown")),
                 "branch_id": str(row_dict.get("branch_id", "unknown")),
-                "timestamp": str(row_dict.get("timestamp", "")),
+                "timestamp": event_timestamp_str,
                 "ml_probability": ml_probability,
                 "sar_report": report,
-                "alert_type": alert_type
+                "alert_type": alert_type,
+                "ingestion_latency": ingestion_latency  # Include latency in payload for monitoring
             }
 
             try:
+                start_time = time.time()
                 api_response = make_authenticated_request(
                     "POST",
                     "/alerts/add/",
                     payload=alert_payload,
                     timeout=5  # 5 second timeout to avoid blocking
                 )
+                api_call_duration = time.time() - start_time
 
                 if api_response and api_response.status_code == 200:
                     print(
-                        "Alert sent to command center for transaction: "
+                        f"Alert sent (latency: {ingestion_latency:.2f}s, API: {api_call_duration:.2f}s) for transaction: "
                         f"{row_dict.get('transaction_id')} ({alert_type})"
                     )
                 else:
