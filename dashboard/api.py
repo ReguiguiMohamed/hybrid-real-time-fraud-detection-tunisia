@@ -11,6 +11,7 @@ import threading
 import hashlib
 import logging
 import json
+from contextlib import contextmanager
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -57,6 +58,16 @@ def require_scopes(scopes):
 # Database setup
 DB_PATH = Path("./data/feedback.db")
 os.makedirs("./data", exist_ok=True)
+
+
+@contextmanager
+def get_db_connection():
+    """Context manager for database connections to improve performance"""
+    conn = get_sqlite_connection(str(DB_PATH))
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 def parse_float_env(name: str, default: float) -> float:
     try:
@@ -106,22 +117,21 @@ class FeedbackRequest(BaseModel):
     branch_id: Optional[str] = None
 
 def log_audit_event(entity_type, entity_id, action, user_id, previous_state, new_state):
-    conn = get_sqlite_connection(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO audit_logs
-        (entity_type, entity_id, action, user_id, previous_state, new_state)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        entity_type,
-        entity_id,
-        action,
-        user_id,
-        previous_state,
-        new_state
-    ))
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO audit_logs
+            (entity_type, entity_id, action, user_id, previous_state, new_state)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            entity_type,
+            entity_id,
+            action,
+            user_id,
+            previous_state,
+            new_state
+        ))
+        conn.commit()
 
 class TransactionAlert(BaseModel):
     transaction_id: str
@@ -173,12 +183,25 @@ def parse_feature_importance(feature_payload, limit=3):
 
 monitoring_engine = ForensicAnalyticEngine(DB_PATH)
 
+@app.get("/auth/whoami")
+async def whoami(user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Return information about the authenticated user"""
+    # The auth dependency already verifies the token and returns the role
+    # So we can extract the role from the auth dict
+    role = auth["role"]
+    return {
+        "user_id": user_id or "unknown",
+        "role": role.upper(),
+        "authenticated": True
+    }
+
+
 @app.on_event("startup")
 def startup_event():
     """Initialize the database on startup"""
     conn = get_sqlite_connection(str(DB_PATH))
     cursor = conn.cursor()
-    
+
     # Create feedback table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS feedback_labels (
@@ -291,41 +314,40 @@ def start_dlq_retry_worker():
 async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
     """Endpoint to receive analyst feedback on fraud predictions"""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
 
-        branch_id = feedback.branch_id
-        if not branch_id:
-            cursor.execute(
-                "SELECT branch_id FROM high_risk_alerts WHERE transaction_id = ?",
-                (feedback.transaction_id,)
-            )
-            row = cursor.fetchone()
-            branch_id = row[0] if row else None
+            branch_id = feedback.branch_id
+            if not branch_id:
+                cursor.execute(
+                    "SELECT branch_id FROM high_risk_alerts WHERE transaction_id = ?",
+                    (feedback.transaction_id,)
+                )
+                row = cursor.fetchone()
+                branch_id = row[0] if row else None
 
-        cursor.execute("""
-            SELECT analyst_label, analyst_comment
-            FROM feedback_labels
-            WHERE transaction_id = ?
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """, (feedback.transaction_id,))
-        previous_feedback = cursor.fetchone()
+            cursor.execute("""
+                SELECT analyst_label, analyst_comment
+                FROM feedback_labels
+                WHERE transaction_id = ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """, (feedback.transaction_id,))
+            previous_feedback = cursor.fetchone()
 
-        # Insert feedback into database
-        cursor.execute("""
-            INSERT INTO feedback_labels
-            (transaction_id, analyst_label, analyst_comment, branch_id)
-            VALUES (?, ?, ?, ?)
-        """, (
-            feedback.transaction_id,
-            feedback.analyst_label,
-            feedback.analyst_comment,
-            branch_id
-        ))
+            # Insert feedback into database
+            cursor.execute("""
+                INSERT INTO feedback_labels
+                (transaction_id, analyst_label, analyst_comment, branch_id)
+                VALUES (?, ?, ?, ?)
+            """, (
+                feedback.transaction_id,
+                feedback.analyst_label,
+                feedback.analyst_comment,
+                branch_id
+            ))
 
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         previous_state = None
         if previous_feedback:

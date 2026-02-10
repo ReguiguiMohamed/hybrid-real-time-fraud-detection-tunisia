@@ -44,12 +44,34 @@ with st.sidebar:
         index=1
     )
 
-    # Role selection
-    role = st.selectbox(
-        "Role",
-        options=["Admin", "Branch Manager"],
-        index=0
-    )
+    # Determine role from API (RBAC - no user selection)
+    token = os.getenv("COMMAND_CENTER_API_TOKEN", "default_dev_token")
+    headers = get_api_headers()
+    
+    # Try to get user info from API
+    try:
+        whoami_response = requests.get(get_api_url("auth/whoami/"), headers=headers)
+        if whoami_response.status_code == 200:
+            user_info = whoami_response.json()
+            role = user_info.get("role", "Analyst")
+        else:
+            # Fallback to checking token type if whoami endpoint doesn't exist
+            if "analyst" in token.lower():
+                role = "Analyst"
+            elif "admin" in token.lower() or "default_dev_token" in token:
+                role = "Admin"
+            else:
+                role = "Analyst"  # Default to analyst
+    except:
+        # Fallback if API is not available
+        if "analyst" in token.lower():
+            role = "Analyst"
+        elif "admin" in token.lower() or "default_dev_token" in token:
+            role = "Admin"
+        else:
+            role = "Analyst"  # Default to analyst
+    
+    st.write(f"**Role:** {role}")
 
     user_id = st.text_input("User ID", value=os.getenv("DASHBOARD_USER_ID", ""))
 
