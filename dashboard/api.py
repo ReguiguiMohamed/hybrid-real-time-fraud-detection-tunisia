@@ -15,6 +15,9 @@ import json
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from shared.utils import get_sqlite_connection, retry_failed_alerts
+import sys
+import os
+sys.path.append(os.path.dirname(__file__))
 from monitoring import ForensicAnalyticEngine
 
 app = FastAPI(title="Tunisian Fraud Detection - Command Center API")
