@@ -20,3 +20,52 @@ Thumbs.db
 # Temporary files
 tmp/
 checkpoint/
+
+# Data and outputs
+data/
+*.parquet
+*.csv
+*.json
+*.db
+*.log
+*.txt
+*.pdf
+*.docx
+*.xlsx
+
+# ChromaDB
+chroma/
+.chroma/
+chroma_data/
+
+# Models
+models/
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.bin
+
+# Spark checkpoints
+spark-warehouse/
+checkpoint/
+
+# Large outputs
+output/
+reports/
+feedback/
+vector_db/
+
+# Ollama
+ollama/
+
+# Compiled assets
+*.so
+*.dylib
+*.dll
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
