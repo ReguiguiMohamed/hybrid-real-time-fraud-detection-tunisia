@@ -17,7 +17,7 @@ def demo_consumer():
     """
     print("Starting Tunisian Transaction Consumer Demo...")
     print("Connecting to Kafka broker at localhost:9092")
-    
+
     try:
         # Create Kafka consumer
         conf = {
@@ -28,14 +28,14 @@ def demo_consumer():
         }
         consumer = Consumer(conf)
         consumer.subscribe(['tunisian_transactions'])
-        
+
         print("Connected! Listening for transactions...")
         print("Press Ctrl+C to stop\n")
-        
+
         # Listen for messages
         while True:
             msg = consumer.poll(1.0)
-            
+
             if msg is None:
                 continue
             if msg.error():
@@ -44,14 +44,14 @@ def demo_consumer():
                 else:
                     print(f"Error: {msg.error()}")
                     break
-            
+
             try:
                 # Parse the transaction
                 tx_data = json.loads(msg.value().decode('utf-8'))
-                
+
                 # Validate against Pydantic schema (simulating what Spark would do)
                 transaction = Transaction(**tx_data)
-                
+
                 # Print formatted output (similar to what Spark would show)
                 print(f"RECEIVED TRANSACTION:")
                 print(f"  ID: {transaction.transaction_id}")
@@ -63,10 +63,10 @@ def demo_consumer():
                 print(f"  Branch: {transaction.branch_id}")
                 print(f"  Fraud Seed: {transaction.fraud_seed}")
                 print("-" * 50)
-                
+
             except Exception as e:
                 print(f"Error processing message: {e}")
-                
+
     except KeyboardInterrupt:
         print("\nStopping consumer...")
     except Exception as e:
@@ -78,15 +78,6 @@ def demo_consumer():
     finally:
         if 'consumer' in locals():
             consumer.close()
-                
-    except KeyboardInterrupt:
-        print("\nStopping consumer...")
-    except Exception as e:
-        print(f"Error connecting to Kafka: {e}")
-        print("Make sure:")
-        print("1. Kafka is running (docker-compose up)")
-        print("2. Topic 'tunisian_transactions' exists")
-        print("3. Producer is sending data")
 
 if __name__ == "__main__":
     demo_consumer()

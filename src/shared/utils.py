@@ -29,10 +29,17 @@ def get_api_headers():
 
 
 def get_api_url(endpoint=""):
-    """Get the API URL with proper service discovery"""
+    """Get the API URL with proper service discovery.
+
+    Prepends /api/v1/ to the endpoint for versioned API access.
+    To use legacy (unversioned) paths, set COMMAND_CENTER_API_VERSION="" in env.
+    """
     base_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
+    api_prefix = os.getenv("COMMAND_CENTER_API_VERSION", "api/v1")
     if endpoint.startswith('/'):
-        endpoint = endpoint[1:]  # Remove leading slash if present
+        endpoint = endpoint[1:]
+    if api_prefix:
+        return f"{base_url}/{api_prefix}/{endpoint}"
     return f"{base_url}/{endpoint}"
 
 

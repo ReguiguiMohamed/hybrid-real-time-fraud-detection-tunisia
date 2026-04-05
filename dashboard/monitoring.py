@@ -147,9 +147,21 @@ class ForensicAnalyticEngine:
             # If scipy is not available, return a simple result
             return {"drift_detected": False, "ks_statistic": 0, "p_value": 1.0}
 
+    # Columns allowed for distribution comparison queries (whitelist)
+    ALLOWED_DISTRIBUTION_COLUMNS = {"amount_tnd", "ml_probability"}
+
     def get_distribution_comparison(self, feature_name: str, current_period_days: int = 7, baseline_period_days: int = 30):
         """Compare current feature distribution to baseline"""
         try:
+            # Whitelist check to prevent SQL injection via column name
+            if feature_name not in self.ALLOWED_DISTRIBUTION_COLUMNS:
+                return {
+                    "current_values": [], "baseline_values": [],
+                    "current_mean": 0, "baseline_mean": 0,
+                    "current_median": 0, "baseline_median": 0,
+                    "error": f"Column '{feature_name}' is not allowed for distribution comparison"
+                }
+
             conn = get_sqlite_connection(str(self.db_path))
             cursor = conn.cursor()
 
@@ -158,9 +170,9 @@ class ForensicAnalyticEngine:
             cursor.execute(f"""
                 SELECT {feature_name}
                 FROM high_risk_alerts
-                WHERE timestamp >= '{current_start}'
+                WHERE timestamp >= ?
                 AND {feature_name} IS NOT NULL
-            """)
+            """, (current_start,))
             current_values = [row[0] for row in cursor.fetchall()]
 
             # Get baseline period data
@@ -169,9 +181,9 @@ class ForensicAnalyticEngine:
             cursor.execute(f"""
                 SELECT {feature_name}
                 FROM high_risk_alerts
-                WHERE timestamp BETWEEN '{baseline_start}' AND '{baseline_end}'
+                WHERE timestamp BETWEEN ? AND ?
                 AND {feature_name} IS NOT NULL
-            """)
+            """, (baseline_start, baseline_end))
             baseline_values = [row[0] for row in cursor.fetchall()]
 
             conn.close()

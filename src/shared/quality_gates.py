@@ -14,7 +14,12 @@ def validate_transaction_quality(df):
         when(col("amount_tnd") < 0, lit(True)).otherwise(lit(False))
     ).withColumn(
         "invalid_governorate_flag",
-        when(~col("governorate").isin(["Tunis", "Sfax", "Sousse", "Ariana", "Bizerte", "Gabes", "Kairouan"]), lit(True)).otherwise(lit(False))
+        when(~col("governorate").isin([
+            "Tunis", "Sfax", "Sousse", "Ariana", "Bizerte", "Gabes", "Kairouan",
+            "Manouba", "Ben Arous", "Nabeul", "Zaghouan", "Monastir", "Mahdia",
+            "Kasserine", "Sidi Bouzid", "Gafsa", "Tozeur", "Kebili", "Medenine",
+            "Tataouine", "Jendouba", "Beja", "Le Kef", "Siliana"
+        ]), lit(True)).otherwise(lit(False))
     ).withColumn(
         "null_id_flag",
         when(col("transaction_id").isNull(), lit(True)).otherwise(lit(False))

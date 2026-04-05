@@ -1,7 +1,13 @@
 # dashboard/api.py
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header
+from contextlib import asynccontextmanager, contextmanager
+from collections import defaultdict
+import time as _time
+
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Depends, Header, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List
 import os
 import sys
@@ -11,17 +17,18 @@ import threading
 import hashlib
 import logging
 import json
-from contextlib import contextmanager
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from shared.utils import get_sqlite_connection, retry_failed_alerts
-import sys
-import os
+from shared.logging_config import setup_logging
+
 sys.path.append(os.path.dirname(__file__))
 from monitoring import ForensicAnalyticEngine
 
-app = FastAPI(title="Tunisian Fraud Detection - Command Center API")
+# Initialize structured logging
+setup_logging(service_name="fraud-api")
+logger = logging.getLogger(__name__)
 
 # Authentication setup
 security = HTTPBearer()
@@ -116,6 +123,21 @@ class FeedbackRequest(BaseModel):
     analyst_comment: Optional[str] = None
     branch_id: Optional[str] = None
 
+    @field_validator("analyst_label")
+    @classmethod
+    def validate_label(cls, v: str) -> str:
+        allowed = {"Confirmed Fraud", "False Positive"}
+        if v not in allowed:
+            raise ValueError(f"analyst_label must be one of {allowed}")
+        return v
+
+    @field_validator("transaction_id")
+    @classmethod
+    def validate_transaction_id(cls, v: str) -> str:
+        if not v or len(v) > 256:
+            raise ValueError("transaction_id must be non-empty and at most 256 characters")
+        return v.strip()
+
 def log_audit_event(entity_type, entity_id, action, user_id, previous_state, new_state):
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -144,6 +166,7 @@ class TransactionAlert(BaseModel):
     ml_probability: float
     sar_report: Optional[str] = None
     alert_type: Optional[str] = "high_risk"
+    ingestion_latency: Optional[float] = None
 
 def parse_feature_importance(feature_payload, limit=3):
     if not feature_payload:
@@ -183,26 +206,23 @@ def parse_feature_importance(feature_payload, limit=3):
 
 monitoring_engine = ForensicAnalyticEngine(DB_PATH)
 
-@app.get("/auth/whoami")
-async def whoami(user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
-    """Return information about the authenticated user"""
-    # The auth dependency already verifies the token and returns the role
-    # So we can extract the role from the auth dict
-    role = auth["role"]
-    return {
-        "user_id": user_id or "unknown",
-        "role": role.upper(),
-        "authenticated": True
-    }
+
+# ---------------------------------------------------------------------------
+# Rate Limiter (simple in-memory, per-IP)
+# ---------------------------------------------------------------------------
+_rate_limit_store: dict = defaultdict(list)
+RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))
+RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 
-@app.on_event("startup")
-def startup_event():
-    """Initialize the database on startup"""
+# ---------------------------------------------------------------------------
+# Database initialisation (called at startup)
+# ---------------------------------------------------------------------------
+def _init_database():
+    """Initialize the database tables on startup"""
     conn = get_sqlite_connection(str(DB_PATH))
     cursor = conn.cursor()
 
-    # Create feedback table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS feedback_labels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,8 +233,7 @@ def startup_event():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
-    # Create alerts table for review queue entries
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS high_risk_alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -228,14 +247,15 @@ def startup_event():
             ml_probability REAL,
             sar_report TEXT,
             alert_type TEXT DEFAULT 'high_risk',
+            ingestion_latency REAL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
     cursor.execute("PRAGMA table_info(feedback_labels)")
     feedback_columns = {row[1] for row in cursor.fetchall()}
     if "branch_id" not in feedback_columns:
         cursor.execute("ALTER TABLE feedback_labels ADD COLUMN branch_id TEXT")
-
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS model_registry (
@@ -267,7 +287,6 @@ def startup_event():
     if "feature_importance" not in registry_columns:
         cursor.execute("ALTER TABLE model_registry ADD COLUMN feature_importance TEXT")
 
-
     cursor.execute("PRAGMA table_info(high_risk_alerts)")
     existing_columns = {row[1] for row in cursor.fetchall()}
     if "alert_type" not in existing_columns:
@@ -275,19 +294,87 @@ def startup_event():
         cursor.execute("UPDATE high_risk_alerts SET alert_type = 'high_risk' WHERE alert_type IS NULL")
     if "branch_id" not in existing_columns:
         cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN branch_id TEXT")
+    if "ingestion_latency" not in existing_columns:
+        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN ingestion_latency REAL")
 
     conn.commit()
     conn.close()
-    start_dlq_retry_worker()
 
-@app.on_event("shutdown")
-def shutdown_event():
-    stop_event = getattr(app.state, "dlq_retry_stop", None)
+
+# ---------------------------------------------------------------------------
+# Lifespan (replaces deprecated @app.on_event)
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    # --- startup ---
+    logger.info("Starting Fraud Detection Command Center API")
+    _init_database()
+    start_dlq_retry_worker()
+    yield
+    # --- shutdown ---
+    stop_event = getattr(application.state, "dlq_retry_stop", None)
     if stop_event:
         stop_event.set()
-    thread = getattr(app.state, "dlq_retry_thread", None)
+    thread = getattr(application.state, "dlq_retry_thread", None)
     if thread and thread.is_alive():
         thread.join(timeout=2)
+    logger.info("Fraud Detection Command Center API shut down")
+
+
+app = FastAPI(
+    title="Tunisian Fraud Detection - Command Center API",
+    description="Real-time fraud detection and CTAF-compliant reporting for Tunisian digital payments",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# --- CORS Middleware ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8501").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# --- Rate Limiting Middleware ---
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    now = _time.time()
+
+    # Clean old entries
+    _rate_limit_store[client_ip] = [
+        t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW
+    ]
+
+    if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Try again later."},
+        )
+
+    _rate_limit_store[client_ip].append(now)
+    response = await call_next(request)
+    return response
+
+
+# ---------------------------------------------------------------------------
+# API Router (all business endpoints under /api/v1/)
+# ---------------------------------------------------------------------------
+router = APIRouter(prefix="/api/v1", tags=["v1"])
+
+
+@router.get("/auth/whoami")
+async def whoami(user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Return information about the authenticated user"""
+    role = auth["role"]
+    return {
+        "user_id": user_id or "unknown",
+        "role": role.upper(),
+        "authenticated": True
+    }
 
 def start_dlq_retry_worker():
     if getattr(app.state, "dlq_retry_thread", None) and app.state.dlq_retry_thread.is_alive():
@@ -310,7 +397,7 @@ def start_dlq_retry_worker():
     app.state.dlq_retry_thread = thread
     thread.start()
 
-@app.post("/feedback/")
+@router.post("/feedback/")
 async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
     """Endpoint to receive analyst feedback on fraud predictions"""
     try:
@@ -373,7 +460,7 @@ async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = He
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/alerts/high-risk/")
+@router.get("/alerts/high-risk/")
 async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Endpoint to fetch high-risk alerts for the dashboard"""
     try:
@@ -425,7 +512,7 @@ async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None,
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/alerts/review-queue/")
+@router.get("/alerts/review-queue/")
 async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, branch_id: Optional[str] = None,
                            auth=Depends(require_scopes({"analyst", "admin"}))):
     """Endpoint to fetch review queue alerts, including random samples"""
@@ -476,7 +563,7 @@ async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, b
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/branches/")
+@router.get("/branches/")
 async def list_branches(auth=Depends(require_scopes({"analyst", "admin"}))):
     try:
         conn = get_sqlite_connection(str(DB_PATH))
@@ -493,7 +580,7 @@ async def list_branches(auth=Depends(require_scopes({"analyst", "admin"}))):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/stats/")
+@router.get("/stats/")
 async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Get system statistics for monitoring"""
     try:
@@ -623,7 +710,7 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/alerts/add/")
+@router.post("/alerts/add/")
 async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scopes({"admin"}))):
     """Endpoint to add high-risk alerts from the streaming pipeline"""
     try:
@@ -636,12 +723,12 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
         cursor.execute("""
             INSERT OR IGNORE INTO high_risk_alerts
             (transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id,
-             timestamp, ml_probability, sar_report, alert_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             timestamp, ml_probability, sar_report, alert_type, ingestion_latency)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             alert.transaction_id, alert.user_id, alert.amount_tnd,
             alert.governorate, alert.payment_method, alert.branch_id, alert.timestamp,
-            alert.ml_probability, alert.sar_report, alert_type
+            alert.ml_probability, alert.sar_report, alert_type, alert.ingestion_latency
         ))
 
         conn.commit()
@@ -651,7 +738,7 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/monitoring/model-performance/")
+@router.get("/monitoring/model-performance/")
 async def get_model_performance(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Get model performance metrics based on human feedback"""
     try:
@@ -741,7 +828,7 @@ async def get_model_performance(branch_id: Optional[str] = None, auth=Depends(re
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/alerts/{transaction_id}/explain")
+@router.get("/alerts/{transaction_id}/explain")
 async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Explain the top risk factors for a transaction using model feature importance."""
     try:
@@ -787,7 +874,7 @@ async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analy
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/alerts/{transaction_id}/export")
+@router.get("/alerts/{transaction_id}/export")
 async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Export a single alert for compliance filing."""
     try:
@@ -853,7 +940,7 @@ async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analys
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/alerts/ctaf-export")
+@router.get("/alerts/ctaf-export")
 async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depends(require_scopes({"admin"}))):
     """Export confirmed fraud alerts for CTAF reporting."""
     try:
@@ -926,19 +1013,19 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/metrics/performance")
+@router.get("/metrics/performance")
 async def get_performance_metrics(auth=Depends(require_scopes({"analyst", "admin"}))):
     return monitoring_engine.get_performance_metrics()
 
-@app.get("/metrics/feedback")
+@router.get("/metrics/feedback")
 async def get_feedback_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
     return monitoring_engine.get_feedback_analysis()
 
-@app.get("/metrics/threshold-analysis")
+@router.get("/metrics/threshold-analysis")
 async def get_threshold_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
     return monitoring_engine.get_ml_threshold_analysis()
 
-@app.get("/metrics/system-overview")
+@router.get("/metrics/system-overview")
 async def get_system_overview(auth=Depends(require_scopes({"analyst", "admin"}))):
     return {
         "performance": monitoring_engine.get_performance_metrics(),
@@ -946,7 +1033,7 @@ async def get_system_overview(auth=Depends(require_scopes({"analyst", "admin"}))
         "threshold_recommendation": monitoring_engine.get_ml_threshold_analysis()
     }
 
-@app.post("/retrain-model/")
+@router.post("/retrain-model/")
 async def trigger_model_retraining(background_tasks: BackgroundTasks, auth=Depends(require_scopes({"admin"}))):
     """Trigger model retraining based on accumulated feedback"""
     try:
@@ -971,10 +1058,77 @@ async def trigger_model_retraining(background_tasks: BackgroundTasks, auth=Depen
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ---------------------------------------------------------------------------
+# Register the versioned router and add backward-compatible root aliases
+# ---------------------------------------------------------------------------
+app.include_router(router)
+
+# Backward-compatible aliases: old paths (no /api/v1 prefix) redirect to v1
+# This ensures existing consumers (dashboard, producer, consumer) keep working
+# while we transition them to the new /api/v1/ paths.
+_legacy_router = APIRouter(tags=["legacy"], deprecated=True)
+
+
+@_legacy_router.get("/auth/whoami")
+async def _legacy_whoami(**kwargs):
+    return await whoami(**kwargs)
+
+
+@_legacy_router.post("/feedback/")
+async def _legacy_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None),
+                           auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await submit_feedback(feedback, user_id, auth)
+
+
+@_legacy_router.get("/alerts/review-queue/")
+async def _legacy_review_queue(limit: int = 100, alert_type: Optional[str] = None,
+                                branch_id: Optional[str] = None,
+                                auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await get_review_queue(limit, alert_type, branch_id, auth)
+
+
+@_legacy_router.post("/alerts/add/")
+async def _legacy_add_alert(alert: TransactionAlert, auth=Depends(require_scopes({"admin"}))):
+    return await add_high_risk_alert(alert, auth)
+
+
+@_legacy_router.get("/stats/")
+async def _legacy_stats(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await get_system_stats(branch_id, auth)
+
+
+@_legacy_router.get("/monitoring/model-performance/")
+async def _legacy_model_perf(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await get_model_performance(branch_id, auth)
+
+
+@_legacy_router.get("/alerts/{transaction_id}/explain")
+async def _legacy_explain(transaction_id: str, auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await explain_alert(transaction_id, auth)
+
+
+@_legacy_router.get("/branches/")
+async def _legacy_branches(auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await list_branches(auth)
+
+
+@_legacy_router.get("/alerts/ctaf-export")
+async def _legacy_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depends(require_scopes({"admin"}))):
+    return await export_ctaf(days, branch_id, auth)
+
+
+@_legacy_router.post("/retrain-model/")
+async def _legacy_retrain(background_tasks: BackgroundTasks, auth=Depends(require_scopes({"admin"}))):
+    return await trigger_model_retraining(background_tasks, auth)
+
+
+app.include_router(_legacy_router)
+
+
 @app.get("/health/")
 async def health_check():
-    """Health check endpoint for the API"""
-    return {"status": "healthy", "service": "fraud-detection-command-center-api"}
+    """Health check endpoint for the API (always at root, not versioned)"""
+    return {"status": "healthy", "service": "fraud-detection-command-center-api", "version": "1.0.0"}
 
 if __name__ == "__main__":
     import uvicorn

@@ -7,9 +7,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Set HADOOP_HOME from environment variable
-hadoop_home = os.getenv('HADOOP_HOME', r'C:\hadoop-3.4.2')
-os.environ['HADOOP_HOME'] = hadoop_home
+# Set HADOOP_HOME from environment variable (required for PySpark on Windows)
+hadoop_home = os.getenv('HADOOP_HOME')
+if hadoop_home:
+    os.environ['HADOOP_HOME'] = hadoop_home
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col, window, count, approx_count_distinct, when, lit, to_timestamp, expr

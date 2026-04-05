@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x /c/Users/ahmed/Downloads/hybrid-real-time-fraud-detection-tunisia/hybrid-real-time-fraud-detection-tunisia/scripts/run_tests.sh)"
+    ]
+  }
+}

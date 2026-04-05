@@ -1,16 +1,21 @@
-﻿version: "3.8"
-
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.7.0
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - fraudnet
 
   kafka:
     image: confluentinc/cp-kafka:7.7.0
-    depends_on: [zookeeper]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -21,17 +26,26 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
       - fraudnet
 
   chromadb:
     image: chromadb/chroma:latest
     volumes:
-      - ./data/vector_db:/chroma/chroma
+      - chroma_data:/chroma/chroma
     ports:
       - "8000:8000"
-    environment:
-      - CHROMA_DB_IMPL=clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - fraudnet
 
@@ -40,11 +54,17 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - ./ollama:/root/.ollama
+      - ollama_data:/root/.ollama
     deploy:
       resources:
         limits:
           memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
       - fraudnet
 
@@ -59,9 +79,20 @@ services:
       - ./models:/app/models
     environment:
       - API_TOKEN=${API_TOKEN:-default_dev_token}
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-default_admin_token}
+      - ANALYST_TOKEN=${ANALYST_TOKEN:-default_analyst_token}
+      - RANDOM_SAMPLE_RATE=${RANDOM_SAMPLE_RATE:-0.01}
+      - DLQ_RETRY_INTERVAL_SECONDS=${DLQ_RETRY_INTERVAL_SECONDS:-60}
+      - DLQ_RETRY_MAX_ATTEMPTS=${DLQ_RETRY_MAX_ATTEMPTS:-3}
     depends_on:
-      - kafka
-      - ollama
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - fraudnet
 
@@ -77,7 +108,14 @@ services:
       - COMMAND_CENTER_API_URL=http://api:8001
       - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8501/_stcore/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     networks:
       - fraudnet
 
@@ -91,8 +129,11 @@ services:
       - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
       - PYTHONPATH=/app/src
     depends_on:
-      - kafka
-      - api
+      kafka:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: on-failure
     networks:
       - fraudnet
 
@@ -105,12 +146,24 @@ services:
       - COMMAND_CENTER_API_URL=http://api:8001
       - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
       - PYTHONPATH=/app/src
+      - UNCERTAINTY_ZONE=${UNCERTAINTY_ZONE:-0.4,0.6}
+      - RANDOM_SAMPLE_RATE=${RANDOM_SAMPLE_RATE:-0.01}
+      - THREAD_POOL_SIZE=${THREAD_POOL_SIZE:-5}
+      - RETRAIN_FEEDBACK_THRESHOLD=${RETRAIN_FEEDBACK_THRESHOLD:-100}
     depends_on:
-      - kafka
-      - api
-      - ollama
+      kafka:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: on-failure
     networks:
       - fraudnet
+
+volumes:
+  chroma_data:
+  ollama_data:
 
 networks:
   fraudnet:

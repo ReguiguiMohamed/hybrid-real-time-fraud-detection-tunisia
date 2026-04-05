@@ -4,8 +4,8 @@ setup(
     name="hybrid-real-time-fraud-detection",
     version="1.0.0",
     description="Hybrid Real-Time Fraud Detection System for Tunisia",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Amastan Fraud Shield Guard",
+    author_email="contact@amastan-fsg.tn",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     install_requires=[
@@ -28,7 +28,7 @@ setup(
         "scipy==1.14.0",
         "httpx==0.27.0",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.11",
     extras_require={
         "dev": [
             "pytest>=6.0",

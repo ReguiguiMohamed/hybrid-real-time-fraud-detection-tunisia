@@ -1,9 +1,11 @@
-﻿# Python
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.egg-info/
+dist/
+build/
 
 # Env
 .env
@@ -21,42 +23,37 @@ Thumbs.db
 tmp/
 checkpoint/
 
-# Data and outputs
-data/
-*.parquet
-*.csv
-*.json
-*.db
+# Runtime data (generated at runtime, not tracked)
+data/parquet/
+data/vector_db/
+data/feedback.db
+data/dead_letter_queue.db
+data/reports/
 *.log
-*.txt
-*.pdf
-*.docx
-*.xlsx
 
 # ChromaDB
 chroma/
 .chroma/
 chroma_data/
 
-# Models
-models/
-*.pkl
-*.joblib
+# Model artifacts (trained models, not tracked)
+models/registry/
+models/fraud_xgb_v1/
+models/*.pkl
+models/*.joblib
 *.h5
 *.pt
 *.bin
 
 # Spark checkpoints
 spark-warehouse/
-checkpoint/
 
 # Large outputs
 output/
-reports/
 feedback/
 vector_db/
 
-# Ollama
+# Ollama model cache
 ollama/
 
 # Compiled assets
