@@ -69,7 +69,7 @@ The topic came into fruition ever since the introduction of incentives on 'cashl
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| Stream Ingestion | Apache Kafka 7.7.0 | Real-time transaction streaming |
+| Stream Ingestion | Apache Kafka 4.1.1 | Real-time transaction streaming |
 | Stream Processing | PySpark 4.1.1 (Structured Streaming) | Windowed analytics & risk scoring |
 | ML Model | XGBoost 3.1.3 (SparkML) | Fraud probability classification |
 | Vector Store | ChromaDB 0.5.0 | CTAF regulatory document retrieval |
