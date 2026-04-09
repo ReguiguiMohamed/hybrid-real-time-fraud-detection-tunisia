@@ -5,47 +5,8 @@ A real-time fraud mitigation engine for Tunisian digital payments. Uses **Kafka 
 The topic came into fruition ever since the introduction of incentives on 'cashless' transactions in Tunisia during January-February 2026, a period marked by the highest ever recorded liquidity rate in the country's history amid deepening inflation rates and economic uncertainty.
 
 ---
-
-## Architecture
-
-```
-                    ┌─────────────┐
-                    │   Kafka     │
-                    │  (Broker)   │
-                    └──────┬──────┘
-                           │
-          ┌────────────────┼────────────────┐
-          │                │                │
-   ┌──────▼──────┐  ┌─────▼──────┐  ┌──────▼──────┐
-   │  Producer   │  │  Consumer  │  │   Chaos     │
-   │ (Faker TX)  │  │(Spark SS)  │  │  Producer   │
-   └─────────────┘  └─────┬──────┘  └─────────────┘
-                          │
-              ┌───────────┼───────────┐
-              │           │           │
-       ┌──────▼───┐ ┌────▼────┐ ┌───▼──────┐
-       │ Quality  │ │   ML    │ │   RAG    │
-       │  Gates   │ │ XGBoost │ │  Engine  │
-       └──────┬───┘ └────┬────┘ └───┬──────┘
-              │           │         │
-              └───────────┼─────────┘
-                          │
-                   ┌──────▼──────┐
-                   │  FastAPI    │
-                   │Command Ctr  │
-                   │  /api/v1/   │
-                   └──────┬──────┘
-                          │
-               ┌──────────┼──────────┐
-               │          │          │
-        ┌──────▼───┐ ┌───▼────┐ ┌──▼───────┐
-        │Streamlit │ │ SQLite │ │  CTAF    │
-        │Dashboard │ │Feedback│ │  Export  │
-        └──────────┘ │  + DLQ │ └──────────┘
-                     └────────┘
-```
-
-### Data Flow
+## Project Architecture and Data Flow 
+<img width="1514" height="651" alt="ChatGPT Image Apr 9, 2026, 04_04_45 PM" src="https://github.com/user-attachments/assets/b2db5032-e61e-42eb-bc78-8109f295a111" />
 
 1. **Bronze Layer**: Producer generates Tunisian transactions → Kafka topic `tunisian_transactions`
 2. **Silver Layer**: Spark Structured Streaming consumes, applies quality gates, enriches with windowed analytics
@@ -63,22 +24,6 @@ The topic came into fruition ever since the introduction of incentives on 'cashl
 - **Fraud Vulnerability**: Rapid digital adoption creating new attack vectors for financial crime
 - **Regulatory Pressure**: CTAF mandates stricter AML/CFT compliance amid economic instability
 
----
-
-## Tech Stack
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Stream Ingestion | Apache Kafka 4.1.1 | Real-time transaction streaming |
-| Stream Processing | PySpark 4.1.1 (Structured Streaming) | Windowed analytics & risk scoring |
-| ML Model | XGBoost 3.1.3 (SparkML) | Fraud probability classification |
-| Vector Store | ChromaDB 0.5.0 | CTAF regulatory document retrieval |
-| Embeddings | SentenceTransformers (all-MiniLM-L6-v2) | Semantic search for regulations |
-| LLM Inference | Ollama (Llama 3.1) | Local SAR report generation |
-| API | FastAPI 0.115.0 | Command Center REST API |
-| Dashboard | Streamlit 1.39.0 + Plotly | Operational monitoring & analyst UI |
-| Database | SQLite (WAL mode) | Feedback, alerts, model registry, audit logs |
-| Serialization | Protobuf 5.29.5, Pydantic 2.12.5 | Schema validation & type safety |
 
 ---
 
