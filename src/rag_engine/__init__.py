@@ -9,3 +9,11 @@ from rag_engine.sar_validator import (
     SARRegulatoryViolation,
     SARUrgencyAssessment,
 )
+from rag_engine.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitState,
+    CircuitBreakerError,
+    get_rag_circuit,
+    rag_circuit,
+)

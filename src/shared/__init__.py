@@ -14,3 +14,4 @@ from shared.pii_masking import (
 )
 from shared.vault_client import get_secret, get_vault_client, get_kafka_credentials
 from shared.tracing import tracer, start_span, initialize_tracing
+from shared.idempotency import get_dedup_cache, DedupCache

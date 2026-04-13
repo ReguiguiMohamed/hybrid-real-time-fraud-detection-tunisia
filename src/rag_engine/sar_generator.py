@@ -39,48 +39,49 @@ class SARGenerator:
         self._stats = {"total": 0, "validated": 0, "fallback": 0}
 
     def _call_ollama(self, prompt: str) -> str:
-        """Call Ollama with exponential backoff retry logic."""
-        last_error = None
+        """Call Ollama with exponential backoff retry logic AND circuit breaker."""
+        from rag_engine.circuit_breaker import get_rag_circuit, CircuitBreakerError
 
-        for attempt in range(1, self.MAX_RETRIES + 1):
-            try:
-                response = requests.post(
-                    self.ollama_url,
-                    json={"model": "llama3.1", "prompt": prompt, "stream": False},
-                    timeout=120,
-                )
-                if response.status_code == 200:
-                    return response.json().get("response", "No response generated")
+        circuit = get_rag_circuit()
 
-                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
-                logger.warning(
-                    "Ollama request failed (attempt %d/%d): %s",
-                    attempt, self.MAX_RETRIES, last_error,
-                )
-            except requests.exceptions.Timeout:
-                last_error = "Request timed out"
-                logger.warning(
-                    "Ollama request timed out (attempt %d/%d)", attempt, self.MAX_RETRIES
-                )
-            except requests.exceptions.ConnectionError as e:
-                last_error = f"Connection error: {e}"
-                logger.warning(
-                    "Ollama connection error (attempt %d/%d): %s",
-                    attempt, self.MAX_RETRIES, e,
-                )
-            except Exception as e:
-                last_error = str(e)
-                logger.error(
-                    "Unexpected error calling Ollama (attempt %d/%d): %s",
-                    attempt, self.MAX_RETRIES, e,
-                )
+        # Check if circuit is tripped
+        if not circuit.allow_request():
+            circuit.record_fallback_used()
+            logger.warning("RAG circuit OPEN: skipping LLM, using fallback")
+            raise CircuitBreakerError("LLM circuit breaker is OPEN")
 
-            if attempt < self.MAX_RETRIES:
-                backoff = self.BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
-                logger.info("Retrying in %ds...", backoff)
-                time.sleep(backoff)
+        start_time = time.time()
 
-        return f"SAR generation failed after {self.MAX_RETRIES} attempts. Last error: {last_error}"
+        try:
+            response = requests.post(
+                self.ollama_url,
+                json={"model": "llama3.1", "prompt": prompt, "stream": False},
+                timeout=120,
+            )
+            latency_ms = (time.time() - start_time) * 1000
+
+            if response.status_code == 200:
+                circuit.record_success(latency_ms)
+                return response.json().get("response", "No response generated")
+
+            # HTTP error
+            last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+            circuit.record_failure(last_error)
+            logger.warning("Ollama HTTP error: %s", last_error)
+            raise RuntimeError(last_error)
+
+        except requests.exceptions.Timeout:
+            latency_ms = (time.time() - start_time) * 1000
+            circuit.record_success(latency_ms) if latency_ms < circuit.config.latency_threshold_ms else circuit.record_failure("Timeout")
+            raise
+        except requests.exceptions.ConnectionError as e:
+            circuit.record_failure(f"Connection error: {e}")
+            raise
+        except CircuitBreakerError:
+            raise
+        except Exception as e:
+            circuit.record_failure(str(e))
+            raise
 
     def generate_report(self, tx_data: dict, ml_score: float) -> str:
         """
@@ -88,10 +89,12 @@ class SARGenerator:
 
         Flow:
         1. Retrieve regulatory context via RAG
-        2. Query LLM for structured JSON SAR
+        2. Query LLM for structured JSON SAR (circuit breaker protected)
         3. Validate output against Pydantic schema
-        4. Fall back to deterministic template if validation fails
+        4. Fall back to deterministic template if validation fails OR circuit tripped
         """
+        from rag_engine.circuit_breaker import CircuitBreakerError
+
         self._stats["total"] += 1
 
         # 1. Retrieve Regulatory Context
@@ -137,19 +140,29 @@ Respond ONLY with a valid JSON object (no markdown, no commentary) with this exa
   "urgency_assessment": {{"urgency_level": "IMMEDIATE|HIGH|STANDARD|LOW", "filing_deadline": "ISO date", "reason": "Why"}}
 }}"""
 
-        # 3. Call LLM
-        raw_llm_output = self._call_ollama(prompt)
+        # 3. Call LLM (circuit breaker may raise CircuitBreakerError)
+        raw_llm_output = None
+        llm_failed = False
+        try:
+            raw_llm_output = self._call_ollama(prompt)
+        except CircuitBreakerError:
+            llm_failed = True
+            raw_llm_output = f"Circuit breaker tripped: LLM unavailable (latency threshold exceeded)"
+        except Exception as e:
+            llm_failed = True
+            raw_llm_output = f"LLM error: {e}"
 
         # 4. Validate and fallback
-        report = validate_sar_output(raw_llm_output, tx_data, ml_score)
+        report = validate_sar_output(raw_llm_output or "", tx_data, ml_score)
 
-        if report.validation_passed:
+        if report.validation_passed and not llm_failed:
             self._stats["validated"] += 1
         else:
             self._stats["fallback"] += 1
             logger.warning(
-                "SAR fallback triggered for tx %s (reason: LLM validation failed)",
+                "SAR fallback triggered for tx %s (reason: %s)",
                 tx_data.get("transaction_id", "unknown"),
+                "circuit_breaker" if llm_failed and isinstance(report.validation_passed, bool) and not report.validation_passed else "LLM validation failed",
             )
 
         # 5. Format as human-readable text
@@ -205,10 +218,14 @@ Respond with ONLY valid JSON matching the SARReport schema."""
 
     def get_stats(self) -> dict:
         """Return SAR generation statistics."""
+        from rag_engine.circuit_breaker import get_rag_circuit
+
         total = max(self._stats["total"], 1)
+        circuit = get_rag_circuit()
         return {
             "total_generated": self._stats["total"],
             "llm_validated": self._stats["validated"],
             "deterministic_fallback": self._stats["fallback"],
             "validation_rate": round(self._stats["validated"] / total, 4),
+            "circuit_breaker": circuit.get_stats(),
         }

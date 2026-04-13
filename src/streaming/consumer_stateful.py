@@ -486,8 +486,119 @@ class StatefulFraudProcessor:
                 logger.warning("Alert processing timed out")
 
     def _check_and_trigger_retraining(self, batch_df, epoch_id):
-        self._process_batch(batch_df, epoch_id)
+        """
+        Process a micro-batch with idempotency enforcement.
+        Each transaction is checked against the dedup cache before processing.
+        """
+        from src.shared.idempotency import get_dedup_cache
 
+        dedup = get_dedup_cache()
+        random_sample_rate, random_sample_max_prob = self._load_sampling_config()
+        uncertainty_low, uncertainty_high = self._load_uncertainty_zone()
+
+        # Filter out already-processed transactions (idempotency)
+        original_count = batch_df.count()
+
+        def dedup_filter(rows):
+            """Filter out duplicate transactions within a batch."""
+            unique_rows = []
+            for row in rows:
+                tx_id = row.asDict().get("transaction_id", "")
+                if not dedup.is_duplicate(tx_id):
+                    dedup.mark_processed(tx_id)
+                    unique_rows.append(row)
+            return unique_rows
+
+        # Collect and dedup
+        all_rows = batch_df.collect()
+        unique_rows = dedup_filter(all_rows)
+
+        duplicates_skipped = original_count - len(unique_rows)
+        if duplicates_skipped > 0:
+            logger.info(f"Epoch {epoch_id}: Skipped {duplicates_skipped} duplicate transactions")
+
+        if not unique_rows:
+            return
+
+        # Convert back to DataFrame for filtering
+        unique_df = batch_df.sparkSession.createDataFrame(
+            [r.asDict() for r in unique_rows],
+            schema=batch_df.schema,
+        )
+
+        # Route alerts based on ML probability
+        high_risk_rows = unique_df.filter(col("ml_probability") > 0.85).collect()
+        sampled_low_risk_rows = []
+        uncertainty_rows = []
+
+        if random_sample_rate > 0:
+            low_risk_df = unique_df.filter(col("ml_probability") < random_sample_max_prob)
+            if random_sample_rate < 1:
+                low_risk_df = low_risk_df.sample(withReplacement=False, fraction=random_sample_rate)
+            sampled_low_risk_rows = low_risk_df.collect()
+
+        uncertainty_rows = unique_df.filter(
+            (col("ml_probability") >= uncertainty_low) & (col("ml_probability") <= uncertainty_high)
+        ).collect()
+
+        if not high_risk_rows and not sampled_low_risk_rows and not uncertainty_rows:
+            return
+
+        # Process alerts (with shadow model comparison if active)
+        from rag_engine.sar_generator import SARGenerator
+        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+        from ml.shadow_model import ShadowModelManager
+
+        # Shadow model scoring
+        shadow = ShadowModelManager()
+        shadow_df = None
+        if shadow.has_shadow_model():
+            _, shadow_df = shadow.score_with_both(unique_df)
+            if shadow_df is not None:
+                # Log comparisons
+                shadow_rows = shadow_df.select("transaction_id", "ml_probability", "shadow_probability").collect()
+                for srow in shadow_rows:
+                    shadow.record_shadow_comparison(
+                        srow["transaction_id"],
+                        float(srow["ml_probability"] or 0),
+                        float(srow["shadow_probability"] or 0),
+                    )
+
+        sar_gen = SARGenerator() if high_risk_rows else None
+        max_workers, async_timeout = self._load_alerting_config()
+
+        logger.info(
+            f"Epoch {epoch_id}: {len(high_risk_rows)} high-risk, "
+            f"{len(sampled_low_risk_rows)} random, {len(uncertainty_rows)} uncertainty"
+        )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_row = {}
+            for row in high_risk_rows:
+                future = executor.submit(self._send_alert_async, row, sar_gen, "high_risk", True)
+                future_to_row[future] = row
+            for row in sampled_low_risk_rows:
+                future = executor.submit(self._send_alert_async, row, None, "random_sample", False)
+                future_to_row[future] = row
+            for row in uncertainty_rows:
+                future = executor.submit(self._send_alert_async, row, None, "uncertainty_sample", False)
+                future_to_row[future] = row
+
+            try:
+                for future in as_completed(future_to_row, timeout=async_timeout):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        row = future_to_row[future]
+                        try:
+                            tx_id = row.asDict().get("transaction_id", "unknown")
+                        except Exception:
+                            tx_id = "unknown"
+                        logger.error(f"Async alert error for tx {tx_id}: {e}")
+            except TimeoutError:
+                logger.warning("Alert processing timed out")
+
+        # Check for retraining trigger
         try:
             new_feedback_count = self._count_new_feedback_since_promotion()
             threshold = max(1, self._parse_int_env("RETRAIN_FEEDBACK_THRESHOLD", 100))
@@ -507,13 +618,13 @@ class StatefulFraudProcessor:
 
     def process_stream(self):
         """
-        Main stream processing pipeline:
+        Main stream processing pipeline with idempotency:
         1. Kafka ingest (Bronze)
         2. Quality gates (stateless validation)
         3. Stateful enrichment (windowed aggregation per user)
         4. Weighted risk scoring (rules engine)
-        5. ML inference (XGBoost)
-        6. Alert dispatch (async, with SAR generation)
+        5. ML inference (XGBoost + shadow model)
+        6. Idempotent alert dispatch (dedup cache)
         7. Parquet persistence (Silver)
         """
         # 1. Bronze: Ingest from Kafka
@@ -546,7 +657,6 @@ class StatefulFraudProcessor:
             "amount_coefficient_of_variation",
         ]
 
-        # Add missing columns with defaults (for schema stability)
         for col_name in feature_cols:
             if col_name not in scored_df.columns:
                 if col_name in ("avg_amount", "amount_stddev", "amount_coefficient_of_variation"):
@@ -557,7 +667,7 @@ class StatefulFraudProcessor:
         # 5. ML inference
         final_df = self._apply_ml_inference(scored_df)
 
-        # 6 & 7. Alert dispatch + persistence
+        # 6 & 7. Idempotent alert dispatch + persistence
         query = final_df.writeStream \
             .format("parquet") \
             .outputMode("append") \

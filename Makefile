@@ -2,7 +2,7 @@
 # Usage: make <target>
 # All targets are idempotent and safe to re-run.
 
-.PHONY: help setup dev prod test lint clean build monitor monitor-down bootstrap deploy k8s-apply k8s-dry-run migrate migrate-status cost-estimate audit-deps chaos-test
+.PHONY: help setup dev prod test lint clean build monitor monitor-down bootstrap deploy k8s-apply k8s-dry-run migrate migrate-status cost-estimate audit-deps chaos-test backtest shadow-register shadow-status security-scan circuit-status
 
 # Default target
 help:
@@ -11,38 +11,43 @@ help:
 	@echo "============================================================"
 	@echo ""
 	@echo "  SETUP & BOOTSTRAP"
-	@echo "  make setup          Initialize environment, install deps"
-	@echo "  make bootstrap      Seed database + train initial model"
-	@echo "  make migrate        Run database schema migrations"
-	@echo "  make migrate-status Show migration status"
+	@echo "  make setup              Initialize environment, install deps"
+	@echo "  make bootstrap          Seed database + train initial model"
+	@echo "  make bootstrap-imbalanced  Realistic 0.01% fraud rate data"
+	@echo "  make migrate            Run database schema migrations"
+	@echo "  make migrate-status     Show migration status"
 	@echo ""
 	@echo "  DEVELOPMENT"
-	@echo "  make dev            Start local dev stack (no Docker)"
-	@echo "  make test           Run full test suite"
-	@echo "  make test-unit      Run unit tests only (no Spark)"
-	@echo "  make lint           Run linter + type checks"
-	@echo "  make chaos-test     Run chaos/failure integration tests"
+	@echo "  make dev                Start local dev stack (no Docker)"
+	@echo "  make test               Run full test suite"
+	@echo "  make test-unit          Run unit tests only (no Spark)"
+	@echo "  make lint               Run linter + type checks"
+	@echo "  make chaos-test         Run chaos/failure integration tests"
 	@echo ""
 	@echo "  PRODUCTION"
-	@echo "  make prod           Start full Docker Compose stack"
-	@echo "  make prod-monitor   Start Docker + Prometheus/Grafana"
-	@echo "  make monitor-down   Stop monitoring stack only"
-	@echo "  make build          Build all Docker images"
-	@echo "  make deploy         Push images and deploy (K8s)"
+	@echo "  make prod               Start full Docker Compose stack"
+	@echo "  make prod-monitor       Start Docker + Prometheus/Grafana"
+	@echo "  make monitor            Start Prometheus + Grafana only"
+	@echo "  make monitor-down       Stop monitoring stack only"
+	@echo "  make build              Build all Docker images"
+	@echo "  make deploy             Push images and deploy (K8s)"
 	@echo ""
 	@echo "  KUBERNETES"
-	@echo "  make k8s-apply      Apply K8s manifests to cluster"
-	@echo "  make k8s-dry-run    Dry-run K8s manifests (client-side)"
-	@echo "  make k8s-delete     Delete all Amastan resources from cluster"
+	@echo "  make k8s-apply          Apply K8s manifests to cluster"
+	@echo "  make k8s-dry-run        Dry-run K8s manifests (client-side)"
+	@echo "  make k8s-delete         Delete all Amastan resources"
 	@echo ""
-	@echo "  MONITORING"
-	@echo "  make monitor        Start Prometheus + Grafana stack"
-	@echo "  make monitor-down   Stop monitoring services"
+	@echo "  BACKTESTING & MODEL OPS"
+	@echo "  make backtest           Run backtest against historical data"
+	@echo "  make shadow-register    Register a shadow model for comparison"
+	@echo "  make shadow-status      Check current shadow model status"
+	@echo "  make circuit-status     Check RAG circuit breaker status"
 	@echo ""
 	@echo "  COMPLIANCE & AUDIT"
-	@echo "  make audit-deps     Check dependency pins and CVEs"
-	@echo "  make cost-estimate  Calculate cloud infrastructure cost"
-	@echo "  make clean          Remove all generated artifacts"
+	@echo "  make security-scan      Run bandit + pip-audit + safety"
+	@echo "  make audit-deps         Check dependency pins and CVEs"
+	@echo "  make cost-estimate      Calculate cloud infrastructure cost"
+	@echo "  make clean              Remove all generated artifacts"
 	@echo ""
 
 # ==========================================
@@ -64,6 +69,13 @@ bootstrap:
 	@echo "==> Running initial migration..."
 	make migrate
 	@echo "==> Bootstrap complete. System ready for development."
+
+bootstrap-imbalanced:
+	@echo "==> Bootstrapping with REALISTIC imbalanced data (0.01% fraud rate)..."
+	python scripts/bootstrap_imbalanced.py --n-samples 100000 --fraud-rate 0.0001
+	@echo "==> Running initial migration..."
+	make migrate
+	@echo "==> Imbalanced bootstrap complete. Model metrics are now meaningful."
 
 # ==========================================
 # Development
@@ -226,10 +238,50 @@ cost-estimate:
 clean:
 	@echo "==> WARNING: This will remove all generated data, models, and checkpoints."
 	@echo "==> Cleaning..."
-	rm -rf data/parquet data/reports tmp/checkpoint tmp/spark-warehouse
+	rm -rf data/parquet data/reports tmp/checkpoint tmp/spark-warehouse tmp/checkpoint_stateful
+	rm -rf data/dedup_cache.db
 	rm -rf models/registry
 	rm -rf htmlcov .pytest_cache .coverage
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	@echo "==> Clean complete. Source code and .env files preserved."
+
+# ==========================================
+# Backtesting & Model Ops
+# ==========================================
+
+backtest:
+	@echo "==> Running backtest against historical data..."
+	python scripts/backtest.py --output backtest_report.json
+	@echo "==> Report saved to backtest_report.json"
+
+shadow-register:
+	@echo "==> Register shadow model for comparison..."
+	@read -p "Enter model path: " path; \
+	python -c "from src.ml.shadow_model import ShadowModelManager; s=ShadowModelManager(); s.register_shadow_model('$$path'); print(f'Shadow model registered from $$path')"
+	@echo "==> Shadow model is now scoring alongside champion (alerts NOT triggered)"
+
+shadow-status:
+	@echo "==> Shadow model status..."
+	python -c "from src.ml.shadow_model import ShadowModelManager; import json; s=ShadowModelManager(); print(json.dumps(s.get_shadow_status(), indent=2, default=str))"
+
+circuit-status:
+	@echo "==> RAG Circuit Breaker Status..."
+	python -c "from src.rag_engine.circuit_breaker import get_rag_circuit; import json; c=get_rag_circuit(); print(json.dumps(c.get_stats(), indent=2))"
+
+# ==========================================
+# Security Scanning
+# ==========================================
+
+security-scan:
+	@echo "==> Running Bandit (Python security linter)..."
+	@bandit -r src/ dashboard/ scripts/ -f txt || true
+	@echo ""
+	@echo "==> Running pip-audit (CVE scanner)..."
+	@pip-audit --requirement requirements.txt || true
+	@echo ""
+	@echo "==> Running Safety (vulnerability check)..."
+	@safety check -r requirements.txt || true
+	@echo ""
+	@echo "==> Security scan complete. Review output above for findings."
