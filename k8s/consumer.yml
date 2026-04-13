@@ -1,0 +1,109 @@
+# Spark Consumer Deployment with HPA
+# The core fraud detection engine
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-consumer
+  namespace: amastan
+  labels:
+    app: fraud-consumer
+    component: stream-processing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fraud-consumer
+  strategy:
+    type: Recreate  # Only one consumer group can own partitions
+  template:
+    metadata:
+      labels:
+        app: fraud-consumer
+        component: stream-processing
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "4040"
+        prometheus.io/path: "/metrics/"
+    spec:
+      containers:
+        - name: consumer
+          image: amastan/consumer:latest
+          imagePullPolicy: Always
+          resources:
+            requests:
+              memory: "4Gi"  # Spark needs significant RAM
+              cpu: "2000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
+            - name: COMMAND_CENTER_API_URL
+              value: "http://fraud-api:8001"
+            - name: PYTHONPATH
+              value: "/app/src"
+            - name: SPARK_DRIVER_MEMORY
+              value: "4g"
+            - name: SPARK_EXECUTOR_MEMORY
+              value: "4g"
+            - name: SPARK_EXECUTOR_CORES
+              value: "2"
+            - name: UNCERTAINTY_ZONE
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: uncertainty_zone
+                  optional: true
+            - name: RANDOM_SAMPLE_RATE
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: random_sample_rate
+                  optional: true
+          volumeMounts:
+            - name: checkpoint
+              mountPath: /tmp/checkpoint_stateful
+            - name: parquet-data
+              mountPath: /app/data/parquet
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "test -f /tmp/checkpoint_stateful/state.json"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep -f consumer_stateful || exit 1"]
+            initialDelaySeconds: 120
+            periodSeconds: 60
+      volumes:
+        - name: checkpoint
+          persistentVolumeClaim:
+            claimName: consumer-checkpoint-pvc
+        - name: parquet-data
+          persistentVolumeClaim:
+            claimName: parquet-data-pvc
+      restartPolicy: Always
+---
+# Persistent Volume Claims
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: consumer-checkpoint-pvc
+  namespace: amastan
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: parquet-data-pvc
+  namespace: amastan
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi

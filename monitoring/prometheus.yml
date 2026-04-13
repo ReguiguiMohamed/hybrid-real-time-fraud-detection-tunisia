@@ -1,0 +1,57 @@
+# Prometheus Configuration for Amastan Fraud Shield Guard
+# Scrapes metrics from all pipeline components
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+# Alert rules
+rule_files:
+  - "alert_rules.yml"
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # FastAPI Command Center metrics
+  - job_name: "fraud-api"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["api:8001"]
+        labels:
+          service: "amastan-api"
+          environment: "production"
+
+  # Kafka broker metrics (via JMX exporter)
+  - job_name: "kafka"
+    static_configs:
+      - targets: ["kafka:9092"]
+        labels:
+          service: "amastan-kafka"
+          environment: "production"
+
+  # Spark consumer metrics (via JMX exporter configured in consumer)
+  - job_name: "spark-consumer"
+    static_configs:
+      - targets: ["consumer:4040"]
+        labels:
+          service: "amastan-spark-consumer"
+          environment: "production"
+
+  # Node exporter for infrastructure metrics
+  - job_name: "node-exporter"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          service: "amastan-infrastructure"
+          environment: "production"

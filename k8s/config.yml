@@ -1,0 +1,55 @@
+# ConfigMap and Secrets for Amastan Fraud Shield Guard
+# In production, use external-secrets-operator or HashiCorp Vault
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fraud-config
+  namespace: amastan
+data:
+  uncertainty_zone: "0.4,0.6"
+  random_sample_rate: "0.01"
+  random_sample_max_prob: "0.1"
+  thread_pool_size: "5"
+  alert_async_timeout_seconds: "15"
+  retrain_feedback_threshold: "100"
+  dlq_retry_interval_seconds: "60"
+  dlq_retry_max_attempts: "3"
+  retrain_min_feedback: "100"
+  champion_promotion_threshold: "0.02"
+  drift_window_hours: "24"
+  kafka_topic: "tunisian_transactions"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fraud-secrets
+  namespace: amastan
+type: Opaque
+data:
+  # Base64-encoded values. In production, use external-secrets-operator
+  # echo -n "your-token" | base64
+  api-token: ZGVmYXVsdF9kZXZfdG9rZW4=
+  admin-token: ZGVmYXVsdF9hZG1pbl90b2tlbg==
+  analyst-token: ZGVmYXVsdF9hbmFseXN0X3Rva2Vu
+  pii-salt: YW1hc3Rhbi1kZWZhdWx0LXNhbHQtY2hhbmdlLWluLXByb2R1Y3Rpb24=
+---
+# Grafana Dashboard provisioning
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: amastan
+data:
+  provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: amastan
+        orgId: 1
+        folder: Fraud Detection
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false

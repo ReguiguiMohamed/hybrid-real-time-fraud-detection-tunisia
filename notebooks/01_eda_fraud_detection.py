@@ -3,8 +3,11 @@
 Exploratory Data Analysis for Tunisian Fraud Detection System
 =============================================================
 
-This script performs EDA on the fraud detection pipeline data.
-Run it as a Python script or convert to Jupyter notebook using jupytext.
+IMPORTANT: This is EDA ONLY. No feature engineering, scaling, or model training
+parameters should be derived from this analysis. All ML pipeline parameters
+must be computed exclusively on training data after the train/test split.
+
+See src/ml/train_pipeline.py for the proper ML pipeline with NO data leakage.
 
 Usage:
     python notebooks/01_eda_fraud_detection.py
@@ -15,7 +18,7 @@ Sections:
     3. Geographic risk heatmap
     4. Payment method risk profiles
     5. D17/Flouci smurfing pattern analysis
-    6. Model performance review
+    6. Model performance review (descriptive only, no train/test contamination)
 """
 
 import sys

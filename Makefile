@@ -1,0 +1,235 @@
+# Amastan Fraud Shield Guard - Task Automation
+# Usage: make <target>
+# All targets are idempotent and safe to re-run.
+
+.PHONY: help setup dev prod test lint clean build monitor monitor-down bootstrap deploy k8s-apply k8s-dry-run migrate migrate-status cost-estimate audit-deps chaos-test
+
+# Default target
+help:
+	@echo "============================================================"
+	@echo "  Amastan Fraud Shield Guard - Operational Commands"
+	@echo "============================================================"
+	@echo ""
+	@echo "  SETUP & BOOTSTRAP"
+	@echo "  make setup          Initialize environment, install deps"
+	@echo "  make bootstrap      Seed database + train initial model"
+	@echo "  make migrate        Run database schema migrations"
+	@echo "  make migrate-status Show migration status"
+	@echo ""
+	@echo "  DEVELOPMENT"
+	@echo "  make dev            Start local dev stack (no Docker)"
+	@echo "  make test           Run full test suite"
+	@echo "  make test-unit      Run unit tests only (no Spark)"
+	@echo "  make lint           Run linter + type checks"
+	@echo "  make chaos-test     Run chaos/failure integration tests"
+	@echo ""
+	@echo "  PRODUCTION"
+	@echo "  make prod           Start full Docker Compose stack"
+	@echo "  make prod-monitor   Start Docker + Prometheus/Grafana"
+	@echo "  make monitor-down   Stop monitoring stack only"
+	@echo "  make build          Build all Docker images"
+	@echo "  make deploy         Push images and deploy (K8s)"
+	@echo ""
+	@echo "  KUBERNETES"
+	@echo "  make k8s-apply      Apply K8s manifests to cluster"
+	@echo "  make k8s-dry-run    Dry-run K8s manifests (client-side)"
+	@echo "  make k8s-delete     Delete all Amastan resources from cluster"
+	@echo ""
+	@echo "  MONITORING"
+	@echo "  make monitor        Start Prometheus + Grafana stack"
+	@echo "  make monitor-down   Stop monitoring services"
+	@echo ""
+	@echo "  COMPLIANCE & AUDIT"
+	@echo "  make audit-deps     Check dependency pins and CVEs"
+	@echo "  make cost-estimate  Calculate cloud infrastructure cost"
+	@echo "  make clean          Remove all generated artifacts"
+	@echo ""
+
+# ==========================================
+# Setup & Bootstrap
+# ==========================================
+
+setup:
+	@echo "==> Installing dependencies from pinned requirements..."
+	pip install --upgrade pip
+	pip install -r requirements.txt
+	@echo "==> Creating required directories..."
+	mkdir -p data/parquet data/reports data/vector_db data/knowledge_base tmp/checkpoint models/registry
+	@echo "==> Setup complete."
+
+bootstrap:
+	@echo "==> Bootstrapping fraud detection system..."
+	@echo "==> Generating initial model and seeding database..."
+	python scripts/bootstrap_system.py
+	@echo "==> Running initial migration..."
+	make migrate
+	@echo "==> Bootstrap complete. System ready for development."
+
+# ==========================================
+# Development
+# ==========================================
+
+dev:
+	@echo "==> Starting local development stack..."
+	@echo "==> API: http://localhost:8001"
+	@echo "==> Dashboard: http://localhost:8501"
+	@echo "==> Docs: http://localhost:8001/docs"
+	@echo ""
+	@echo "==> Starting API server..."
+	uvicorn dashboard.api:app --host 0.0.0.0 --port 8001 --reload &
+	@echo "==> Starting producer..."
+	PYTHONPATH=src python src/producer/producer.py --rate 2 &
+	@echo "==> Starting Streamlit dashboard..."
+	streamlit run dashboard/dashboard.py &
+	@echo ""
+	@echo "==> Dev stack running. Press Ctrl+C to stop all background jobs."
+	wait
+
+test:
+	@echo "==> Running full test suite..."
+	pytest tests/ -v --tb=short --cov=src --cov=dashboard --cov-report=term-missing --cov-report=html:htmlcov
+	@echo "==> Coverage report: htmlcov/index.html"
+
+test-unit:
+	@echo "==> Running unit tests (no Spark/Java required)..."
+	pytest tests/test_api.py tests/test_schemas.py tests/test_producer.py tests/test_risk_config.py tests/test_utils.py tests/test_monitoring.py -v --tb=short
+
+lint:
+	@echo "==> Running flake8..."
+	@flake8 src/ dashboard/ scripts/ notebooks/ --max-line-length=120 --extend-ignore=E501,W503 || true
+	@echo "==> Running black (check mode)..."
+	@black --check src/ dashboard/ scripts/ notebooks/ 2>/dev/null || true
+	@echo "==> Running isort (check mode)..."
+	@isort --check-only src/ dashboard/ scripts/ notebooks/ 2>/dev/null || true
+	@echo "==> Linting complete."
+
+chaos-test:
+	@echo "==> Running chaos/integration tests..."
+	@echo "==> Testing Kafka failure recovery..."
+	pytest tests/test_chaos_kafka.py -v --tb=short || true
+	@echo "==> Testing checkpoint recovery..."
+	pytest tests/test_chaos_checkpoint.py -v --tb=short || true
+	@echo "==> Testing Ollama fallback..."
+	pytest tests/test_chaos_ollama.py -v --tb=short || true
+	@echo "==> Testing DLQ behavior under load..."
+	python tests/test_chaos_dlq_load.py
+	@echo "==> Chaos tests complete."
+
+# ==========================================
+# Production
+# ==========================================
+
+prod:
+	@echo "==> Starting full production stack..."
+	docker compose up --build -d
+	@echo "==> Waiting for services to be healthy..."
+	@echo "==> API: http://localhost:8001"
+	@echo "==> Dashboard: http://localhost:8501"
+	@echo "==> ChromaDB: http://localhost:8000"
+	@echo ""
+	docker compose ps
+
+prod-monitor:
+	@echo "==> Starting full stack with monitoring..."
+	docker compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml up --build -d
+	@echo "==> Waiting for services to be healthy..."
+	@echo "==> API: http://localhost:8001"
+	@echo "==> Dashboard: http://localhost:8501"
+	@echo "==> Prometheus: http://localhost:9090"
+	@echo "==> Grafana: http://localhost:3000 (admin/admin)"
+	@echo "==> Alertmanager: http://localhost:9093"
+	@echo ""
+	docker compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml ps
+
+monitor:
+	@echo "==> Starting monitoring stack only..."
+	docker compose -f monitoring/docker-compose.monitoring.yml up -d
+	@echo "==> Prometheus: http://localhost:9090"
+	@echo "==> Grafana: http://localhost:3000 (admin/admin)"
+	@echo "==> Alertmanager: http://localhost:9093"
+
+monitor-down:
+	@echo "==> Stopping monitoring stack..."
+	docker compose -f monitoring/docker-compose.monitoring.yml down
+
+build:
+	@echo "==> Building all Docker images..."
+	docker compose build --parallel
+
+deploy:
+	@echo "==> Deploying to Kubernetes cluster..."
+	@echo "==> Pushing images to registry..."
+	docker compose push
+	@echo "==> Applying K8s manifests..."
+	kubectl apply -f k8s/namespace.yml
+	kubectl apply -f k8s/
+	@echo "==> Deployment in progress. Monitor with: kubectl get pods -n amastan"
+
+# ==========================================
+# Kubernetes
+# ==========================================
+
+k8s-apply:
+	@echo "==> Applying Kubernetes manifests..."
+	kubectl apply -f k8s/namespace.yml
+	kubectl apply -f k8s/
+	@echo "==> Manifests applied."
+
+k8s-dry-run:
+	@echo "==> Dry-run: validating Kubernetes manifests..."
+	kubectl apply -f k8s/namespace.yml --dry-run=client
+	kubectl apply -f k8s/ --dry-run=client
+	@echo "==> Validation complete."
+
+k8s-delete:
+	@echo "==> WARNING: Deleting all Amastan K8s resources..."
+	kubectl delete -f k8s/
+	kubectl delete -f k8s/namespace.yml
+	@echo "==> Resources deleted."
+
+# ==========================================
+# Database Migrations
+# ==========================================
+
+migrate:
+	@echo "==> Running database migrations..."
+	python scripts/migrate.py upgrade
+	@echo "==> Migrations applied."
+
+migrate-status:
+	@echo "==> Checking migration status..."
+	python scripts/migrate.py current
+	@echo "==> Status displayed."
+
+migrate-generate:
+	@echo "==> Generating new migration from current state..."
+	@read -p "Enter migration description: " desc; \
+	python scripts/migrate.py migrate "$$desc"
+	@echo "==> Migration generated."
+
+# ==========================================
+# Compliance & Audit
+# ==========================================
+
+audit-deps:
+	@echo "==> Auditing pinned dependencies..."
+	python scripts/audit_dependencies.py
+
+cost-estimate:
+	@echo "==> Cloud Infrastructure Cost Estimation..."
+	python scripts/cost_estimate.py
+
+# ==========================================
+# Cleanup
+# ==========================================
+
+clean:
+	@echo "==> WARNING: This will remove all generated data, models, and checkpoints."
+	@echo "==> Cleaning..."
+	rm -rf data/parquet data/reports tmp/checkpoint tmp/spark-warehouse
+	rm -rf models/registry
+	rm -rf htmlcov .pytest_cache .coverage
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
+	find . -type f -name "*.pyc" -delete 2>/dev/null || true
+	@echo "==> Clean complete. Source code and .env files preserved."

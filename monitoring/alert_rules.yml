@@ -1,0 +1,140 @@
+# Alert Rules for Amastan Fraud Shield Guard
+# Professional-grade alerting for production fraud pipeline
+groups:
+  - name: fraud_pipeline_alerts
+    interval: 30s
+    rules:
+      # Kafka Consumer Lag - critical for real-time processing
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumer_lag > 1000
+        for: 5m
+        labels:
+          severity: critical
+          component: kafka
+        annotations:
+          summary: "Kafka consumer lag exceeds 1000 messages"
+          description: "Consumer group {{ $labels.consumer_group }} on topic {{ $labels.topic }} has lag of {{ $value }} messages. Fraud detection latency is impacted."
+          runbook_url: "https://wiki.internal/runbooks/kafka-consumer-lag"
+
+      # Pipeline Processing Latency
+      - alert: PipelineLatencyHigh
+        expr: histogram_quantile(0.95, rate(fraud_ingestion_latency_seconds_bucket[5m])) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          component: pipeline
+        annotations:
+          summary: "P95 pipeline ingestion latency exceeds 2 seconds"
+          description: "P95 latency is {{ $value }}s. Real-time fraud detection SLA may be violated."
+          runbook_url: "https://wiki.internal/runbooks/pipeline-latency"
+
+      # Error Rate Alert
+      - alert: AlertErrorRateHigh
+        expr: rate(fraud_alerts_total{status="failed"}[5m]) / rate(fraud_alerts_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "Alert failure rate exceeds 5%"
+          description: "{{ $value | humanizePercentage }} of alerts are failing. Potential data loss in fraud detection pipeline."
+          runbook_url: "https://wiki.internal/runbooks/alert-failure-rate"
+
+      # Spark Streaming Backlog
+      - alert: SparkStreamingBacklog
+        expr: spark_streaming_batch_processing_time_seconds > 30
+        for: 10m
+        labels:
+          severity: warning
+          component: spark
+        annotations:
+          summary: "Spark batch processing time exceeds 30 seconds"
+          description: "Current batch processing time: {{ $value }}s. Streaming pipeline is falling behind."
+          runbook_url: "https://wiki.internal/runbooks/spark-backlog"
+
+      # Ollama LLM Availability
+      - alert: OllamaUnavailable
+        expr: probe_success{job="ollama-health"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: rag-engine
+        annotations:
+          summary: "Ollama LLM service is unavailable"
+          description: "SAR generation will fallback to deterministic templates. CTAF compliance may be impacted."
+          runbook_url: "https://wiki.internal/runbooks/ollama-down"
+
+      # Memory Pressure on Consumer
+      - alert: ConsumerMemoryPressure
+        expr: jvm_memory_bytes_used / jvm_memory_bytes_max > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          component: spark-consumer
+        annotations:
+          summary: "Spark consumer JVM memory usage exceeds 85%"
+          description: "Memory usage: {{ $value | humanizePercentage }}. Risk of OOM and data loss."
+          runbook_url: "https://wiki.internal/runbooks/memory-pressure"
+
+      # Model Prediction Rate Anomaly
+      - alert: PredictionRateAnomaly
+        expr: rate(fraud_predictions_total[15m]) < rate(fraud_predictions_total[1h]) * 0.5
+        for: 10m
+        labels:
+          severity: critical
+          component: ml-pipeline
+        annotations:
+          summary: "Fraud prediction rate dropped by more than 50%"
+          description: "Current rate: {{ $value }} predictions/sec. Pipeline may be stalled or Kafka connection lost."
+          runbook_url: "https://wiki.internal/runbooks/prediction-rate-drop"
+
+      # DLQ Size Growing
+      - alert: DLQSizeGrowing
+        expr: dlq_pending_count > 500
+        for: 15m
+        labels:
+          severity: warning
+          component: dlq
+        annotations:
+          summary: "Dead letter queue has more than 500 pending items"
+          description: "DLQ pending: {{ $value }}. Failed alerts are accumulating and may need manual intervention."
+          runbook_url: "https://wiki.internal/runbooks/dlq-growing"
+
+  - name: business_metrics_alerts
+    interval: 5m
+    rules:
+      # Fraud Rate Spike
+      - alert: FraudRateSpike
+        expr: rate(fraud_alerts_total{alert_type="high_risk"}[15m]) > rate(fraud_alerts_total{alert_type="high_risk"}[1h]) * 3
+        for: 15m
+        labels:
+          severity: critical
+          component: business
+        annotations:
+          summary: "Fraud alert rate tripled compared to hourly average"
+          description: "Current high-risk alert rate: {{ $value }}/sec. Potential coordinated attack or model drift."
+          runbook_url: "https://wiki.internal/runbooks/fraud-spike"
+
+      # Model Performance Degradation
+      - alert: ModelF1Degradation
+        expr: model_f1_score < 0.70
+        for: 1h
+        labels:
+          severity: critical
+          component: ml-model
+        annotations:
+          summary: "Model F1 score dropped below 0.70"
+          description: "Current F1: {{ $value }}. Model retraining may be needed urgently."
+          runbook_url: "https://wiki.internal/runbooks/model-degradation"
+
+      # Analyst Feedback Backlog
+      - alert: FeedbackBacklogHigh
+        expr: feedback_pending_count > 200
+        for: 1h
+        labels:
+          severity: warning
+          component: analyst-ops
+        annotations:
+          summary: "Analyst feedback backlog exceeds 200 items"
+          description: "Pending feedback: {{ $value }}. Model retraining pipeline may be starved of labeled data."
+          runbook_url: "https://wiki.internal/runbooks/feedback-backlog"
