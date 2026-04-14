@@ -67,4 +67,4 @@ ollama/
 *.swp
 *.swo
 #Claude folder
-claude/
+.claude/
