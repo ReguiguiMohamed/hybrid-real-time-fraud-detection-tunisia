@@ -2,36 +2,14 @@
 
 A production-grade real-time fraud mitigation engine for Tunisian digital payments. Uses **Kafka + Spark Structured Streaming** for millisecond detection, **XGBoost** for ML scoring, and **RAG (Ollama/ChromaDB)** for automated CTAF-compliant SAR generation.
 
-Built for the 2026 Tunisian cashless incentive era — a period of record liquidity amid deepening inflation.
+Built for the 2026 Tunisian digital payments landscape — a period of rapid mobile payment growth (81% surge in 2025) alongside evolving cash liberalization policies. Inflation has moderated to ~5% (down from 9.3% in 2023), while the 2026 Finance Law repealed the 5,000 TND cash-payment cap, creating a mixed environment of digital acceleration and cash flexibility. This system addresses fraud risks in that dual reality.
 
 ---
 
 ## Architecture
 
-<style>
-.mermaid {
-    width: 100% !important;
-    max-width: 100% !important;
-    overflow-x: auto;
-    background: #f8f9fa;
-    padding: 20px;
-    border-radius: 8px;
-    margin: 20px 0;
-}
-.mermaid svg {
-    width: 100% !important;
-    height: auto !important;
-    min-width: 900px;
-    max-height: 1500px;
-}
-.mermaid:hover svg {
-    width: auto !important;
-    transform: scale(1.05);
-    transition: transform 0.3s ease;
-}
-</style>
-
 ```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': { 'fontSize': '16px'}}}%%
 flowchart LR
     Prod[Producer\nFaker + Chaos] --> Kafka[Kafka\ntunisian_transactions]
     Kafka --> CG[Consumer\nSpark SS + Stateful]
@@ -71,6 +49,7 @@ flowchart LR
 ### Data Flow
 
 ```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': { 'fontSize': '14px'}}}%%
 sequenceDiagram
     participant P as Producer
     participant K as Kafka
@@ -104,7 +83,7 @@ sequenceDiagram
 | **Kafka over Redis Streams** | Confluent Kafka 7.7 | Durability, consumer groups, replay capability. Redis is faster but loses messages on restart. |
 | **Spark over Benthos/Python workers** | PySpark 4.1.1 | Windowed stateful aggregation (5-min windows, per-user state) is native in Spark. Benthos lacks ML integration. Python workers don't handle watermarks. |
 | **XGBoost over Deep Learning** | SparkXGBClassifier | Sub-millisecond inference, interpretable feature importance, works on small datasets. DL needs 100x more data. |
-| **SQLite over PostgreSQL** | SQLite WAL mode | Single-service deployment, <10K writes/sec. PostgreSQL adds operational complexity with no benefit at this scale. |
+| **SQLite over PostgreSQL** | SQLite WAL mode | Single-service deployment, <10K writes/sec for feedback/DLQ/registry. PostgreSQL adds operational complexity with no benefit at this scale. Migration path to PostgreSQL/CockroachDB is available if alert volume or monitoring demands exceed WAL capacity. |
 | **Ollama over Cloud LLMs** | Llama 3.1 local | PII never leaves the infrastructure. Cloud APIs violate Tunisian data residency requirements. |
 | **ChromaDB over Pinecone** | ChromaDB local | Same data residency concern. Embeddings (all-MiniLM-L6-v2) run locally. |
 
@@ -113,6 +92,7 @@ sequenceDiagram
 ## System Overview
 
 ```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': { 'fontSize': '14px'}}}%%
 graph TB
     subgraph Ingestion["Layer 1: Ingestion (Bronze)"]
         P1[Producer]
@@ -327,7 +307,7 @@ make audit-deps       # Dependency pin audit
 
 ## Risk Scoring Engine
 
-### Dynamic Rules Engine (No More Hard-Coded Values)
+### Dynamic Rules Engine
 
 Risk rules are now stored in SQLite and can be updated by risk officers **without code deployment**:
 
@@ -347,9 +327,9 @@ All changes are audited in `rule_change_log` with before/after values.
 |--------|---------------|-----------|-------------|
 | Velocity | 30% | >3 tx / 5min | Transaction frequency |
 | Travel | 30% | >1 governorate | Impossible travel detection |
-| High Value | 20% | >5000 TND | Amount threshold |
-| D17 Limit | 20% | >2000 TND (Flouci) | E-wallet smurfing |
-| Smurfing | +15% | >2 tx in 1400-1500 range | Structuring pattern |
+| High Value | 20% | >5000 TND | Monitoring flag (5,000 TND cash cap repealed by 2026 Finance Law) |
+| D17 Wallet | 20% | >500 TND/day or >5 tx/day | D17 digital wallet limits (not Flouci) |
+| Smurfing | +15% | Configurable range | Structuring pattern — validate against real transaction data |
 
 ---
 
@@ -357,38 +337,27 @@ All changes are audited in `rule_change_log` with before/after values.
 
 The **critical fix** in this version: all ML preprocessing is isolated within a Scikit-Learn Pipeline that is fit **only** on training data.
 
-```
-                    ┌─────────────────────────────────────────┐
-                    │           TRAINING PIPELINE              │
-                    │                                          │
-    Full Dataset ───┤                                          │
-                    │  ┌──────────────────┐                    │
-                    │  │ Train/Test Split │ ← FIRST step       │
-                    │  │   (80/20)        │                    │
-                    │  └────────┬─────────┘                    │
-                    │           │                               │
-                    │     ┌─────┴──────┐                       │
-                    │     ▼            ▼                       │
-                    │  Train Set    Test Set (TOUCHED LAST)    │
-                    │     │                                     │
-                    │  ┌──┴───────────┐                        │
-                    │  │ Preprocessor │ ← FIT on train ONLY    │
-                    │  │  (Scaler)    │   APPLY to test         │
-                    │  └──────┬───────┘                        │
-                    │         ▼                                 │
-                    │  ┌──────────┐                             │
-                    │  │  SMOTE   │ ← Applied to train ONLY    │
-                    │  └────┬─────┘                             │
-                    │       ▼                                    │
-                    │  ┌──────────┐                             │
-                    │  │  Model   │ ← FIT on preprocessed train │
-                    │  └────┬─────┘                             │
-                    │       ▼                                    │
-                    │  ┌──────────┐                             │
-                    │  │Evaluate  │ ← On untouched test set     │
-                    │  │(PR-AUC,F1)│                            │
-                    │  └──────────┘                             │
-                    └─────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': { 'fontSize': '14px'}}}%%
+flowchart TD
+    A[Full Dataset] --> B[Train/Test Split 80/20]
+    B -->|Train Set| C[Preprocessor\nScaler + Imputer]
+    B -->|Test Set| G[Hold Out — Touched Last]
+    C --> D[SMOTE\nApplied to Train Only]
+    D --> E[XGBoost Model\nFit on Preprocessed Train]
+    E --> F[Evaluate\nPR-AUC, F1, Precision, Recall]
+    G --> F
+
+    subgraph Training["Training Pipeline"]
+        B
+        C
+        D
+        E
+    end
+
+    style Training fill:#e3f2fd
+    style G fill:#fff3e0
+    style F fill:#e8f5e9
 ```
 
 See `src/ml/train_pipeline.py` for the full implementation.
@@ -408,7 +377,7 @@ See `src/ml/train_pipeline.py` for the full implementation.
 
 - **SAR Generation**: RAG (Ollama + ChromaDB) with **Pydantic schema validation** and **deterministic fallback**
 - **Filing Mandate**: 10-business-day deadline per CTAF/BCT
-- **Regulations**: Circular 2024-03/05, 2025-01; BCT Note 2025-02; AML Guidelines 2025
+- **Regulations**: Circular 2025-17 (Dec 2025, full overhaul of internal controls for banks/financial institutions); BCT AML/CFT circulars 2025; AML Guidelines 2025
 - **Export**: JSON CTAF export + structured SAR reports
 
 ### SAR Validation Flow
@@ -490,8 +459,9 @@ python scripts/cost_estimate.py --cloud all --tx-per-day 1000000
 | **AWS** (us-east-1) | ~$2,800 | $0.000093 | GPU instance is 35% of cost |
 | **GCP** (us-central1) | ~$2,700 | $0.000090 | L4 GPU slightly cheaper |
 | **Azure** (eastus) | ~$2,950 | $0.000098 | T4 GPU premium |
+| **EU-Nearshore** (OVH/Hetzner) | ~$1,800–$2,200 | $0.000060–$0.000073 | Lower cost, closer to Tunisia, better data residency alignment |
 
-**Cost optimization**: Running Ollama on CPU (no GPU) reduces cost by ~$800/month with 2-3x latency increase.
+**Cost optimization**: Running Ollama on CPU (no GPU) reduces cost by ~$800/month with 2-3x latency increase. For strict Tunisian data-residency compliance, consider EU-nearshore providers (OVH, Hetzner) or local providers to minimize cross-border data transfer.
 
 See `scripts/cost_estimate.py` for full breakdown.
 
