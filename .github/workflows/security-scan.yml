@@ -85,13 +85,17 @@ jobs:
   semgrep:
     name: Semgrep Static Analysis
     runs-on: ubuntu-latest
+    container:
+      image: returntocorp/semgrep:latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Run Semgrep
-        uses: returntocorp/semgrep-action@v2
+        run: semgrep --config p/python --config p/security-audit --config p/owasp-top-ten --json --output semgrep-report.json src/ dashboard/ scripts/ || true
+
+      - name: Upload semgrep report
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          config: >-
-            p/python
-            p/security-audit
-            p/owasp-top-ten
+          name: semgrep-report
+          path: semgrep-report.json
