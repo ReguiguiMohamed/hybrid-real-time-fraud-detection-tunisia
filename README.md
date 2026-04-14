@@ -8,6 +8,29 @@ Built for the 2026 Tunisian cashless incentive era — a period of record liquid
 
 ## Architecture
 
+<style>
+.mermaid {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: auto;
+    background: #f8f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    margin: 20px 0;
+}
+.mermaid svg {
+    width: 100% !important;
+    height: auto !important;
+    min-width: 900px;
+    max-height: 1500px;
+}
+.mermaid:hover svg {
+    width: auto !important;
+    transform: scale(1.05);
+    transition: transform 0.3s ease;
+}
+</style>
+
 ```mermaid
 flowchart LR
     Prod[Producer\nFaker + Chaos] --> Kafka[Kafka\ntunisian_transactions]
