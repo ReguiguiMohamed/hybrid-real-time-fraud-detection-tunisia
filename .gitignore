@@ -66,3 +66,5 @@ ollama/
 .idea/
 *.swp
 *.swo
+#Claude folder
+claude/
