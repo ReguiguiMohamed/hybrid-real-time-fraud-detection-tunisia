@@ -9,7 +9,7 @@ Built for the 2026 Tunisian digital payments landscape — a period of rapid mob
 ## Architecture
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': { 'fontSize': '16px'}}}%%
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '20px'}}}%%
 flowchart LR
     Prod[Producer\nFaker + Chaos] --> Kafka[Kafka\ntunisian_transactions]
     Kafka --> CG[Consumer\nSpark SS + Stateful]
@@ -49,7 +49,7 @@ flowchart LR
 ### Data Flow
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': { 'fontSize': '14px'}}}%%
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '20px'}}}%%
 sequenceDiagram
     participant P as Producer
     participant K as Kafka
