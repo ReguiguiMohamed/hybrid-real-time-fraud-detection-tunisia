@@ -328,14 +328,42 @@ if st.session_state.selected_transaction:
         explain_response = requests.get(explain_url, headers=headers)
         if explain_response.status_code == 200:
             explanation = explain_response.json()
-            factors = explanation.get("top_risk_factors", [])
+            shap_top5 = explanation.get("shap_top5", [])
+            factors = shap_top5 or explanation.get("top_risk_factors", [])
             if factors:
-                st.subheader("Top Risk Factors")
+                st.subheader("SHAP Explainability")
+                if shap_top5:
+                    shap_df = pd.DataFrame(shap_top5)
+                    chart_df = shap_df.sort_values("abs_impact", ascending=True)
+                    fig = go.Figure(go.Waterfall(
+                        orientation="h",
+                        measure=["relative"] * len(chart_df),
+                        y=chart_df["description"] if "description" in chart_df else chart_df["feature"],
+                        x=chart_df["impact"],
+                        text=[f"value={value:.3f}" for value in chart_df["value"]],
+                        connector={"line": {"color": "rgba(80,80,80,0.35)"}},
+                        increasing={"marker": {"color": "#c2410c"}},
+                        decreasing={"marker": {"color": "#0f766e"}},
+                    ))
+                    fig.update_layout(
+                        title="Top 5 SHAP Feature Contributions",
+                        xaxis_title="SHAP impact on fraud score",
+                        yaxis_title="Feature",
+                        height=320,
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
                 for factor in factors:
                     description = factor.get("description", factor.get("feature", ""))
-                    score = factor.get("score")
-                    if score is not None:
-                        st.write(f"- {description} (score: {score})")
+                    impact = factor.get("impact")
+                    if impact is not None:
+                        st.write(
+                            f"- {description}: value={factor.get('value')}, "
+                            f"SHAP impact={impact:.4f}"
+                        )
+                    elif factor.get("score") is not None:
+                        st.write(f"- {description} (score: {factor.get('score')})")
                     else:
                         st.write(f"- {description}")
             else:

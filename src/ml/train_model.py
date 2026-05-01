@@ -461,6 +461,36 @@ class FraudModelTrainer:
             print(f"Error extracting feature scores: {e}")
             return []
 
+    @staticmethod
+    def save_shap_artifacts(model, model_path):
+        """Persist XGBoost booster metadata needed for transaction-level SHAP."""
+        try:
+            feature_cols = []
+            xgb_model = None
+
+            if hasattr(model, "stages"):
+                for stage in model.stages:
+                    if hasattr(stage, "getInputCols"):
+                        feature_cols = list(stage.getInputCols())
+                    if hasattr(stage, "get_booster"):
+                        xgb_model = stage
+            elif hasattr(model, "get_booster"):
+                xgb_model = model
+
+            if not xgb_model:
+                raise ValueError("No SHAP-compatible XGBoost stage found")
+
+            artifact_dir = Path(model_path) / "shap"
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            xgb_model.get_booster().save_model(str(artifact_dir / "xgboost_booster.json"))
+            with open(artifact_dir / "feature_names.json", "w", encoding="utf-8") as f:
+                json.dump(feature_cols, f)
+            print(f"SHAP artifacts saved to {artifact_dir}")
+            return True
+        except Exception as e:
+            print(f"Warning: could not save SHAP artifacts: {e}")
+            return False
+
     def detect_data_drift(self):
         """Detect data drift in the incoming data"""
         try:
@@ -586,6 +616,7 @@ class FraudModelTrainer:
         model_path = str(Path("models") / "registry" / f"fraud_xgb_{version_id}")
         Path(model_path).parent.mkdir(parents=True, exist_ok=True)
         challenger_model.write().overwrite().save(model_path)
+        self.save_shap_artifacts(challenger_model, model_path)
 
         promoted_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") if promote else None
         self._record_model_registry_entry(

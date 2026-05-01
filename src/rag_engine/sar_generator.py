@@ -115,6 +115,8 @@ class SARGenerator:
         from rag_engine.sar_validator import ctaf_filing_deadline
         from datetime import datetime as _dt
         _filing_deadline = ctaf_filing_deadline(from_date=_dt.utcnow(), business_days=10).strftime("%Y-%m-%d")
+        shap_top5 = tx_data.get("shap_top5") or []
+        shap_grounding = json.dumps(shap_top5, indent=2, sort_keys=True)
 
         prompt = f"""You are a compliance officer generating Suspicious Activity Reports (SARs) for CTAF filing.
 
@@ -132,6 +134,9 @@ Transaction Details (use ONLY these values — do not invent or infer):
 - Payment Method: {tx_data.get('payment_method', 'UNKNOWN')}
 - Branch: {tx_data.get('branch_id', 'UNKNOWN')}
 - Timestamp: {tx_data.get('timestamp', 'UNKNOWN')}
+
+Model Explanation Grounding (top-5 SHAP contributions; use as factual evidence, do not infer other reasons):
+{shap_grounding}
 
 Regulatory Context:
 {context}

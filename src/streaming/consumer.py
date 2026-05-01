@@ -31,6 +31,15 @@ import time
 # Use the schema from the shared module to ensure consistency
 schema = TRANSACTION_SPARK_SCHEMA
 
+MODEL_FEATURE_COLS = [
+    "v_count",
+    "g_dist",
+    "avg_amount",
+    "is_smurfing",
+    "smurfing_velocity_flag",
+    "high_velocity_flag",
+]
+
 class FraudProcessor:
     def __init__(self, kafka_bootstrap=None):
         # Initializing with Kafka support (Delta Lake config removed to avoid streaming conflicts)
@@ -44,13 +53,14 @@ class FraudProcessor:
         self.kafka_bootstrap = kafka_bootstrap
 
         self._feedback_db_path = "./data/feedback.db"
+        self._shap_explainer = None
+        self._model_feature_cols = MODEL_FEATURE_COLS
 
         # Load XGBoost model for real-time inference
         try:
-            from xgboost.spark import SparkXGBClassifierModel
             model_path = self._get_champion_model_path()
             if model_path:
-                self.ml_model = SparkXGBClassifierModel.load(model_path)
+                self.ml_model = self._load_champion_model(model_path)
                 print(f"Model loaded from registry: {model_path}")
             else:
                 print("No champion model registered. Using rule-based scoring.")
@@ -58,6 +68,112 @@ class FraudProcessor:
         except Exception as e:
             print(f"Fallback to Rule-Based Scoring. Model not available: {e}")
             self.ml_model = None
+
+    def _load_champion_model(self, model_path):
+        """Load a registry model and initialise SHAP from its XGBoost booster."""
+        from pyspark.ml import PipelineModel
+        from xgboost.spark import SparkXGBClassifierModel
+
+        try:
+            model = PipelineModel.load(model_path)
+        except Exception:
+            model = SparkXGBClassifierModel.load(model_path)
+
+        self._configure_shap(model)
+        return model
+
+    def _extract_xgb_stage(self, model):
+        if hasattr(model, "stages"):
+            for stage in model.stages:
+                if hasattr(stage, "getInputCols"):
+                    self._model_feature_cols = list(stage.getInputCols())
+                if hasattr(stage, "get_booster"):
+                    return stage
+            return None
+        return model if hasattr(model, "get_booster") else None
+
+    def _configure_shap(self, model):
+        try:
+            import shap
+
+            xgb_stage = self._extract_xgb_stage(model)
+            if not xgb_stage:
+                logging.warning("SHAP unavailable: no XGBoost stage found in model")
+                return
+
+            booster = xgb_stage.get_booster()
+            self._shap_explainer = shap.TreeExplainer(booster)
+        except Exception:
+            logging.exception("SHAP initialisation failed; alerts will omit shap_top5")
+            self._shap_explainer = None
+
+    @staticmethod
+    def _as_float(value, default=0.0):
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _extract_probability(cls, value):
+        """Return fraud-class probability from Spark vectors or scalar scores."""
+        if value is None:
+            return 0.0
+        try:
+            if hasattr(value, "toArray"):
+                values = value.toArray().tolist()
+                return cls._as_float(values[-1] if values else 0.0)
+            if isinstance(value, (list, tuple)):
+                return cls._as_float(value[-1] if value else 0.0)
+            return cls._as_float(value)
+        except Exception:
+            return 0.0
+
+    def _compute_shap_top5(self, row_dict):
+        if not self._shap_explainer:
+            return []
+
+        try:
+            import numpy as np
+
+            feature_values = [
+                self._as_float(row_dict.get(feature_name))
+                for feature_name in self._model_feature_cols
+            ]
+            sample = np.array([feature_values], dtype=float)
+            shap_values = self._shap_explainer.shap_values(sample)
+
+            if isinstance(shap_values, list):
+                values = shap_values[-1][0]
+            else:
+                values = shap_values[0]
+                if getattr(values, "ndim", 1) > 1:
+                    values = values[:, -1]
+
+            ranked = []
+            total_abs_impact = sum(abs(float(impact)) for impact in values) or 0.0
+            for feature_name, feature_value, impact in zip(self._model_feature_cols, feature_values, values):
+                impact_value = float(impact)
+                ranked.append({
+                    "feature": feature_name,
+                    "value": feature_value,
+                    "impact": impact_value,
+                    "abs_impact": abs(impact_value),
+                    "direction": "increases_risk" if impact_value >= 0 else "decreases_risk",
+                })
+
+            ranked.sort(key=lambda item: item["abs_impact"], reverse=True)
+            top5 = ranked[:5]
+            covered_impact = sum(item["abs_impact"] for item in top5)
+            confidence = covered_impact / total_abs_impact if total_abs_impact else 0.0
+            for item in top5:
+                item["confidence"] = round(confidence, 6)
+            return top5
+        except Exception:
+            logging.exception("SHAP scoring failed for transaction %s", row_dict.get("transaction_id", "unknown"))
+            return []
 
     def start_dlq_retry_worker(self):
         if getattr(self, "_dlq_retry_thread", None) and self._dlq_retry_thread.is_alive():
@@ -200,10 +316,11 @@ class FraudProcessor:
         """Send an alert to the command center API."""
         try:
             row_dict = row.asDict()
-            ml_probability = row_dict.get("ml_probability", 0.0)
-            if ml_probability is None:
-                ml_probability = 0.0
-            ml_probability = float(ml_probability)
+            ml_probability = self._extract_probability(row_dict.get("ml_probability", 0.0))
+            shap_top5 = self._compute_shap_top5(row_dict)
+            row_dict["shap_top5"] = shap_top5
+            min_shap_confidence = self._parse_float_env("SHAP_MIN_CONFIDENCE_FOR_SAR", 0.0)
+            shap_confidence = shap_top5[0].get("confidence", 0.0) if shap_top5 else 0.0
 
             # Calculate ingestion latency: time from event timestamp to processing time
             import datetime
@@ -220,10 +337,16 @@ class FraudProcessor:
                 ingestion_latency = 0.0
 
             report = None
-            if generate_sar and sar_gen is not None:
+            if generate_sar and sar_gen is not None and shap_confidence >= min_shap_confidence:
                 report = sar_gen.generate_report(row_dict, ml_probability)
                 report_path = sar_gen.save_report(row_dict, report, ml_probability)
                 print(f"SAR generated and saved to: {report_path}")
+            elif generate_sar and sar_gen is not None:
+                print(
+                    "SAR generation skipped for transaction "
+                    f"{row_dict.get('transaction_id')} due to SHAP confidence "
+                    f"{shap_confidence:.3f} below {min_shap_confidence:.3f}"
+                )
 
             alert_payload = {
                 "transaction_id": str(row_dict.get("transaction_id", "unknown")),
@@ -236,6 +359,7 @@ class FraudProcessor:
                 "ml_probability": ml_probability,
                 "sar_report": report,
                 "alert_type": alert_type,
+                "shap_top5": shap_top5,
                 "ingestion_latency": ingestion_latency  # Include latency in payload for monitoring
             }
 
@@ -513,21 +637,22 @@ class FraudProcessor:
         # Apply ML inference if model is available
         if self.ml_model:
             from pyspark.ml.feature import VectorAssembler
+            from pyspark.ml.functions import vector_to_array
+            from pyspark.ml import PipelineModel
 
-            # Create feature vector for ML model
-            assembler = VectorAssembler(
-                inputCols=[
-                    "v_count", "g_dist", "avg_amount",
-                    "is_smurfing", "smurfing_velocity_flag", "high_velocity_flag",
-                ],
-                outputCol="features"
-            )
-
-            # Transform the streaming data on-the-fly
-            assembled_df = assembler.transform(features_df)
-            predictions = self.ml_model.transform(assembled_df)
+            if isinstance(self.ml_model, PipelineModel):
+                predictions = self.ml_model.transform(features_df)
+            else:
+                # Create feature vector for ML model
+                assembler = VectorAssembler(
+                    inputCols=MODEL_FEATURE_COLS,
+                    outputCol="features"
+                )
+                assembled_df = assembler.transform(features_df)
+                predictions = self.ml_model.transform(assembled_df)
             final_df = predictions.withColumnRenamed("prediction", "ml_prediction") \
-                                 .withColumnRenamed("probability", "ml_probability")
+                                  .withColumn("ml_probability", vector_to_array(col("probability")).getItem(1)) \
+                                  .drop("probability")
         else:
             # Fallback to rule-based scoring but maintain consistent schema
             final_df = features_df.withColumn("ml_prediction", lit(-1)) \

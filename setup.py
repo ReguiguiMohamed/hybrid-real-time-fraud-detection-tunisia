@@ -12,6 +12,7 @@ setup(
         "pyspark==4.1.1",
         "delta-spark==4.0.1",
         "xgboost==3.1.3",
+        "shap==0.46.0",
         "confluent-kafka==2.3.0",
         "faker==40.1.2",
         "pydantic==2.12.5",

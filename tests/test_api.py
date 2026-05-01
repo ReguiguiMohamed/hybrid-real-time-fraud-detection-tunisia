@@ -84,6 +84,38 @@ class TestAlertEndpoints:
         assert isinstance(data, list)
         assert len(data) >= 1
 
+    def test_add_alert_persists_shap_top5(self, api_test_client, admin_headers):
+        alert = {
+            "transaction_id": "TXN_SHAP_001",
+            "user_id": "USER_SHAP",
+            "amount_tnd": 9000.0,
+            "governorate": "Tunis",
+            "payment_method": "Flouci",
+            "branch_id": "Tunis-GNC",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "ml_probability": 0.96,
+            "alert_type": "high_risk",
+            "shap_top5": [
+                {
+                    "feature": "v_count",
+                    "value": 5,
+                    "impact": 0.41,
+                    "abs_impact": 0.41,
+                    "direction": "increases_risk",
+                    "confidence": 0.82,
+                }
+            ],
+        }
+        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        assert response.status_code == 200
+
+        explain_response = api_test_client.get("/alerts/TXN_SHAP_001/explain", headers=admin_headers)
+        assert explain_response.status_code == 200
+        explanation = explain_response.json()
+        assert explanation["shap_top5"][0]["feature"] == "v_count"
+        assert explanation["shap_top5"][0]["description"] == "High velocity (v_count)"
+        assert explanation["top_risk_factors"][0]["impact"] == 0.41
+
 
 class TestFeedbackEndpoints:
     def test_submit_feedback(self, api_test_client, admin_headers, analyst_headers):

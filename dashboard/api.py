@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import os
 import sys
 from datetime import datetime
@@ -166,6 +166,7 @@ class TransactionAlert(BaseModel):
     ml_probability: float
     sar_report: Optional[str] = None
     alert_type: Optional[str] = "high_risk"
+    shap_top5: Optional[List[Dict[str, Any]]] = None
     ingestion_latency: Optional[float] = None
 
 def parse_feature_importance(feature_payload, limit=3):
@@ -203,6 +204,43 @@ def parse_feature_importance(feature_payload, limit=3):
         }
         for feature_name, score in top_features
     ]
+
+def parse_shap_top5(shap_payload):
+    if not shap_payload:
+        return []
+    if isinstance(shap_payload, list):
+        items = shap_payload
+    else:
+        try:
+            items = json.loads(shap_payload)
+        except (TypeError, json.JSONDecodeError):
+            return []
+
+    normalized = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        feature_name = item.get("feature")
+        if not feature_name:
+            continue
+        try:
+            value = float(item.get("value", 0.0))
+            impact = float(item.get("impact", 0.0))
+            abs_impact = float(item.get("abs_impact", abs(impact)))
+        except (TypeError, ValueError):
+            continue
+        normalized.append({
+            "feature": feature_name,
+            "description": FEATURE_LABELS.get(feature_name, feature_name),
+            "value": value,
+            "impact": impact,
+            "abs_impact": abs_impact,
+            "direction": item.get("direction", "increases_risk" if impact >= 0 else "decreases_risk"),
+            "confidence": item.get("confidence"),
+        })
+
+    normalized.sort(key=lambda item: item["abs_impact"], reverse=True)
+    return normalized[:5]
 
 monitoring_engine = ForensicAnalyticEngine(DB_PATH)
 
@@ -247,6 +285,7 @@ def _init_database():
             ml_probability REAL,
             sar_report TEXT,
             alert_type TEXT DEFAULT 'high_risk',
+            shap_top5 TEXT,
             ingestion_latency REAL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -296,6 +335,8 @@ def _init_database():
         cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN branch_id TEXT")
     if "ingestion_latency" not in existing_columns:
         cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN ingestion_latency REAL")
+    if "shap_top5" not in existing_columns:
+        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN shap_top5 TEXT")
 
     conn.commit()
     conn.close()
@@ -470,7 +511,7 @@ async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None,
         if branch_id:
             cursor.execute("""
                 SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk')
+                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
                 FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = 'high_risk'
                   AND ml_probability > 0.85
@@ -481,7 +522,7 @@ async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None,
         else:
             cursor.execute("""
                 SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk')
+                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
                 FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = 'high_risk'
                   AND ml_probability > 0.85
@@ -504,7 +545,8 @@ async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None,
                 "timestamp": row[6],
                 "ml_probability": row[7],
                 "sar_report": row[8],
-                "alert_type": row[9]
+                "alert_type": row[9],
+                "shap_top5": parse_shap_top5(row[10])
             }
             alerts.append(alert)
 
@@ -523,7 +565,7 @@ async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, b
         if alert_type:
             cursor.execute("""
                 SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk')
+                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
                 FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = ?
                   AND (? IS NULL OR branch_id = ?)
@@ -533,7 +575,7 @@ async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, b
         else:
             cursor.execute("""
                 SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk')
+                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
                 FROM high_risk_alerts
                 WHERE (? IS NULL OR branch_id = ?)
                 ORDER BY created_at DESC
@@ -555,7 +597,8 @@ async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, b
                 "timestamp": row[6],
                 "ml_probability": row[7],
                 "sar_report": row[8],
-                "alert_type": row[9]
+                "alert_type": row[9],
+                "shap_top5": parse_shap_top5(row[10])
             }
             alerts.append(alert)
 
@@ -718,17 +761,18 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
         cursor = conn.cursor()
 
         alert_type = alert.alert_type or "high_risk"
+        shap_payload = json.dumps(alert.shap_top5 or [])
 
         # Insert alert into database
         cursor.execute("""
             INSERT OR IGNORE INTO high_risk_alerts
             (transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id,
-             timestamp, ml_probability, sar_report, alert_type, ingestion_latency)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             timestamp, ml_probability, sar_report, alert_type, shap_top5, ingestion_latency)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             alert.transaction_id, alert.user_id, alert.amount_tnd,
             alert.governorate, alert.payment_method, alert.branch_id, alert.timestamp,
-            alert.ml_probability, alert.sar_report, alert_type, alert.ingestion_latency
+            alert.ml_probability, alert.sar_report, alert_type, shap_payload, alert.ingestion_latency
         ))
 
         conn.commit()
@@ -835,7 +879,7 @@ async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analy
         conn = get_sqlite_connection(str(DB_PATH))
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT transaction_id, COALESCE(alert_type, 'high_risk')
+            SELECT transaction_id, COALESCE(alert_type, 'high_risk'), shap_top5
             FROM high_risk_alerts
             WHERE transaction_id = ?
         """, (transaction_id,))
@@ -854,10 +898,20 @@ async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analy
         registry_row = cursor.fetchone()
         conn.close()
 
+        shap_top5 = parse_shap_top5(row[2])
+        if shap_top5:
+            return {
+                "transaction_id": transaction_id,
+                "alert_type": row[1],
+                "shap_top5": shap_top5,
+                "top_risk_factors": shap_top5
+            }
+
         if not registry_row or not registry_row[0]:
             return {
                 "transaction_id": transaction_id,
                 "alert_type": row[1],
+                "shap_top5": [],
                 "top_risk_factors": [],
                 "note": "No champion feature importance registered yet."
             }
@@ -867,6 +921,7 @@ async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analy
         return {
             "transaction_id": transaction_id,
             "alert_type": row[1],
+            "shap_top5": [],
             "top_risk_factors": factors
         }
     except HTTPException:
@@ -882,7 +937,7 @@ async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analys
         cursor = conn.cursor()
         cursor.execute("""
             SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                   branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk')
+                   branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
             FROM high_risk_alerts
             WHERE transaction_id = ?
         """, (transaction_id,))
@@ -910,7 +965,8 @@ async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analys
         registry_row = cursor.fetchone()
         conn.close()
 
-        factors = parse_feature_importance(registry_row[0] if registry_row else None, limit=3)
+        shap_top5 = parse_shap_top5(alert_row[10])
+        factors = shap_top5 or parse_feature_importance(registry_row[0] if registry_row else None, limit=3)
 
         analyst_payload = None
         if feedback_row:
@@ -931,6 +987,7 @@ async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analys
             "ml_probability": alert_row[7],
             "sar_report": alert_row[8],
             "alert_type": alert_row[9],
+            "shap_top5": shap_top5,
             "top_risk_factors": factors,
             "analyst_review": analyst_payload,
             "exported_at": datetime.utcnow().isoformat()
@@ -950,7 +1007,7 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
         if branch_id:
             cursor.execute("""
                 SELECT hra.transaction_id, hra.user_id, hra.amount_tnd, hra.governorate, hra.payment_method,
-                       hra.branch_id, hra.timestamp, hra.ml_probability, hra.sar_report,
+                       hra.branch_id, hra.timestamp, hra.ml_probability, hra.sar_report, hra.shap_top5,
                        fl.analyst_label, fl.analyst_comment, fl.timestamp
                 FROM feedback_labels fl
                 JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
@@ -962,7 +1019,7 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
         else:
             cursor.execute("""
                 SELECT hra.transaction_id, hra.user_id, hra.amount_tnd, hra.governorate, hra.payment_method,
-                       hra.branch_id, hra.timestamp, hra.ml_probability, hra.sar_report,
+                       hra.branch_id, hra.timestamp, hra.ml_probability, hra.sar_report, hra.shap_top5,
                        fl.analyst_label, fl.analyst_comment, fl.timestamp
                 FROM feedback_labels fl
                 JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
@@ -997,10 +1054,11 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
                 "timestamp": row[6],
                 "ml_probability": row[7],
                 "sar_report": row[8],
-                "analyst_label": row[9],
-                "analyst_comment": row[10],
-                "analyst_timestamp": row[11],
-                "top_risk_factors": factors
+                "shap_top5": parse_shap_top5(row[9]),
+                "analyst_label": row[10],
+                "analyst_comment": row[11],
+                "analyst_timestamp": row[12],
+                "top_risk_factors": parse_shap_top5(row[9]) or factors
             })
 
         return {
