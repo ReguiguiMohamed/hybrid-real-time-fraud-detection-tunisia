@@ -8,11 +8,80 @@ This ensures CTAF compliance even when the LLM produces gibberish, empty, or mal
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
+
+# Tunisian fixed public holidays (MM-DD format).
+# Islamic holidays (Eid al-Fitr x2, Eid al-Adha x2, Islamic New Year, Mawlid) are
+# lunar-calendar-dependent and must be injected via the TUNISIA_ISLAMIC_HOLIDAYS env
+# variable as a comma-separated list of ISO dates, e.g. "2026-03-20,2026-03-21".
+_FIXED_TN_HOLIDAYS = {
+    "01-01",  # New Year's Day
+    "03-20",  # Independence Day (Fête de l'Indépendance)
+    "03-21",  # Youth Day (Fête de la Jeunesse)
+    "04-09",  # Martyrs' Day (Journée des Martyrs)
+    "05-01",  # Labour Day (Fête du Travail)
+    "07-25",  # Republic Day (Fête de la République)
+    "08-13",  # Women's Day (Journée de la Femme)
+    "10-15",  # Evacuation Day (Fête de l'Évacuation)
+}
+
+
+def _load_islamic_holidays() -> set:
+    """Load Islamic holiday dates from environment variable (ISO format, comma-separated)."""
+    import os
+    raw = os.getenv("TUNISIA_ISLAMIC_HOLIDAYS", "")
+    dates = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            dates.add(part)
+    return dates
+
+
+def ctaf_filing_deadline(from_date: datetime = None, business_days: int = 10) -> datetime:
+    """
+    Calculate the CTAF SAR filing deadline as exactly `business_days` Tunisian
+    business days (jours ouvrables) from `from_date`.
+
+    CTAF requires STR/SAR filing within 10 business days of detecting suspicious
+    activity. Non-compliance: fine up to TND 50,000 or license revocation.
+    (Source: CTAF activity reports; AML Law requirements confirmed 2025.)
+
+    Tunisian work week: Monday–Friday. Weekends (Sat/Sun) and public holidays excluded.
+    """
+    if from_date is None:
+        from_date = datetime.utcnow()
+
+    islamic_holidays = _load_islamic_holidays()
+    current = from_date
+    days_counted = 0
+
+    while days_counted < business_days:
+        current = current.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        current = current + timedelta(days=1)
+
+        # Skip weekends (Saturday=5, Sunday=6)
+        if current.weekday() >= 5:
+            continue
+
+        # Skip fixed public holidays
+        month_day = current.strftime("%m-%d")
+        if month_day in _FIXED_TN_HOLIDAYS:
+            continue
+
+        # Skip Islamic holidays
+        if current.strftime("%Y-%m-%d") in islamic_holidays:
+            continue
+
+        days_counted += 1
+
+    return current
 
 
 class SARUrgencyAssessment(BaseModel):
@@ -65,7 +134,7 @@ class SARReport(BaseModel):
     executive_summary: str = Field(..., min_length=30, max_length=2000, description="Concise summary of suspicious activity")
     risk_factors: list[SARRiskFactor] = Field(..., min_items=1, description="At least 1 risk factor must be cited")
     regulatory_violations: list[SARRegulatoryViolation] = Field(..., min_items=1)
-    recommended_next_steps: list[str] = Field(..., min_items=1, min_length=10)
+    recommended_next_steps: list[str] = Field(..., min_length=1)
     urgency_assessment: SARUrgencyAssessment = Field(...)
     ml_score: float = Field(..., ge=0.0, le=1.0, description="ML model probability score")
     amount_tnd: float = Field(..., ge=0.0, description="Transaction amount in TND")
@@ -167,25 +236,44 @@ def generate_deterministic_fallback(tx_data: dict, ml_score: float, raw_llm_outp
     timestamp = tx_data.get("timestamp", "unknown")
     branch_id = tx_data.get("branch_id", "unknown")
 
+    now = datetime.utcnow()
+    # CTAF requires filing within 10 business days (jours ouvrables) of detection.
+    # Penalty for non-compliance: up to TND 50,000 fine or license revocation.
+    deadline_dt = ctaf_filing_deadline(from_date=now, business_days=10)
+    filing_deadline_iso = deadline_dt.strftime("%Y-%m-%d")
+
     # Determine urgency based on ML score
     if ml_score >= 0.9:
         urgency_level = "IMMEDIATE"
-        urgency_reason = f"ML score {ml_score:.2f} indicates extremely high probability of fraud. Immediate investigation required."
+        urgency_reason = (
+            f"ML score {ml_score:.2f} indicates extremely high fraud probability. "
+            f"File with CTAF before {filing_deadline_iso} "
+            f"(10 business days / jours ouvrables). "
+            f"Non-compliance penalty: up to TND 50,000 or license revocation."
+        )
     elif ml_score >= 0.75:
         urgency_level = "HIGH"
-        urgency_reason = f"ML score {ml_score:.2f} indicates high probability of fraud. Priority investigation recommended."
+        urgency_reason = (
+            f"ML score {ml_score:.2f} indicates high fraud probability. "
+            f"CTAF filing deadline: {filing_deadline_iso} "
+            f"(10 business days / jours ouvrables)."
+        )
     else:
         urgency_level = "STANDARD"
-        urgency_reason = f"ML score {ml_score:.2f} indicates moderate probability. Standard 10-business-day filing window applies."
+        urgency_reason = (
+            f"ML score {ml_score:.2f} indicates moderate probability. "
+            f"Standard CTAF deadline: {filing_deadline_iso} "
+            f"(10 business days / jours ouvrables from detection)."
+        )
 
     # Determine risk factors based on transaction data
     risk_factors = []
 
-    if amount > 5000:
+    if amount > 15000:
         risk_factors.append(SARRiskFactor(
-            factor="High-value transaction exceeding normal threshold",
+            factor="Large transaction — enhanced AML monitoring threshold exceeded",
             severity="HIGH",
-            evidence=f"Transaction amount: {amount:.2f} TND exceeds 5000 TND threshold",
+            evidence=f"Transaction amount {amount:.2f} TND exceeds the 15,000 TND enhanced-monitoring threshold.",
         ))
 
     if amount >= 1400 and amount <= 1500 and payment_method.lower() == "flouci":
@@ -223,12 +311,14 @@ def generate_deterministic_fallback(tx_data: dict, ml_score: float, raw_llm_outp
         ),
     ]
 
-    # Default recommended next steps
     recommended_next_steps = [
-        "Flag transaction for analyst review within 24 hours",
-        "Cross-reference with user's transaction history for pattern analysis",
-        "If confirmed: file SAR with CTAF within 10 business days",
-        "Consider account-level review for additional suspicious activity",
+        "Flag transaction for analyst review within 24 hours.",
+        "Cross-reference with user's full transaction history for pattern analysis.",
+        f"If confirmed suspicious: file SAR with CTAF by {filing_deadline_iso} "
+        f"(10 business days / jours ouvrables). "
+        f"Non-compliance: up to TND 50,000 fine or license revocation.",
+        "Consider account-level freeze pending analyst determination.",
+        "Preserve all transaction records — BCT retention requirement: 5 years.",
     ]
 
     return SARReport(
@@ -246,7 +336,7 @@ def generate_deterministic_fallback(tx_data: dict, ml_score: float, raw_llm_outp
         recommended_next_steps=recommended_next_steps,
         urgency_assessment=SARUrgencyAssessment(
             urgency_level=urgency_level,
-            filing_deadline=datetime.utcnow().isoformat(),
+            filing_deadline=filing_deadline_iso,
             reason=urgency_reason,
         ),
         ml_score=ml_score,
@@ -302,7 +392,8 @@ def format_sar_report(report: SARReport) -> str:
     lines.append("URGENCY ASSESSMENT")
     lines.append("-" * 70)
     lines.append(f"  Level:    {report.urgency_assessment.urgency_level}")
-    lines.append(f"  Deadline: {report.urgency_assessment.filing_deadline}")
+    lines.append(f"  Deadline: {report.urgency_assessment.filing_deadline}  (10 business days / jours ouvrables — CTAF requirement)")
+    lines.append(f"  Penalty:  Non-compliance: up to TND 50,000 fine or license revocation")
     lines.append(f"  Reason:   {report.urgency_assessment.reason}")
     lines.append("")
     lines.append("-" * 70)

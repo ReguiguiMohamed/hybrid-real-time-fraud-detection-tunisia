@@ -17,7 +17,14 @@ from pyspark.sql.functions import from_json, col, window, count, approx_count_di
 from pyspark.sql.types import DoubleType
 from shared.schemas import Transaction, TRANSACTION_SPARK_SCHEMA
 from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
-from shared.quality_gates import validate_transaction_quality, apply_d17_rule
+from shared.rules_engine import get_rules_engine
+from shared.quality_gates import (
+    validate_transaction_quality,
+    apply_d17_rule,
+    apply_tunicheque_rules,
+    apply_ttn_rules,
+    apply_fcy_rules,
+)
 from shared.utils import make_authenticated_request, log_failed_alert, retry_failed_alerts, get_sqlite_connection
 import time
 
@@ -381,8 +388,11 @@ class FraudProcessor:
         enriched = validated_df.withColumn("event_time", to_timestamp(col("timestamp"))) \
                          .withWatermark("event_time", "10 minutes")
 
-        # Apply D17 rule for risk boosting
+        # Apply channel-specific and account-type rules
         enriched_with_d17 = apply_d17_rule(enriched)
+        enriched_with_d17 = apply_tunicheque_rules(enriched_with_d17)
+        enriched_with_d17 = apply_ttn_rules(enriched_with_d17)
+        enriched_with_d17 = apply_fcy_rules(enriched_with_d17)
 
         # Complex Windowing: Velocity + Multi-Gov
         analytics = enriched_with_d17.groupBy(
@@ -394,7 +404,9 @@ class FraudProcessor:
             lit(None).cast(DoubleType()).alias("amount_tnd")  # Placeholder for avg amount
         )
 
-        # Calculate average amount per user in window, including payment method info for D17 rule
+        # Calculate per-user window aggregates.
+        # Boolean risk flags from channel rules are max-aggregated so that a single
+        # flagged transaction in the window elevates the entire user window's score.
         analytics_with_amount = enriched_with_d17.groupBy(
             window(col("event_time"), "5 minutes", "1 minute"),
             col("user_id")
@@ -402,9 +414,26 @@ class FraudProcessor:
             count("transaction_id").alias("v_count"),
             approx_count_distinct("governorate").alias("g_dist"),
             expr("avg(amount_tnd)").alias("avg_amount"),
-            # Check if any transaction in the window used Flouci method
-            expr("sum(case when payment_method = 'Flouci' then 1 else 0 end)").alias("flouci_count")
+            expr("sum(case when payment_method = 'Flouci' then 1 else 0 end)").alias("flouci_count"),
+            # TuniChèque flags
+            expr("max(case when tunicheque_missing_token_flag = true then 1 else 0 end)").alias("tunicheque_missing_token"),
+            expr("max(case when tunicheque_expired_lock_flag = true then 1 else 0 end)").alias("tunicheque_expired_lock"),
+            # TTN e-invoicing flags
+            expr("max(case when ttn_missing_token_flag = true then 1 else 0 end)").alias("ttn_missing_token"),
+            expr("max(case when ttn_missing_invoice_id_flag = true then 1 else 0 end)").alias("ttn_missing_invoice_id"),
+            # FCY layering flags (Finance Law 2026)
+            expr("max(case when fcy_round_amount_flag = true then 1 else 0 end)").alias("fcy_round_amount"),
+            expr("max(case when fcy_large_credit_flag = true then 1 else 0 end)").alias("fcy_large_credit"),
+            # FCY multi-sender smurfing: count of distinct users sending to FCY accounts in window
+            expr("sum(case when account_type = 'FCY' then 1 else 0 end)").alias("fcy_tx_count"),
         )
+
+        # Fetch live rule thresholds from the rules engine.
+        # Values are captured at query-plan build time; the rules engine's 30-second
+        # TTL cache handles hot-reload on the next Spark driver restart.
+        _engine = get_rules_engine()
+        _high_value_threshold = _engine.get_high_value_threshold()
+        _smurfing = _engine.get_smurfing_params()
 
         # 3. Weighted Risk Scoring (The Industrial Logic)
         scored = analytics_with_amount.withColumn(
@@ -414,22 +443,72 @@ class FraudProcessor:
             "travel_risk",
             when(col("g_dist") > 1, lit(1.0)).otherwise(lit(0.0))
         ).withColumn(
+            # Finance Law 2026: TND 5,000 cash cap repealed. Threshold now sourced
+            # from the rules engine (default 15,000 TND) as a general large-tx flag.
             "high_value_risk",
-            when(col("avg_amount") > 5000, lit(1.0)).otherwise(lit(0.0))  # Threshold for high value
+            when(col("avg_amount") > lit(_high_value_threshold), lit(1.0)).otherwise(lit(0.0))
         ).withColumn(
             "d17_risk",
             when((col("avg_amount") > 2000) & (col("flouci_count") > 0), lit(1.0)).otherwise(lit(0.0))
+        ).withColumn(
+            # Velocity-based smurfing: multiple sub-threshold txs whose window
+            # aggregate exceeds the minimum — does not depend on any hard cash cap.
+            "smurfing_velocity_risk",
+            when(
+                (col("v_count") >= lit(_smurfing["min_count"])) &
+                (col("avg_amount") < lit(_smurfing["unit_cap"])) &
+                (col("v_count") * col("avg_amount") > lit(_smurfing["agg_min"])),
+                lit(1.0)
+            ).otherwise(lit(0.0))
+        ).withColumn(
+            # FCY layering: round-amount conversion or large single credit into FCY account
+            "fcy_risk",
+            when(
+                (col("fcy_round_amount") == lit(1)) |
+                (col("fcy_large_credit") == lit(1)) |
+                (col("fcy_tx_count") >= lit(3)),
+                lit(1.0)
+            ).otherwise(lit(0.0))
+        ).withColumn(
+            # TuniChèque: missing QR token = counterfeit or pre-reform cheque (high risk)
+            "tunicheque_risk",
+            when(
+                (col("tunicheque_missing_token") == lit(1)) |
+                (col("tunicheque_expired_lock") == lit(1)),
+                lit(1.0)
+            ).otherwise(lit(0.0))
+        ).withColumn(
+            # TTN e-invoicing: missing clearance token or invoice ID = non-compliant or fabricated
+            "ttn_risk",
+            when(
+                (col("ttn_missing_token") == lit(1)) |
+                (col("ttn_missing_invoice_id") == lit(1)),
+                lit(1.0)
+            ).otherwise(lit(0.0))
         ).withColumn(
             "risk_score",
             (col("velocity_risk") * RISK_WEIGHTS["velocity"]) +
             (col("travel_risk") * RISK_WEIGHTS["travel"]) +
             (col("high_value_risk") * RISK_WEIGHTS["high_value"]) +
-            (col("d17_risk") * RISK_WEIGHTS["d17_limit"])
+            (col("d17_risk") * RISK_WEIGHTS["d17_limit"]) +
+            (col("smurfing_velocity_risk") * RISK_WEIGHTS["d17_limit"]) +
+            # Channel compliance risks use high_value weight (0.2) as they are definitive signals
+            (col("tunicheque_risk") * RISK_WEIGHTS["high_value"]) +
+            (col("ttn_risk") * RISK_WEIGHTS["high_value"]) +
+            # FCY layering: round amount or large single credit into FCY account
+            (col("fcy_risk") * RISK_WEIGHTS["high_value"])
         )
 
         # Prepare features for ML model regardless of model availability to ensure consistent schema
-        features_df = scored.withColumn("is_smurfing", when(col("avg_amount").between(1400, 1500), 1).otherwise(0)) \
-                            .withColumn("high_velocity_flag", when(col("v_count") > D17_VELOCITY_CAP, 1).otherwise(0))
+        features_df = scored \
+            .withColumn(
+                # D17 e-wallet smurfing: amount in the 1400–1500 TND range (just below D17 soft limit).
+                # Kept separate from smurfing_velocity_risk which is payment-method agnostic.
+                "is_smurfing",
+                when(col("avg_amount").between(D17_SOFT_LIMIT - 100, D17_SOFT_LIMIT), 1).otherwise(0)
+            ) \
+            .withColumn("smurfing_velocity_flag", col("smurfing_velocity_risk").cast("integer")) \
+            .withColumn("high_velocity_flag", when(col("v_count") > D17_VELOCITY_CAP, 1).otherwise(0))
 
         # Apply ML inference if model is available
         if self.ml_model:
@@ -437,7 +516,10 @@ class FraudProcessor:
 
             # Create feature vector for ML model
             assembler = VectorAssembler(
-                inputCols=["v_count", "g_dist", "avg_amount", "is_smurfing", "high_velocity_flag"],
+                inputCols=[
+                    "v_count", "g_dist", "avg_amount",
+                    "is_smurfing", "smurfing_velocity_flag", "high_velocity_flag",
+                ],
                 outputCol="features"
             )
 

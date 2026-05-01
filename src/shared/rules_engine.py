@@ -28,7 +28,13 @@ DEFAULT_RISK_WEIGHTS = {
 DEFAULT_CBDC_GOVERNORATES = ["Tunis", "Sfax"]
 DEFAULT_D17_SOFT_LIMIT = 1500.0
 DEFAULT_D17_VELOCITY_CAP = 5
-DEFAULT_HIGH_VALUE_THRESHOLD = 5000.0
+# Finance Law 2026: TND 5,000 cash cap repealed. Threshold is now a general
+# large-transaction AML monitoring trigger, not a structuring-cap signal.
+DEFAULT_HIGH_VALUE_THRESHOLD = 15000.0
+# Velocity-based smurfing defaults (independent of any hard cash cap)
+DEFAULT_SMURFING_UNIT_CAP = 3000.0    # per-tx amount ceiling to qualify as smurfing unit
+DEFAULT_SMURFING_AGG_MIN = 9000.0     # window aggregate must exceed this to fire
+DEFAULT_SMURFING_MIN_COUNT = 3        # minimum qualifying tx count in window
 
 
 class RulesEngine:
@@ -194,9 +200,27 @@ class RulesEngine:
         return self._cache.get("d17_rules", {})
 
     def get_high_value_threshold(self) -> float:
-        """Get the high-value transaction threshold."""
+        """Get the large-transaction AML monitoring threshold (not a cash cap — repealed 2026)."""
         threshold = self.get_threshold("high_value")
         return threshold if threshold is not None else DEFAULT_HIGH_VALUE_THRESHOLD
+
+    def get_smurfing_params(self) -> dict:
+        """Get velocity-based smurfing detection parameters."""
+        self._ensure_cache()
+        risk_rules = self._cache.get("risk_rules", {})
+        return {
+            "unit_cap": risk_rules.get("smurfing_velocity_unit_cap", {}).get(
+                "threshold", DEFAULT_SMURFING_UNIT_CAP
+            ),
+            "agg_min": risk_rules.get("smurfing_velocity_agg_min", {}).get(
+                "threshold", DEFAULT_SMURFING_AGG_MIN
+            ),
+            "min_count": int(
+                risk_rules.get("smurfing_velocity_min_count", {}).get(
+                    "threshold", DEFAULT_SMURFING_MIN_COUNT
+                )
+            ),
+        }
 
     def force_refresh(self):
         """Force a cache refresh (e.g., after rule update)."""

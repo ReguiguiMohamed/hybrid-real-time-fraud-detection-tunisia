@@ -68,3 +68,6 @@ ollama/
 *.swo
 #Claude folder
 .claude/
+
+# Session state (not for version control)
+CHECKPOINT.md

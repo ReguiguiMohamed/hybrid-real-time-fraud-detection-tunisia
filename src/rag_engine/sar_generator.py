@@ -112,13 +112,22 @@ class SARGenerator:
         context = "\n".join(context_parts) if context_parts else "No specific regulatory context found."
 
         # 2. LLM SAR Prompt (requests structured JSON output)
+        from rag_engine.sar_validator import ctaf_filing_deadline
+        from datetime import datetime as _dt
+        _filing_deadline = ctaf_filing_deadline(from_date=_dt.utcnow(), business_days=10).strftime("%Y-%m-%d")
+
         prompt = f"""You are a compliance officer generating Suspicious Activity Reports (SARs) for CTAF filing.
 
-Transaction Details:
+CTAF FILING RULES (mandatory):
+- Deadline: 10 business days (jours ouvrables) from detection = {_filing_deadline}
+- Non-compliance penalty: up to TND 50,000 fine or license revocation
+- "filing_deadline" in your response MUST be exactly: "{_filing_deadline}"
+
+Transaction Details (use ONLY these values — do not invent or infer):
 - Transaction ID: {tx_data.get('transaction_id', 'UNKNOWN')}
 - User ID: {tx_data.get('user_id', 'UNKNOWN')}
-- ML Fraud Probability Score: {ml_score}
-- Amount: {tx_data.get('amount_tnd', 0)} TND
+- ML Fraud Probability Score: {ml_score:.4f}
+- Amount: {tx_data.get('amount_tnd', 0):.2f} TND
 - Governorate: {tx_data.get('governorate', 'UNKNOWN')}
 - Payment Method: {tx_data.get('payment_method', 'UNKNOWN')}
 - Branch: {tx_data.get('branch_id', 'UNKNOWN')}
@@ -131,13 +140,13 @@ Respond ONLY with a valid JSON object (no markdown, no commentary) with this exa
 {{
   "executive_summary": "Brief summary (30-500 chars) of suspicious activity",
   "risk_factors": [
-    {{"factor": "Risk factor description", "severity": "HIGH|MEDIUM|LOW", "evidence": "Specific evidence"}}
+    {{"factor": "Risk factor description", "severity": "HIGH|MEDIUM|LOW", "evidence": "Specific evidence from the transaction details above"}}
   ],
   "regulatory_violations": [
     {{"regulation": "Regulation name", "description": "What was violated", "article": "Article number if applicable"}}
   ],
   "recommended_next_steps": ["Step 1", "Step 2", "Step 3"],
-  "urgency_assessment": {{"urgency_level": "IMMEDIATE|HIGH|STANDARD|LOW", "filing_deadline": "ISO date", "reason": "Why"}}
+  "urgency_assessment": {{"urgency_level": "IMMEDIATE|HIGH|STANDARD|LOW", "filing_deadline": "{_filing_deadline}", "reason": "Why"}}
 }}"""
 
         # 3. Call LLM (circuit breaker may raise CircuitBreakerError)

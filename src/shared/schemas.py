@@ -1,8 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from pydantic import BaseModel, Field
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
@@ -17,6 +17,53 @@ class Transaction(BaseModel):
     payment_method: str
     branch_id: str
     fraud_seed: bool = False
+
+    # ── TuniChèque fields (Law n°2024-41, effective Feb 2, 2025) ──────────────
+    # Present only when payment_method == "TUNICHEQUE". Null for all other channels.
+    tunicheque_token: Optional[str] = Field(
+        None,
+        description="QR verification token issued by the TuniChèque platform. "
+                    "Absence on a cheque transaction is itself a fraud signal.",
+    )
+    tunicheque_provision_locked: Optional[bool] = Field(
+        None,
+        description="True if the cheque amount has been reserved on the issuer's account "
+                    "by TuniChèque. False or null on non-cheque transactions.",
+    )
+    tunicheque_clearing_deadline: Optional[str] = Field(
+        None,
+        description="ISO date by which the cheque must be presented for clearing "
+                    "(maximum 8 business days after the provision-lock date).",
+    )
+
+    # ── TTN / El Fatoora e-invoicing fields (Finance Law 2026, effective Jan 1 2026) ──
+    # Present only when payment_method == "TTN_EINVOICE". Null for all other channels.
+    ttn_clearance_token: Optional[str] = Field(
+        None,
+        description="Real-time clearance token from the TTN El Fatoora platform. "
+                    "All B2B VAT-service transactions must carry this token from Jan 2026.",
+    )
+    ttn_invoice_id: Optional[str] = Field(
+        None,
+        description="Unique invoice identifier as registered on the TTN platform.",
+    )
+
+    # ── Foreign Currency Account fields (Finance Law 2026, BCT circulars pending) ──
+    account_type: Optional[str] = Field(
+        None,
+        description="Account type: TND | FCY | MIXED. "
+                    "FCY accounts newly permitted for Tunisian residents under Finance Law 2026.",
+    )
+    fcy_currency: Optional[str] = Field(
+        None,
+        description="ISO 4217 currency code for FCY accounts (e.g., EUR, USD). "
+                    "Null for TND accounts.",
+    )
+
+    # ── Device / channel signals (nullable — absent from API-originated transactions) ──
+    device_id: Optional[str] = Field(None, description="Hashed device fingerprint.")
+    vpn_detected: Optional[bool] = Field(None, description="True if transaction originated via VPN.")
+    emulator_detected: Optional[bool] = Field(None, description="True if mobile emulator detected.")
 
 
 def pydantic_to_spark_schema(model_class) -> StructType:
