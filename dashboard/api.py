@@ -1128,8 +1128,11 @@ _legacy_router = APIRouter(tags=["legacy"], deprecated=True)
 
 
 @_legacy_router.get("/auth/whoami")
-async def _legacy_whoami(**kwargs):
-    return await whoami(**kwargs)
+async def _legacy_whoami(
+    user_id: Optional[str] = Header(None),
+    auth=Depends(require_scopes({"analyst", "admin"})),
+):
+    return await whoami(user_id, auth)
 
 
 @_legacy_router.post("/feedback/")
