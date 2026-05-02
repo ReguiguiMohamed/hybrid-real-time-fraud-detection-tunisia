@@ -26,6 +26,7 @@ from shared.quality_gates import (
     apply_fcy_rules,
 )
 from shared.utils import make_authenticated_request, log_failed_alert, retry_failed_alerts, get_sqlite_connection
+from compliance.pkyc import PKYCPublisher
 import time
 
 # Use the schema from the shared module to ensure consistency
@@ -55,6 +56,7 @@ class FraudProcessor:
         self._feedback_db_path = "./data/feedback.db"
         self._shap_explainer = None
         self._model_feature_cols = MODEL_FEATURE_COLS
+        self._pkyc_publisher = PKYCPublisher(bootstrap_servers=self.kafka_bootstrap)
 
         # Load XGBoost model for real-time inference
         try:
@@ -364,6 +366,13 @@ class FraudProcessor:
             }
 
             try:
+                pkyc_event = self._pkyc_publisher.publish_for_transaction(row_dict, ml_probability)
+                if pkyc_event:
+                    print(
+                        "pKYC trigger published for transaction "
+                        f"{row_dict.get('transaction_id')}: {pkyc_event.trigger_reason}"
+                    )
+
                 start_time = time.time()
                 api_response = make_authenticated_request(
                     "POST",

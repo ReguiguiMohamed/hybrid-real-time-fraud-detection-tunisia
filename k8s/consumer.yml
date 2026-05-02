@@ -39,6 +39,12 @@ spec:
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: "kafka:9092"
+            - name: PKYC_TOPIC
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: pkyc_topic
+                  optional: true
             - name: COMMAND_CENTER_API_URL
               value: "http://fraud-api:8001"
             - name: COMMAND_CENTER_API_VERSION

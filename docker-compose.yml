@@ -125,6 +125,7 @@ services:
       dockerfile: Dockerfile.producer
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PKYC_TOPIC=${PKYC_TOPIC:-pkyc_triggers}
       - COMMAND_CENTER_API_URL=http://api:8001
       - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
       - PYTHONPATH=/app/src
@@ -146,6 +147,7 @@ services:
       - ./models:/app/models
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PKYC_TOPIC=${PKYC_TOPIC:-pkyc_triggers}
       - COMMAND_CENTER_API_URL=http://api:8001
       - COMMAND_CENTER_API_VERSION=api/v1
       - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
