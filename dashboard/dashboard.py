@@ -237,6 +237,40 @@ with col2:
             if stats.get('random_sample_rate') is not None:
                 st.caption(f"Random sample rate: {stats.get('random_sample_rate'):.3f}")
 
+            compliance_url = get_api_url("compliance/kpis/")
+            if branch_id_filter:
+                compliance_url = f"{compliance_url}?branch_id={branch_id_filter}"
+            compliance_response = requests.get(compliance_url, headers=headers)
+            if compliance_response.status_code == 200:
+                compliance = compliance_response.json()
+                st.subheader("Compliance KPIs")
+                kpi_col1, kpi_col2 = st.columns(2)
+                with kpi_col1:
+                    st.metric("SARs Filed (30d)", compliance.get("sar_reports_generated", 0))
+                    st.metric("Sanctions Hits (30d)", compliance.get("sanctions_hits", 0))
+                with kpi_col2:
+                    st.metric("Overdue SARs", compliance.get("overdue_sar_count", 0))
+                    st.metric("False Positive Rate", f"{compliance.get('false_positive_rate', 0):.2f}%")
+                st.metric("SAR On-Time Rate", f"{compliance.get('sar_on_time_percent', 0):.2f}%")
+
+                pkyc_by_reason = compliance.get("pkyc_triggers_by_reason", {})
+                if pkyc_by_reason:
+                    pkyc_df = pd.DataFrame(
+                        list(pkyc_by_reason.items()),
+                        columns=["Trigger Reason", "Count"],
+                    )
+                    st.bar_chart(pkyc_df.set_index("Trigger Reason"))
+
+                accounts_by_tier = compliance.get("high_risk_accounts_by_tier", {})
+                if accounts_by_tier:
+                    tier_df = pd.DataFrame(
+                        list(accounts_by_tier.items()),
+                        columns=["Risk Tier", "Accounts"],
+                    )
+                    st.dataframe(tier_df, use_container_width=True, hide_index=True)
+            else:
+                st.warning("Compliance KPIs unavailable.")
+
             # Feedback breakdown chart
             if stats.get('feedback_breakdown'):
                 breakdown = stats['feedback_breakdown']

@@ -1,7 +1,7 @@
 """Tests for the FastAPI Command Center API."""
 import pytest
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 class TestHealthEndpoint:
@@ -159,6 +159,99 @@ class TestStatsEndpoint:
         assert "total_feedback" in data
         assert "high_risk_alerts" in data
         assert "precision" in data
+
+
+class TestComplianceKpisEndpoint:
+    def test_compliance_kpis_are_derived_from_recorded_facts(self, api_test_client, admin_headers, tmp_db):
+        now = datetime.now(timezone.utc)
+        overdue_detection = now - timedelta(days=45)
+        recent_detection = now - timedelta(days=2)
+        branch_id = "KPI-Test-Branch"
+
+        conn = sqlite3.connect(str(tmp_db))
+        cursor = conn.cursor()
+        cursor.executemany("""
+            INSERT INTO high_risk_alerts
+            (transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id,
+             timestamp, ml_probability, sar_report, alert_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            (
+                "TXN_KPI_SAR_ON_TIME",
+                "USER_KPI_1",
+                5000.0,
+                "Tunis",
+                "Flouci",
+                branch_id,
+                recent_detection.isoformat(),
+                0.91,
+                "SAR report text",
+                "high_risk",
+                now.isoformat(),
+            ),
+            (
+                "TXN_KPI_OVERDUE",
+                "USER_KPI_2",
+                7000.0,
+                "Sfax",
+                "eDinar",
+                branch_id,
+                overdue_detection.isoformat(),
+                0.89,
+                None,
+                "high_risk",
+                overdue_detection.isoformat(),
+            ),
+            (
+                "TXN_KPI_SANCTIONS",
+                "USER_KPI_3",
+                9000.0,
+                "Sousse",
+                "Konnect",
+                branch_id,
+                recent_detection.isoformat(),
+                1.0,
+                "SAR sanctions report",
+                "SANCTIONS_HIT",
+                now.isoformat(),
+            ),
+        ])
+        cursor.executemany("""
+            INSERT INTO feedback_labels (transaction_id, analyst_label, analyst_comment, branch_id)
+            VALUES (?, ?, ?, ?)
+        """, [
+            ("TXN_KPI_SAR_ON_TIME", "False Positive", "Reviewed", branch_id),
+            ("TXN_KPI_SANCTIONS", "Confirmed Fraud", "Reviewed", branch_id),
+        ])
+        cursor.execute("""
+            INSERT INTO pkyc_triggers
+            (event_type, account_id, trigger_reason, timestamp, current_risk_tier, signals, transaction_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "pKYC_trigger",
+            "hashed-account",
+            "LOW_RISK_TO_HIGH_SCORE",
+            now.isoformat(),
+            "HIGH",
+            "{}",
+            "TXN_KPI_SAR_ON_TIME",
+        ))
+        conn.commit()
+        conn.close()
+
+        response = api_test_client.get(f"/compliance/kpis/?branch_id={branch_id}", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["sar_reports_generated"] == 2
+        assert data["sar_on_time_percent"] == 100.0
+        assert data["overdue_sar_count"] == 1
+        assert data["overdue_sars"][0]["transaction_id"] == "TXN_KPI_OVERDUE"
+        assert data["sanctions_hits"] == 1
+        assert data["pkyc_triggers_by_reason"] == {"LOW_RISK_TO_HIGH_SCORE": 1}
+        assert data["false_positive_rate"] == 50.0
+        assert data["high_risk_accounts_by_tier"]["CRITICAL"] == 2
+        assert data["branch_id"] == branch_id
 
 
 class TestExplainEndpoint:

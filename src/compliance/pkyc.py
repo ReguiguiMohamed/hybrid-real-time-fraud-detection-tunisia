@@ -10,6 +10,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from shared.pii_masking import hash_pii
+from shared.utils import get_sqlite_connection
 
 logger = logging.getLogger(__name__)
 
@@ -137,11 +138,55 @@ class PKYCTriggerEvaluator:
 class PKYCPublisher:
     """Publish pKYC trigger events to Kafka without leaking raw account IDs."""
 
-    def __init__(self, bootstrap_servers: Optional[str] = None, topic: Optional[str] = None, producer=None):
+    def __init__(
+        self,
+        bootstrap_servers: Optional[str] = None,
+        topic: Optional[str] = None,
+        producer=None,
+        audit_db_path: Optional[str] = None,
+    ):
         self.bootstrap_servers = bootstrap_servers or os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
         self.topic = topic or os.getenv("PKYC_TOPIC", "pkyc_triggers")
+        self.audit_db_path = audit_db_path or os.getenv("FEEDBACK_DB_PATH", "./data/feedback.db")
         self._producer = producer
         self._producer_init_attempted = producer is not None
+
+    def _record_event(self, event: PKYCTriggerEvent) -> None:
+        conn = None
+        try:
+            conn = get_sqlite_connection(self.audit_db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pkyc_triggers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    trigger_reason TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    current_risk_tier TEXT NOT NULL,
+                    signals TEXT NOT NULL,
+                    transaction_id TEXT
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO pkyc_triggers
+                (event_type, account_id, trigger_reason, timestamp, current_risk_tier, signals, transaction_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                event.event_type,
+                event.account_id,
+                event.trigger_reason,
+                event.timestamp,
+                event.current_risk_tier,
+                json.dumps(event.signals, sort_keys=True, default=str),
+                event.transaction_id,
+            ))
+            conn.commit()
+        except Exception:
+            logger.exception("Failed to record pKYC trigger audit event for tx %s", event.transaction_id)
+        finally:
+            if conn is not None:
+                conn.close()
 
     def _get_producer(self):
         if self._producer_init_attempted:
@@ -164,6 +209,7 @@ class PKYCPublisher:
         event = PKYCTriggerEvaluator.evaluate(tx_data, ml_probability)
         if event is None:
             return None
+        self._record_event(event)
 
         producer = self._get_producer()
         if producer is None:

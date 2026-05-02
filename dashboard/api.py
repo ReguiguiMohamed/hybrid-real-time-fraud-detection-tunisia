@@ -11,7 +11,7 @@ from pydantic import BaseModel, field_validator
 from typing import Optional, List, Dict, Any
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import threading
 import hashlib
@@ -22,6 +22,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from shared.utils import get_sqlite_connection, retry_failed_alerts
 from shared.logging_config import setup_logging
+from rag_engine.sar_validator import ctaf_filing_deadline
 
 sys.path.append(os.path.dirname(__file__))
 from monitoring import ForensicAnalyticEngine
@@ -87,6 +88,35 @@ def parse_int_env(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except ValueError:
         return default
+
+def parse_datetime_value(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    raw_value = str(value).strip()
+    candidates = [raw_value]
+    if raw_value.endswith("Z"):
+        candidates.append(f"{raw_value[:-1]}+00:00")
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
+        except ValueError:
+            continue
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw_value, pattern)
+        except ValueError:
+            continue
+    return None
+
+def format_percent(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round((numerator / denominator) * 100.0, 2)
 
 RANDOM_SAMPLE_RATE = max(0.0, min(parse_float_env("RANDOM_SAMPLE_RATE", 0.01), 1.0))
 
@@ -318,6 +348,19 @@ def _init_database():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
             previous_state TEXT,
             new_state TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pkyc_triggers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            trigger_reason TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            current_risk_tier TEXT NOT NULL,
+            signals TEXT NOT NULL,
+            transaction_id TEXT
         )
     """)
 
@@ -753,6 +796,158 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/compliance/kpis/")
+async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Return compliance KPIs derived only from recorded alerts, SARs, feedback, and pKYC audit events."""
+    try:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        conn = get_sqlite_connection(str(DB_PATH))
+        cursor = conn.cursor()
+
+        branch_clause = "AND branch_id = ?" if branch_id else ""
+        branch_params = (branch_id,) if branch_id else ()
+
+        cursor.execute(f"""
+            SELECT COUNT(*)
+            FROM high_risk_alerts
+            WHERE sar_report IS NOT NULL
+              AND TRIM(sar_report) != ''
+              AND datetime(created_at) >= datetime('now', '-30 days')
+              {branch_clause}
+        """, branch_params)
+        sar_reports_30d = cursor.fetchone()[0]
+
+        cursor.execute(f"""
+            SELECT transaction_id, timestamp, created_at
+            FROM high_risk_alerts
+            WHERE sar_report IS NOT NULL
+              AND TRIM(sar_report) != ''
+              {branch_clause}
+        """, branch_params)
+        filed_rows = cursor.fetchall()
+
+        on_time = 0
+        evaluated_sars = 0
+        for _, detection_timestamp, created_at in filed_rows:
+            detected_at = parse_datetime_value(detection_timestamp)
+            filed_at = parse_datetime_value(created_at)
+            if detected_at is None or filed_at is None:
+                continue
+            evaluated_sars += 1
+            if filed_at <= ctaf_filing_deadline(from_date=detected_at, business_days=10):
+                on_time += 1
+
+        cursor.execute(f"""
+            SELECT transaction_id, timestamp
+            FROM high_risk_alerts
+            WHERE COALESCE(alert_type, 'high_risk') IN ('high_risk', 'SANCTIONS_HIT')
+              AND (sar_report IS NULL OR TRIM(sar_report) = '')
+              {branch_clause}
+        """, branch_params)
+        pending_rows = cursor.fetchall()
+
+        overdue_sars = []
+        for transaction_id, detection_timestamp in pending_rows:
+            detected_at = parse_datetime_value(detection_timestamp)
+            if detected_at is None:
+                continue
+            deadline = ctaf_filing_deadline(from_date=detected_at, business_days=10)
+            if now > deadline:
+                overdue_sars.append({
+                    "transaction_id": transaction_id,
+                    "detected_at": detected_at.isoformat(),
+                    "deadline": deadline.isoformat(),
+                })
+
+        cursor.execute(f"""
+            SELECT COUNT(*)
+            FROM high_risk_alerts
+            WHERE COALESCE(alert_type, 'high_risk') = 'SANCTIONS_HIT'
+              AND datetime(created_at) >= datetime('now', '-30 days')
+              {branch_clause}
+        """, branch_params)
+        sanctions_hits_30d = cursor.fetchone()[0]
+
+        if branch_id:
+            cursor.execute("""
+                SELECT fl.analyst_label, COUNT(*)
+                FROM feedback_labels fl
+                JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
+                WHERE fl.analyst_label IN ('Confirmed Fraud', 'False Positive')
+                  AND fl.branch_id = ?
+                GROUP BY fl.analyst_label
+            """, (branch_id,))
+        else:
+            cursor.execute("""
+                SELECT analyst_label, COUNT(*)
+                FROM feedback_labels
+                WHERE analyst_label IN ('Confirmed Fraud', 'False Positive')
+                GROUP BY analyst_label
+            """)
+        feedback_counts = dict(cursor.fetchall())
+        reviewed_total = sum(feedback_counts.values())
+        false_positives = feedback_counts.get("False Positive", 0)
+
+        if branch_id:
+            cursor.execute("""
+                SELECT pt.trigger_reason, COUNT(*)
+                FROM pkyc_triggers pt
+                JOIN high_risk_alerts hra ON hra.transaction_id = pt.transaction_id
+                WHERE datetime(pt.timestamp) >= datetime('now', '-30 days')
+                  AND hra.branch_id = ?
+                GROUP BY pt.trigger_reason
+                ORDER BY COUNT(*) DESC, pt.trigger_reason
+            """, (branch_id,))
+        else:
+            cursor.execute("""
+                SELECT trigger_reason, COUNT(*)
+                FROM pkyc_triggers
+                WHERE datetime(timestamp) >= datetime('now', '-30 days')
+                GROUP BY trigger_reason
+                ORDER BY COUNT(*) DESC, trigger_reason
+            """)
+        pkyc_by_reason = dict(cursor.fetchall())
+
+        cursor.execute(f"""
+            SELECT
+                CASE
+                    WHEN ml_probability >= 0.85 THEN 'CRITICAL'
+                    WHEN ml_probability >= 0.70 THEN 'HIGH'
+                    WHEN ml_probability >= 0.30 THEN 'MEDIUM'
+                    ELSE 'LOW'
+                END AS risk_tier,
+                COUNT(DISTINCT user_id)
+            FROM high_risk_alerts
+            WHERE user_id IS NOT NULL
+              AND user_id != ''
+              AND COALESCE(alert_type, 'high_risk') IN ('high_risk', 'SANCTIONS_HIT')
+              AND datetime(created_at) >= datetime('now', '-30 days')
+              {branch_clause}
+            GROUP BY risk_tier
+        """, branch_params)
+        accounts_by_tier = dict(cursor.fetchall())
+
+        conn.close()
+
+        return {
+            "window_days": 30,
+            "sar_reports_generated": sar_reports_30d,
+            "sar_on_time_percent": format_percent(on_time, evaluated_sars),
+            "sar_on_time_sample_count": evaluated_sars,
+            "overdue_sar_count": len(overdue_sars),
+            "overdue_sars": overdue_sars,
+            "sanctions_hits": sanctions_hits_30d,
+            "pkyc_triggers_by_reason": pkyc_by_reason,
+            "false_positive_rate": format_percent(false_positives, reviewed_total),
+            "reviewed_alerts": reviewed_total,
+            "high_risk_accounts_by_tier": accounts_by_tier,
+            "branch_id": branch_id,
+            "generated_at": now.isoformat(),
+            "basis": "Recorded alerts, generated SAR text, analyst feedback, sanctions alerts, and pKYC audit events.",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/alerts/add/")
 async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scopes({"admin"}))):
     """Endpoint to add high-risk alerts from the streaming pipeline"""
@@ -1156,6 +1351,12 @@ async def _legacy_add_alert(alert: TransactionAlert, auth=Depends(require_scopes
 @_legacy_router.get("/stats/")
 async def _legacy_stats(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     return await get_system_stats(branch_id, auth)
+
+
+@_legacy_router.get("/compliance/kpis/")
+async def _legacy_compliance_kpis(branch_id: Optional[str] = None,
+                                  auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await get_compliance_kpis(branch_id, auth)
 
 
 @_legacy_router.get("/monitoring/model-performance/")

@@ -73,6 +73,7 @@ def test_publisher_serializes_event_to_configured_topic():
         bootstrap_servers="unused:9092",
         topic="pkyc_test_topic",
         producer=producer,
+        audit_db_path=":memory:",
     )
     tx = {
         "transaction_id": "TXN_PKYC_004",
@@ -90,3 +91,41 @@ def test_publisher_serializes_event_to_configured_topic():
     payload = json.loads(message["value"].decode("utf-8"))
     assert payload["event_type"] == "pKYC_trigger"
     assert payload["transaction_id"] == "TXN_PKYC_004"
+
+
+def test_publisher_records_auditable_trigger_without_raw_account(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "pkyc_audit.db"
+    publisher = PKYCPublisher(
+        bootstrap_servers="unused:9092",
+        topic="pkyc_test_topic",
+        producer=None,
+        audit_db_path=str(db_path),
+    )
+    tx = {
+        "transaction_id": "TXN_PKYC_005",
+        "user_id": "USER_AUDIT",
+        "previous_risk_tier": "LOW",
+    }
+
+    event = publisher.publish_for_transaction(tx, 0.78)
+
+    assert event is not None
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT event_type, account_id, trigger_reason, current_risk_tier, transaction_id
+        FROM pkyc_triggers
+    """)
+    row = cursor.fetchone()
+    conn.close()
+
+    assert row == (
+        "pKYC_trigger",
+        hash_pii("USER_AUDIT"),
+        "LOW_RISK_TO_HIGH_SCORE",
+        "HIGH",
+        "TXN_PKYC_005",
+    )
+    assert row[1] != "USER_AUDIT"
