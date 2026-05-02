@@ -65,6 +65,11 @@ class Transaction(BaseModel):
     vpn_detected: Optional[bool] = Field(None, description="True if transaction originated via VPN.")
     emulator_detected: Optional[bool] = Field(None, description="True if mobile emulator detected.")
 
+    # Sanctions / PEP screening inputs.
+    sender_account: Optional[str] = Field(None, description="Originating account identifier for sanctions screening.")
+    receiver_account: Optional[str] = Field(None, description="Beneficiary account identifier for sanctions screening.")
+    pep_connected: Optional[bool] = Field(None, description="True when account enrichment marks the party as PEP-connected.")
+
 
 def pydantic_to_spark_schema(model_class) -> StructType:
     """

@@ -55,6 +55,7 @@ class TestSparkSchemaConversion:
         "ttn_clearance_token", "ttn_invoice_id",
         "account_type", "fcy_currency",
         "device_id", "vpn_detected", "emulator_detected",
+        "sender_account", "receiver_account", "pep_connected",
     ]
 
     def test_schema_contains_all_core_fields(self):
@@ -98,6 +99,9 @@ class TestTransactionOptionalFields:
         assert tx.fcy_currency is None
         assert tx.device_id is None
         assert tx.vpn_detected is None
+        assert tx.sender_account is None
+        assert tx.receiver_account is None
+        assert tx.pep_connected is None
 
     def test_tunicheque_fields_accepted(self):
         tx = Transaction(
@@ -128,3 +132,15 @@ class TestTransactionOptionalFields:
         )
         assert tx.account_type == "FCY"
         assert tx.fcy_currency == "EUR"
+
+    def test_sanctions_pep_fields_accepted(self):
+        tx = Transaction(
+            user_id="U1", amount_tnd=1000.0,
+            governorate="Tunis", payment_method="Virement", branch_id="B1",
+            sender_account="ACC-SENDER-1",
+            receiver_account="ACC-RECEIVER-1",
+            pep_connected=True,
+        )
+        assert tx.sender_account == "ACC-SENDER-1"
+        assert tx.receiver_account == "ACC-RECEIVER-1"
+        assert tx.pep_connected is True

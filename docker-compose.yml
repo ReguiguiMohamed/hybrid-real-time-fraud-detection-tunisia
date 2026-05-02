@@ -126,6 +126,7 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - PKYC_TOPIC=${PKYC_TOPIC:-pkyc_triggers}
+      - SANCTIONS_CSV_PATH=${SANCTIONS_CSV_PATH:-/app/data/sanctions/accounts.csv}
       - COMMAND_CENTER_API_URL=http://api:8001
       - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
       - PYTHONPATH=/app/src
@@ -148,6 +149,7 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - PKYC_TOPIC=${PKYC_TOPIC:-pkyc_triggers}
+      - SANCTIONS_CSV_PATH=${SANCTIONS_CSV_PATH:-/app/data/sanctions/accounts.csv}
       - COMMAND_CENTER_API_URL=http://api:8001
       - COMMAND_CENTER_API_VERSION=api/v1
       - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}

@@ -27,6 +27,7 @@ def test_compose_consumer_matches_sar_runtime_wiring():
 
     assert env["COMMAND_CENTER_API_VERSION"] == "api/v1"
     assert "PKYC_TOPIC" in env
+    assert env["SANCTIONS_CSV_PATH"] == "${SANCTIONS_CSV_PATH:-/app/data/sanctions/accounts.csv}"
     assert env["OLLAMA_URL"] == "http://ollama:11434/api/generate"
     assert env["SAR_LLM_AUDIT_LOG"] == "/app/data/audit/sar_llm_audit.jsonl"
     assert "SHAP_MIN_CONFIDENCE_FOR_SAR" in env

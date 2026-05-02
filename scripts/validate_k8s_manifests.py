@@ -92,6 +92,7 @@ def validate():
         "COMMAND_CENTER_API_VERSION",
         "COMMAND_CENTER_API_TOKEN",
         "PKYC_TOPIC",
+        "SANCTIONS_CSV_PATH",
         "OLLAMA_URL",
         "SAR_LLM_AUDIT_LOG",
         "SHAP_MIN_CONFIDENCE_FOR_SAR",

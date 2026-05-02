@@ -45,6 +45,8 @@ spec:
                   name: fraud-config
                   key: pkyc_topic
                   optional: true
+            - name: SANCTIONS_CSV_PATH
+              value: "/app/data/sanctions/accounts.csv"
             - name: COMMAND_CENTER_API_URL
               value: "http://fraud-api:8001"
             - name: COMMAND_CENTER_API_VERSION

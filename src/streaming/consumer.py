@@ -27,6 +27,7 @@ from shared.quality_gates import (
 )
 from shared.utils import make_authenticated_request, log_failed_alert, retry_failed_alerts, get_sqlite_connection
 from compliance.pkyc import PKYCPublisher
+from compliance.sanctions import SanctionsScreener
 import time
 
 # Use the schema from the shared module to ensure consistency
@@ -57,6 +58,7 @@ class FraudProcessor:
         self._shap_explainer = None
         self._model_feature_cols = MODEL_FEATURE_COLS
         self._pkyc_publisher = PKYCPublisher(bootstrap_servers=self.kafka_bootstrap)
+        self._sanctions_screener = SanctionsScreener()
 
         # Load XGBoost model for real-time inference
         try:
@@ -287,6 +289,18 @@ class FraudProcessor:
             low, high = high, low
         return low, high
 
+    def _apply_sanctions_screening(self, df):
+        sanctioned_accounts = list(self._sanctions_screener.account_ids)
+        if not sanctioned_accounts:
+            return df.withColumn("sanctions_hit_flag", lit(False))
+
+        return df.withColumn(
+            "sanctions_hit_flag",
+            col("sender_account").isin(sanctioned_accounts) |
+            col("receiver_account").isin(sanctioned_accounts) |
+            col("user_id").isin(sanctioned_accounts),
+        )
+
     def _count_new_feedback_since_promotion(self):
         try:
             self._ensure_model_registry_table()
@@ -319,6 +333,9 @@ class FraudProcessor:
         try:
             row_dict = row.asDict()
             ml_probability = self._extract_probability(row_dict.get("ml_probability", 0.0))
+            if alert_type == "SANCTIONS_HIT":
+                ml_probability = 1.0
+                row_dict["sanctions_hit"] = 1
             shap_top5 = self._compute_shap_top5(row_dict)
             row_dict["shap_top5"] = shap_top5
             min_shap_confidence = self._parse_float_env("SHAP_MIN_CONFIDENCE_FOR_SAR", 0.0)
@@ -413,37 +430,44 @@ class FraudProcessor:
         random_sample_rate, random_sample_max_prob = self._load_sampling_config()
         uncertainty_low, uncertainty_high = self._load_uncertainty_zone()
 
-        high_risk_rows = batch_df.filter(col("ml_probability") > 0.85).collect()
+        sanctions_rows = batch_df.filter(col("sanctions_hit") == 1).collect()
+        non_sanctions_df = batch_df.filter(col("sanctions_hit") != 1)
+        high_risk_rows = non_sanctions_df.filter(col("ml_probability") > 0.85).collect()
         sampled_low_risk_rows = []
         uncertainty_rows = []
 
         if random_sample_rate > 0:
-            low_risk_df = batch_df.filter(col("ml_probability") < random_sample_max_prob)
+            low_risk_df = non_sanctions_df.filter(col("ml_probability") < random_sample_max_prob)
             if random_sample_rate < 1:
                 low_risk_df = low_risk_df.sample(withReplacement=False, fraction=random_sample_rate)
             sampled_low_risk_rows = low_risk_df.collect()
 
-        uncertainty_rows = batch_df.filter(
+        uncertainty_rows = non_sanctions_df.filter(
             (col("ml_probability") >= uncertainty_low) & (col("ml_probability") <= uncertainty_high)
         ).collect()
 
-        if not high_risk_rows and not sampled_low_risk_rows and not uncertainty_rows:
+        if not sanctions_rows and not high_risk_rows and not sampled_low_risk_rows and not uncertainty_rows:
             return
 
         from rag_engine.sar_generator import SARGenerator
         from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
-        sar_gen = SARGenerator() if high_risk_rows else None
+        sar_gen = SARGenerator() if sanctions_rows or high_risk_rows else None
 
         max_workers, async_timeout = self._load_alerting_config()
         print(
-            f"Processing {len(high_risk_rows)} high-risk alerts, "
+            f"Processing {len(sanctions_rows)} sanctions hits, "
+            f"{len(high_risk_rows)} high-risk alerts, "
             f"{len(sampled_low_risk_rows)} random samples, and "
             f"{len(uncertainty_rows)} uncertainty samples with {max_workers} workers"
         )
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_row = {}
+
+            for row in sanctions_rows:
+                future = executor.submit(self._send_alert_async, row, sar_gen, "SANCTIONS_HIT", True)
+                future_to_row[future] = row
 
             for row in high_risk_rows:
                 future = executor.submit(self._send_alert_async, row, sar_gen, "high_risk", True)
@@ -526,6 +550,7 @@ class FraudProcessor:
         enriched_with_d17 = apply_tunicheque_rules(enriched_with_d17)
         enriched_with_d17 = apply_ttn_rules(enriched_with_d17)
         enriched_with_d17 = apply_fcy_rules(enriched_with_d17)
+        enriched_with_d17 = self._apply_sanctions_screening(enriched_with_d17)
 
         # Complex Windowing: Velocity + Multi-Gov
         analytics = enriched_with_d17.groupBy(
@@ -547,6 +572,15 @@ class FraudProcessor:
             count("transaction_id").alias("v_count"),
             approx_count_distinct("governorate").alias("g_dist"),
             expr("avg(amount_tnd)").alias("avg_amount"),
+            expr("max_by(transaction_id, event_time)").alias("transaction_id"),
+            expr("max_by(timestamp, event_time)").alias("timestamp"),
+            expr("max_by(governorate, event_time)").alias("governorate"),
+            expr("max_by(payment_method, event_time)").alias("payment_method"),
+            expr("max_by(branch_id, event_time)").alias("branch_id"),
+            expr("max_by(sender_account, event_time)").alias("sender_account"),
+            expr("max_by(receiver_account, event_time)").alias("receiver_account"),
+            expr("max(case when sanctions_hit_flag = true then 1 else 0 end)").alias("sanctions_hit"),
+            expr("max(case when pep_connected = true then 1 else 0 end)").alias("pep_connected_flag"),
             expr("sum(case when payment_method = 'Flouci' then 1 else 0 end)").alias("flouci_count"),
             # TuniChèque flags
             expr("max(case when tunicheque_missing_token_flag = true then 1 else 0 end)").alias("tunicheque_missing_token"),
@@ -619,7 +653,12 @@ class FraudProcessor:
                 lit(1.0)
             ).otherwise(lit(0.0))
         ).withColumn(
+            "pep_risk",
+            when(col("pep_connected_flag") == lit(1), lit(1.0)).otherwise(lit(0.0))
+        ).withColumn(
             "risk_score",
+            (col("sanctions_hit") * lit(1.0)) +
+            (col("pep_risk") * RISK_WEIGHTS["high_value"]) +
             (col("velocity_risk") * RISK_WEIGHTS["velocity"]) +
             (col("travel_risk") * RISK_WEIGHTS["travel"]) +
             (col("high_value_risk") * RISK_WEIGHTS["high_value"]) +
