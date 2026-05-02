@@ -71,3 +71,6 @@ ollama/
 
 # Session state (not for version control)
 CHECKPOINT.md
+FUTURE_WORK.md
+test_end_to_end.py
+test_end_toend.py
