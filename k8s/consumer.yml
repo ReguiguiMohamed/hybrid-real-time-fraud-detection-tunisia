@@ -1,4 +1,4 @@
-# Spark Consumer Deployment with HPA
+# Spark Consumer Deployment
 # The core fraud detection engine
 apiVersion: apps/v1
 kind: Deployment

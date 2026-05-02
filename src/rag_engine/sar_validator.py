@@ -118,7 +118,7 @@ class SARRiskFactor(BaseModel):
 
 class SARRegulatoryViolation(BaseModel):
     """A regulatory violation cited in the SAR."""
-    regulation: str = Field(..., min_length=5, description="e.g., 'CTAF Circular 2024-03'")
+    regulation: str = Field(..., min_length=5, description="Applicable law, control, or verified regulatory source")
     description: str = Field(..., min_length=10)
     article: Optional[str] = Field(None, description="Specific article or section reference")
 
@@ -301,7 +301,7 @@ def generate_deterministic_fallback(tx_data: dict, ml_score: float, raw_llm_outp
     # Default regulatory violations
     regulatory_violations = [
         SARRegulatoryViolation(
-            regulation="CTAF Circular 2024-03",
+            regulation="Internal AML monitoring control",
             description="Suspicious transaction monitoring and reporting requirements",
             article="Article 5",
         ),

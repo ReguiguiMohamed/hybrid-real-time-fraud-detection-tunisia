@@ -14,8 +14,13 @@ import logging
 from pathlib import Path
 from typing import Optional
 from functools import lru_cache
+from compliance.change_audit import append_change_audit_event
 
 logger = logging.getLogger(__name__)
+
+RULESET_ID = "aml_rules_tunisia"
+RULESET_VERSION = "2026.05.02"
+RULESET_GIT_TAG = "rules/aml-tunisia/2026.05.02"
 
 # Default compiled fallbacks (matching risk_config.py defaults)
 DEFAULT_RISK_WEIGHTS = {
@@ -238,7 +243,15 @@ class RulesEngine:
             "cache_age_seconds": round(time.time() - self._cache_timestamp, 1),
         }
 
-    def update_rule(self, rule_name: str, weight: Optional[float] = None, threshold: Optional[float] = None, changed_by: str = "system") -> bool:
+    def update_rule(
+        self,
+        rule_name: str,
+        weight: Optional[float] = None,
+        threshold: Optional[float] = None,
+        changed_by: str = "system",
+        reason: Optional[str] = None,
+        regulatory_reference: Optional[str] = None,
+    ) -> bool:
         """
         Update a risk rule in the database.
         This triggers an immediate cache refresh.
@@ -294,6 +307,7 @@ class RulesEngine:
             if threshold is not None:
                 change_desc.append(f"threshold: {old_threshold} -> {threshold}")
 
+            change_reason = reason or "; ".join(change_desc)
             cursor.execute(
                 """
                 INSERT INTO rule_change_log (rule_table, rule_name, change_type, old_value, new_value, changed_by, reason)
@@ -301,17 +315,38 @@ class RulesEngine:
                 """,
                 (
                     "risk_rules",
-                    None,
                     rule_name,
                     "UPDATE",
                     f"weight={old_weight}, threshold={old_threshold}",
                     f"weight={weight}, threshold={threshold}",
                     changed_by,
-                    "; ".join(change_desc),
+                    change_reason,
                 ),
             )
 
             conn.commit()
+
+            append_change_audit_event({
+                "event_type": "RULE_CHANGE",
+                "actor": changed_by,
+                "approved_by": changed_by,
+                "entity_type": "RULE",
+                "entity_id": rule_name,
+                "action": "UPDATE",
+                "ruleset_id": RULESET_ID,
+                "ruleset_version": RULESET_VERSION,
+                "git_tag": RULESET_GIT_TAG,
+                "previous_state": {
+                    "weight": old_weight,
+                    "threshold": old_threshold,
+                },
+                "new_state": {
+                    "weight": weight if weight is not None else old_weight,
+                    "threshold": threshold if threshold is not None else old_threshold,
+                },
+                "justification": change_reason,
+                "related_regulatory_reference": regulatory_reference,
+            })
 
             # Force cache refresh
             self.force_refresh()

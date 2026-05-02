@@ -22,6 +22,7 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+from compliance.change_audit import append_change_audit_event
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -38,8 +39,6 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 from sklearn.ensemble import GradientBoostingClassifier
-from imblearn.over_sampling import SMOTE
-from imblearn.pipeline import Pipeline as ImbPipeline
 import joblib
 
 logging.basicConfig(level=logging.INFO)
@@ -189,7 +188,7 @@ class FraudDetectionPipeline:
 
         return preprocessor
 
-    def build_full_pipeline(self, preprocessor) -> ImbPipeline:
+    def build_full_pipeline(self, preprocessor):
         """
         Build the full pipeline: preprocessing + SMOTE + model.
         SMOTE is applied ONLY during fit on training data.
@@ -204,6 +203,15 @@ class FraudDetectionPipeline:
             min_samples_leaf=5,
             random_state=42,
         )
+
+        try:
+            from imblearn.over_sampling import SMOTE
+            from imblearn.pipeline import Pipeline as ImbPipeline
+        except ImportError as exc:
+            raise ImportError(
+                "Training with SMOTE requires compatible imbalanced-learn and scikit-learn versions. "
+                "Install the pinned project requirements before running train_pipeline.py."
+            ) from exc
 
         pipeline = ImbPipeline(steps=[
             ("preprocessor", preprocessor),
@@ -379,6 +387,29 @@ class FraudDetectionPipeline:
         """Register the model in the SQLite model registry."""
         from src.shared.utils import get_sqlite_connection
 
+        approved_by = os.getenv("MODEL_PROMOTION_APPROVED_BY")
+        if not approved_by or approved_by.strip().lower() in {"system", "automation", "auto", "scheduler"}:
+            append_change_audit_event({
+                "event_type": "MODEL_PROMOTION_BLOCKED",
+                "actor": os.getenv("MODEL_PROMOTION_USER", "system"),
+                "approved_by": None,
+                "entity_type": "MODEL",
+                "entity_id": version_id,
+                "action": "BLOCK_PROMOTION",
+                "previous_state": None,
+                "new_state": {
+                    "version_id": version_id,
+                    "model_path": model_path,
+                    "f1_score": self.metrics.get("f1", 0.0),
+                    "auc": self.metrics.get("pr_auc", 0.0),
+                    "training_samples_count": self.metrics.get("train_samples", 0),
+                },
+                "promotion_trigger": "train_pipeline_register",
+                "performance_delta": None,
+                "justification": "Standalone model registration attempted without a human approver.",
+            })
+            raise RuntimeError("MODEL_PROMOTION_APPROVED_BY must identify a human approver before champion registration.")
+
         conn = get_sqlite_connection(self.feedback_db_path)
         cursor = conn.cursor()
 
@@ -395,6 +426,24 @@ class FraudDetectionPipeline:
                 feature_importance TEXT
             )
         """)
+
+        cursor.execute("""
+            SELECT version_id, model_path, f1_score, auc, promoted_at
+            FROM model_registry
+            WHERE is_champion = 1
+            ORDER BY promoted_at DESC
+            LIMIT 1
+        """)
+        previous_champion = cursor.fetchone()
+        previous_state = None
+        if previous_champion:
+            previous_state = {
+                "version_id": previous_champion[0],
+                "model_path": previous_champion[1],
+                "f1_score": previous_champion[2],
+                "auc": previous_champion[3],
+                "promoted_at": previous_champion[4],
+            }
 
         # Demote current champion
         cursor.execute("UPDATE model_registry SET is_champion = 0 WHERE is_champion = 1")
@@ -421,6 +470,25 @@ class FraudDetectionPipeline:
 
         conn.commit()
         conn.close()
+        append_change_audit_event({
+            "event_type": "MODEL_PROMOTION",
+            "actor": approved_by.strip(),
+            "approved_by": approved_by.strip(),
+            "entity_type": "MODEL",
+            "entity_id": version_id,
+            "action": "PROMOTE",
+            "previous_state": previous_state,
+            "new_state": {
+                "version_id": version_id,
+                "model_path": model_path,
+                "f1_score": f1,
+                "auc": pr_auc_val,
+                "training_samples_count": train_samples,
+            },
+            "promotion_trigger": "train_pipeline_register",
+            "performance_delta": None,
+            "justification": "Human-approved champion registration from offline training pipeline.",
+        })
         logger.info(f"Model registered as champion: {version_id} (F1={f1:.4f}, PR-AUC={pr_auc_val:.4f})")
 
 

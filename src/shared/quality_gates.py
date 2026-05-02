@@ -2,7 +2,18 @@
 Quality gates for fraud detection pipeline using Great Expectations principles.
 Includes channel-specific rules for TuniChèque (Feb 2025) and TTN e-invoicing (Jan 2026).
 """
+import os
+
 from pyspark.sql.functions import col, when, lit, isnan, isnull, lower, datediff, to_date, current_date
+
+DEFAULT_FCY_LARGE_CREDIT_TND = 5000.0
+
+
+def _float_env(name, default):
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
 
 def validate_transaction_quality(df):
     """
@@ -114,7 +125,7 @@ def apply_fcy_rules(df):
     Rule 2 — Multi-sender FCY credit: funds from >= 3 distinct senders arriving at
               an FCY account in a 5-min window (smurfing into FCY).
     Rule 3 — New FCY account + large immediate credit: account flagged as FCY type
-              with amount > 5,000 TND in a single transaction.
+              with amount above FCY_LARGE_CREDIT_THRESHOLD_TND in a single transaction.
     """
     # Rule 1: Round-number TND→FCY conversion (amount divisible by 1000 exactly)
     df = df.withColumn(
@@ -128,7 +139,13 @@ def apply_fcy_rules(df):
         ).otherwise(lit(False)),
     )
 
-    # Rule 3: Large single credit into FCY account (> 5,000 TND per tx)
+    fcy_large_credit_threshold = _float_env(
+        "FCY_LARGE_CREDIT_THRESHOLD_TND",
+        DEFAULT_FCY_LARGE_CREDIT_TND,
+    )
+
+    # Rule 3: Large single credit into FCY account; threshold is configurable
+    # because BCT implementation circulars may later define a hard cap.
     # (Rule 2 — multi-sender — requires stateful cross-user aggregation; handled
     #  in the windowed agg layer in consumer.py via approx_count_distinct on user_id
     #  grouped by branch_id when account_type == FCY)
@@ -136,7 +153,7 @@ def apply_fcy_rules(df):
         "fcy_large_credit_flag",
         when(
             (col("account_type") == lit("FCY")) &
-            (col("amount_tnd") > lit(5000.0)),
+            (col("amount_tnd") > lit(fcy_large_credit_threshold)),
             lit(True),
         ).otherwise(lit(False)),
     )

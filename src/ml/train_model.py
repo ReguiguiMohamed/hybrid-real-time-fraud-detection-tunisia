@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from pyspark.sql.types import DoubleType, IntegerType, FloatType
 from shared.utils import get_sqlite_connection
+from compliance.change_audit import append_change_audit_event
 
 
 class DriftDetector:
@@ -169,6 +170,16 @@ class FraudModelTrainer:
             return int(os.getenv(name, str(default)))
         except ValueError:
             return default
+
+    @staticmethod
+    def _get_model_promotion_approver():
+        approver = os.getenv("MODEL_PROMOTION_APPROVED_BY") or os.getenv("MODEL_PROMOTION_USER")
+        if not approver:
+            return None
+        normalized = approver.strip().lower()
+        if normalized in {"", "system", "automation", "auto", "scheduler"}:
+            return None
+        return approver.strip()
 
 
     def _ensure_model_registry(self):
@@ -623,12 +634,15 @@ class FraudModelTrainer:
                 print(f"Error evaluating champion model: {e}")
 
         promotion_threshold = self._parse_float_env("CHAMPION_PROMOTION_THRESHOLD", 0.02)
-        promote = False
+        promotion_candidate = False
         if not champion_entry or not champion_metrics:
-            promote = True
+            promotion_candidate = True
         else:
             improvement = challenger_metrics["f1_score"] - champion_metrics["f1_score"]
-            promote = improvement >= promotion_threshold
+            promotion_candidate = improvement >= promotion_threshold
+
+        approved_by = self._get_model_promotion_approver()
+        promote = promotion_candidate and approved_by is not None
 
         version_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
         model_path = str(Path("models") / "registry" / f"fraud_xgb_{version_id}")
@@ -655,17 +669,79 @@ class FraudModelTrainer:
                 "version_id": version_id,
                 "model_path": model_path,
                 "f1_score": challenger_metrics["f1_score"],
-                "auc": challenger_metrics["auc"]
+                "auc": challenger_metrics["auc"],
+                "approved_by": approved_by,
+                "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                "promotion_threshold": promotion_threshold,
             })
             self._log_audit_event(
                 "MODEL",
                 version_id,
                 "PROMOTE",
-                os.getenv("MODEL_PROMOTION_USER", "system"),
+                approved_by,
                 previous_state,
                 new_state
             )
+            append_change_audit_event({
+                "event_type": "MODEL_PROMOTION",
+                "actor": approved_by,
+                "approved_by": approved_by,
+                "entity_type": "MODEL",
+                "entity_id": version_id,
+                "action": "PROMOTE",
+                "previous_state": champion_entry,
+                "new_state": {
+                    "version_id": version_id,
+                    "model_path": model_path,
+                    "f1_score": challenger_metrics["f1_score"],
+                    "auc": challenger_metrics["auc"],
+                    "training_samples_count": training_samples_count,
+                },
+                "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                "performance_delta": {
+                    "f1_score": (
+                        None if not champion_metrics
+                        else challenger_metrics["f1_score"] - champion_metrics["f1_score"]
+                    ),
+                    "auc": (
+                        None if not champion_metrics
+                        else challenger_metrics["auc"] - champion_metrics["auc"]
+                    ),
+                },
+                "justification": "Human-approved champion promotion after champion-challenger evaluation.",
+            })
             return True
+
+        if promotion_candidate and approved_by is None:
+            print("Champion promotion blocked: MODEL_PROMOTION_APPROVED_BY must identify a human approver.")
+            append_change_audit_event({
+                "event_type": "MODEL_PROMOTION_BLOCKED",
+                "actor": os.getenv("MODEL_PROMOTION_USER", "system"),
+                "approved_by": None,
+                "entity_type": "MODEL",
+                "entity_id": version_id,
+                "action": "BLOCK_PROMOTION",
+                "previous_state": champion_entry,
+                "new_state": {
+                    "version_id": version_id,
+                    "model_path": model_path,
+                    "f1_score": challenger_metrics["f1_score"],
+                    "auc": challenger_metrics["auc"],
+                    "training_samples_count": training_samples_count,
+                },
+                "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                "performance_delta": {
+                    "f1_score": (
+                        None if not champion_metrics
+                        else challenger_metrics["f1_score"] - champion_metrics["f1_score"]
+                    ),
+                    "auc": (
+                        None if not champion_metrics
+                        else challenger_metrics["auc"] - champion_metrics["auc"]
+                    ),
+                },
+                "justification": "Promotion candidate met metric gate but no human approver was provided.",
+            })
 
         print("Champion model retained. Challenger registered for audit.")
         return False

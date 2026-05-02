@@ -8,7 +8,7 @@ from rag_engine.vector_store import CTAF_REGULATIONS
 class DeterministicTestVectorStore:
     def query(self, query_text, n_results=3):
         regulation = next(
-            item for item in CTAF_REGULATIONS if item["id"] == "ctaf_circular_2024_05"
+            item for item in CTAF_REGULATIONS if item["id"] == "internal_sar_filing_controls"
         )
         return {
             "documents": [[regulation["text"]]],

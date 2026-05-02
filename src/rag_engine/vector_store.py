@@ -8,59 +8,60 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# CTAF regulatory documents to seed the knowledge base
+# Internal compliance-control documents used to seed the local knowledge base.
+# These are not official circular texts. Official regulatory source material should
+# be loaded from a verified document mirror before production use.
 CTAF_REGULATIONS = [
     {
-        "id": "ctaf_circular_2024_03",
+        "id": "internal_mobile_wallet_controls",
         "text": (
-            "Circular 2024-03: Mobile wallet transfers exceeding 1500 TND per 24h period "
-            "require enhanced diligence. Geographic diversity of >2 governorates within "
-            "60 minutes constitutes high-risk impossible travel."
+            "Internal control: mobile wallet transfers exceeding configured provider limits "
+            "require enhanced diligence. Geographic diversity of more than two governorates "
+            "within 60 minutes constitutes high-risk impossible travel."
         ),
-        "metadata": {"source": "ctaf_circular_2024_03", "category": "mobile_wallet_rules"},
+        "metadata": {"source": "internal_mobile_wallet_controls", "category": "mobile_wallet_rules"},
     },
     {
-        "id": "ctaf_circular_2024_05",
+        "id": "internal_sar_filing_controls",
         "text": (
-            "Circular 2024-05: All financial institutions must file Suspicious Activity Reports "
+            "Internal control: financial institutions must file Suspicious Activity Reports "
             "(SARs) within 10 business days of detection. Reports must include: transaction ID, "
             "user identification, amount, geographic location, payment method, ML risk score, "
             "and a narrative describing the suspicious pattern. Failure to comply may result in "
-            "sanctions under Article 78 of Law 2015-26."
+            "a fine up to TND 50,000 or license revocation."
         ),
-        "metadata": {"source": "ctaf_circular_2024_05", "category": "sar_filing_requirements"},
+        "metadata": {"source": "internal_sar_filing_controls", "category": "sar_filing_requirements"},
     },
     {
-        "id": "ctaf_circular_2025_01",
+        "id": "internal_ewallet_velocity_controls",
         "text": (
-            "Circular 2025-01: Enhanced due diligence for digital payment platforms (D17, Flouci, "
-            "Konnect). Transactions above 2000 TND via e-wallet require real-time verification. "
-            "Smurfing detection threshold set at cumulative 5000 TND across multiple transactions "
-            "within a 24-hour window from the same user. Velocity cap of 5 transactions per "
-            "5-minute window triggers automatic review."
+            "Internal control: enhanced due diligence applies to digital payment platforms "
+            "(D17, Flouci, Konnect). The repealed TND 5,000 cash-payment cap must not be used "
+            "as a structuring rule. Smurfing review is based on configurable velocity and "
+            "aggregate-amount rules across multiple transactions from the same account."
         ),
-        "metadata": {"source": "ctaf_circular_2025_01", "category": "ewallet_compliance"},
+        "metadata": {"source": "internal_ewallet_velocity_controls", "category": "ewallet_compliance"},
     },
     {
-        "id": "bct_note_2025_02",
+        "id": "internal_impossible_travel_controls",
         "text": (
-            "BCT Note 2025-02: Cross-governorate transfers must be flagged when a single user "
+            "Internal control: cross-governorate transfers must be flagged when a single user "
             "initiates transactions from more than 2 distinct governorates within 1 hour. "
             "This is classified as impossible travel and must be escalated to the compliance "
             "officer within 4 hours of detection. Applies to all payment methods."
         ),
-        "metadata": {"source": "bct_note_2025_02", "category": "impossible_travel"},
+        "metadata": {"source": "internal_impossible_travel_controls", "category": "impossible_travel"},
     },
     {
-        "id": "ctaf_aml_guidelines_2025",
+        "id": "internal_aml_cdd_controls",
         "text": (
-            "CTAF AML Guidelines 2025: Risk-based approach to customer due diligence. "
+            "Internal control: risk-based approach to customer due diligence. "
             "High-risk categories include: politically exposed persons (PEPs), cash-intensive "
             "businesses, non-resident accounts, and transactions involving border governorates "
             "(Medenine, Tataouine, Jendouba, Le Kef). Enhanced monitoring required for "
             "transactions during non-business hours (22:00-06:00) exceeding 500 TND."
         ),
-        "metadata": {"source": "ctaf_aml_guidelines_2025", "category": "aml_cdd"},
+        "metadata": {"source": "internal_aml_cdd_controls", "category": "aml_cdd"},
     },
 ]
 

@@ -1,8 +1,8 @@
 # Amastan Fraud Shield Guard - Hybrid Streaming & RAG Architecture
 
-A production-grade real-time fraud mitigation engine for Tunisian digital payments. Uses **Kafka + Spark Structured Streaming** for millisecond detection, **XGBoost** for ML scoring, and **RAG (Ollama/ChromaDB)** for automated CTAF-compliant SAR generation.
+A production-oriented real-time fraud mitigation prototype for Tunisian digital payments. Uses **Kafka + Spark Structured Streaming** for stateful detection, **XGBoost** for ML scoring, and **RAG (Ollama/ChromaDB)** for analyst-reviewed SAR drafting with deterministic compliance fallback.
 
-Built for the 2026 Tunisian digital payments landscape — a period of rapid mobile payment growth (81% surge in 2025) alongside evolving cash liberalization policies. Inflation has moderated to ~5% (down from 9.3% in 2023), while the 2026 Finance Law repealed the 5,000 TND cash-payment cap, creating a mixed environment of digital acceleration and cash flexibility. This system addresses fraud risks in that dual reality.
+Built for the 2026 Tunisian digital-payments landscape: digital usage is growing, but cash still matters and adoption is uneven outside major urban areas. The 2026 Finance Law repealed the TND 5,000 cash-payment cap, so this project avoids treating that old cap as a structuring rule and uses velocity, account, rail, sanctions/PEP, and analyst-review signals instead.
 
 ---
 
@@ -11,7 +11,7 @@ Built for the 2026 Tunisian digital payments landscape — a period of rapid mob
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '20px'}}}%%
 flowchart LR
-    Prod[Producer\nFaker + Chaos] --> Kafka[Kafka\ntunisian_transactions]
+    Prod[Local Simulator\nDev/Test Events] --> Kafka[Kafka\ntunisian_transactions]
     Kafka --> CG[Consumer\nSpark SS + Stateful]
 
     subgraph Pipeline["Fraud Detection Pipeline"]
@@ -60,7 +60,7 @@ sequenceDiagram
     participant S as SAR Generator
     participant D as Dashboard
 
-    P->>K: Generate TX (Faker, chaos)
+    P->>K: Generate dev/test TX events
     K->>C: Stream tunisian_transactions
     C->>C: Quality Gates (validate)
     C->>C: Stateful Aggregation (window per user)
@@ -82,7 +82,7 @@ sequenceDiagram
 |----------|--------|---------------------|
 | **Kafka over Redis Streams** | Confluent Kafka 7.7 | Durability, consumer groups, replay capability. Redis is faster but loses messages on restart. |
 | **Spark over Benthos/Python workers** | PySpark 4.1.1 | Windowed stateful aggregation (5-min windows, per-user state) is native in Spark. Benthos lacks ML integration. Python workers don't handle watermarks. |
-| **XGBoost over Deep Learning** | SparkXGBClassifier | Sub-millisecond inference, interpretable feature importance, works on small datasets. DL needs 100x more data. |
+| **XGBoost before deep learning** | SparkXGBClassifier | Fast, interpretable tabular baseline suitable for limited labelled feedback. Graph, sequence, and anomaly models are still planned before any state-of-the-art claim. |
 | **SQLite over PostgreSQL** | SQLite WAL mode | Single-service deployment, <10K writes/sec for feedback/DLQ/registry. PostgreSQL adds operational complexity with no benefit at this scale. Migration path to PostgreSQL/CockroachDB is available if alert volume or monitoring demands exceed WAL capacity. |
 | **Ollama over Cloud LLMs** | Llama 3.1 local | PII never leaves the infrastructure. Cloud APIs violate Tunisian data residency requirements. |
 | **ChromaDB over Pinecone** | ChromaDB local | Same data residency concern. Embeddings (all-MiniLM-L6-v2) run locally. |
@@ -180,7 +180,7 @@ graph TB
 │   ├── namespace.yml             # Namespace definition
 │   ├── kafka.yml                 # Kafka + Zookeeper StatefulSets
 │   ├── consumer.yml              # Spark Consumer + PVCs
-│   ├── api.yml                   # FastAPI + HPA + Ingress
+│   ├── api.yml                   # FastAPI deployment + Ingress
 │   ├── ollama.yml                # Ollama (GPU) + ChromaDB
 │   └── config.yml                # ConfigMap + Secrets
 ├── monitoring/                   # Production observability
@@ -221,8 +221,8 @@ graph TB
 │   │   ├── utils.py              # API helpers, DLQ, logging
 │   │   └── logging_config.py     # Structured JSON logging
 │   └── producer/
-│       ├── producer.py           # Transaction generator (Faker)
-│       └── chaos_producer.py     # Chaos: delayed/malformed transactions
+│       ├── producer.py           # Local transaction simulator for dev/test only
+│       └── chaos_producer.py     # Chaos: delayed/malformed test transactions
 ├── tests/
 │   ├── test_chaos_integration.py # ★ Kafka failure, checkpoint recovery, LLM fallback
 │   ├── test_api.py               # FastAPI endpoint tests
@@ -245,7 +245,7 @@ graph TB
 ├── Makefile                      # ★ All operational commands in one file
 ├── requirements.txt              # ★ Fully pinned dependencies
 ├── docker-compose.yml            # Local dev stack
-└── test_end_to_end.py            # End-to-end integration test
+└── tests/                        # Public automated test suite
 ```
 
 Files marked ★ are professional-grade additions that address the "amateur" markers.
@@ -319,7 +319,7 @@ engine.update_rule("velocity", weight=0.35, threshold=4.0, changed_by="risk-offi
 engine.force_refresh()  # Hot-reload across all consumers
 ```
 
-All changes are audited in `rule_change_log` with before/after values.
+All changes are audited in `rule_change_log` with before/after values and in a hash-chained JSONL audit log at `CHANGE_AUDIT_LOG` / `data/audit/change_audit.jsonl`.
 
 ### Risk Components
 
@@ -327,7 +327,8 @@ All changes are audited in `rule_change_log` with before/after values.
 |--------|---------------|-----------|-------------|
 | Velocity | 30% | >3 tx / 5min | Transaction frequency |
 | Travel | 30% | >1 governorate | Impossible travel detection |
-| High Value | 20% | >5000 TND | Monitoring flag (5,000 TND cash cap repealed by 2026 Finance Law) |
+| High Value | 20% | >15000 TND | Enhanced-monitoring flag; not a cash-cap or structuring rule |
+| Velocity Smurfing | configurable | count/aggregate window | Structuring review based on repeated sub-threshold transfers, not the repealed cash cap |
 | D17 Wallet | 20% | >500 TND/day or >5 tx/day | D17 digital wallet limits (not Flouci) |
 | Smurfing | +15% | Configurable range | Structuring pattern — validate against real transaction data |
 
@@ -375,20 +376,20 @@ See `src/ml/train_pipeline.py` for the full implementation.
 
 ## CTAF Compliance
 
-- **SAR Generation**: RAG (Ollama + ChromaDB) with **Pydantic schema validation** and **deterministic fallback**
+- **SAR Generation**: RAG (Ollama + ChromaDB) with source-of-truth grounding, fact checks, **Pydantic schema validation**, hash-chained audit logging, and **deterministic fallback**
 - **Filing Mandate**: 10-business-day deadline per CTAF/BCT
-- **Regulations**: Circular 2025-17 (Dec 2025, full overhaul of internal controls for banks/financial institutions); BCT AML/CFT circulars 2025; AML Guidelines 2025
-- **Export**: JSON CTAF export + structured SAR reports
+- **Human Gate**: SAR text is drafted for compliance review; it is not auto-submitted to CTAF
+- **Export**: JSON CTAF export + structured SAR reports from recorded alerts and analyst feedback
 
 ### SAR Validation Flow
 
 ```
 LLM Output → JSON Extraction → Pydantic Schema Validation → Pass? → Use LLM output
                                                          ↓
-                                                    Fail? → Deterministic Template (always CTAF-compliant)
+                                                    Fail? -> Deterministic Template
 ```
 
-The system **never** files an invalid SAR.
+The system keeps SAR drafting grounded in stored facts and requires human approval before filing. The local ChromaDB seed documents are internal control text, not claimed official circulars; production deployments should load verified regulatory source documents.
 
 ---
 
@@ -452,7 +453,7 @@ See `monitoring/alert_rules.yml` for all rules.
 python scripts/cost_estimate.py --cloud all --tx-per-day 1000000
 ```
 
-### Estimated Monthly Cost (1M tx/day, 0.01% fraud)
+### Estimated Monthly Cost Scenario (1M tx/day, 0.01% fraud)
 
 | Provider | Monthly | Per Transaction | Notes |
 |----------|---------|----------------|-------|
@@ -473,7 +474,7 @@ The system ships with production-ready K8s manifests:
 
 - **StatefulSets** for Kafka and Zookeeper with persistent volumes
 - **Deployments** with resource requests/limits for all services
-- **HPA** for the API (scales 2-10 replicas based on CPU/memory)
+- **Single API replica by default** while SQLite is the backing store; scale out after moving the command-center store to PostgreSQL/CockroachDB
 - **Ingress** with rate limiting (nginx annotations)
 - **PVCs** for all persistent data (180GB total)
 - **ConfigMaps** for hot-reloadable configuration
@@ -500,9 +501,9 @@ This system was built with production requirements in mind:
 1. **Every component handles failure**: Kafka disconnects, API downtime, LLM hallucination, Spark checkpoint corruption
 2. **Data leakage is prevented**: The ML pipeline uses proper Scikit-Learn Pipelines with train/test isolation
 3. **No hard-coded business logic**: Risk rules are database-driven and hot-reloadable
-4. **Regulatory compliance**: SAR generation has a deterministic fallback that is always CTAF-compliant
+4. **Regulatory compliance**: SAR generation has factual grounding, deterministic fallback, and human approval before filing
 5. **Observability is first-class**: Prometheus metrics, Grafana dashboards, and 12 alert rules
-6. **Reproducibility**: All dependencies are pinned, migrations are versioned, and costs are estimated
+6. **Reproducibility**: Dependencies are version-pinned, migrations are versioned, and costs are estimated
 7. **Data privacy**: PII is hashed, k-anonymity is checked, and retention policies are enforced
 
 The architecture prioritizes **reliability over cleverness**. A fraud detection system that silently drops 1% of alerts due to unhandled errors is worse than one that uses simpler technology but handles every failure mode.

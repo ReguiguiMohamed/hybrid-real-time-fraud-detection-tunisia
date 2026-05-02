@@ -276,8 +276,9 @@ class StatefulFraudProcessor:
         except Exception:
             # Fallback to compiled defaults
             from shared.risk_config import RISK_WEIGHTS
+            from shared.rules_engine import DEFAULT_HIGH_VALUE_THRESHOLD
             weights = RISK_WEIGHTS
-            high_value_threshold = 5000.0
+            high_value_threshold = DEFAULT_HIGH_VALUE_THRESHOLD
 
         scored = stateful_df.withColumn(
             "velocity_risk",
