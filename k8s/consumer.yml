@@ -41,6 +41,17 @@ spec:
               value: "kafka:9092"
             - name: COMMAND_CENTER_API_URL
               value: "http://fraud-api:8001"
+            - name: COMMAND_CENTER_API_VERSION
+              value: "api/v1"
+            - name: COMMAND_CENTER_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-secrets
+                  key: api-token
+            - name: OLLAMA_URL
+              value: "http://ollama:11434/api/generate"
+            - name: SAR_LLM_AUDIT_LOG
+              value: "/app/data/audit/sar_llm_audit.jsonl"
             - name: PYTHONPATH
               value: "/app/src"
             - name: SPARK_DRIVER_MEMORY
@@ -61,28 +72,81 @@ spec:
                   name: fraud-config
                   key: random_sample_rate
                   optional: true
+            - name: RANDOM_SAMPLE_MAX_PROB
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: random_sample_max_prob
+                  optional: true
+            - name: THREAD_POOL_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: thread_pool_size
+                  optional: true
+            - name: ALERT_ASYNC_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: alert_async_timeout_seconds
+                  optional: true
+            - name: RETRAIN_FEEDBACK_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: retrain_feedback_threshold
+                  optional: true
+            - name: DLQ_RETRY_INTERVAL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: dlq_retry_interval_seconds
+                  optional: true
+            - name: DLQ_RETRY_MAX_ATTEMPTS
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: dlq_retry_max_attempts
+                  optional: true
+            - name: SHAP_MIN_CONFIDENCE_FOR_SAR
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: shap_min_confidence_for_sar
+                  optional: true
+            - name: TUNISIA_ISLAMIC_HOLIDAYS
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: tunisia_islamic_holidays
+                  optional: true
           volumeMounts:
             - name: checkpoint
-              mountPath: /tmp/checkpoint_stateful
-            - name: parquet-data
-              mountPath: /app/data/parquet
+              mountPath: /app/tmp/checkpoint
+            - name: app-data
+              mountPath: /app/data
+            - name: models
+              mountPath: /app/models
           readinessProbe:
             exec:
-              command: ["sh", "-c", "test -f /tmp/checkpoint_stateful/state.json"]
+              command: ["sh", "-c", "test -d /app/tmp/checkpoint/silver_fraud"]
             initialDelaySeconds: 60
             periodSeconds: 30
           livenessProbe:
             exec:
-              command: ["sh", "-c", "pgrep -f consumer_stateful || exit 1"]
+              command: ["sh", "-c", "pgrep -f 'src/streaming/consumer.py' || exit 1"]
             initialDelaySeconds: 120
             periodSeconds: 60
       volumes:
         - name: checkpoint
           persistentVolumeClaim:
             claimName: consumer-checkpoint-pvc
-        - name: parquet-data
+        - name: app-data
           persistentVolumeClaim:
-            claimName: parquet-data-pvc
+            claimName: feedback-db-pvc
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-pvc
       restartPolicy: Always
 ---
 # Persistent Volume Claims
@@ -97,13 +161,3 @@ spec:
     requests:
       storage: 10Gi
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: parquet-data-pvc
-  namespace: amastan
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 50Gi

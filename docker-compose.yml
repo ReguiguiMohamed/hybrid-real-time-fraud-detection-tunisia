@@ -141,15 +141,27 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.consumer
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - COMMAND_CENTER_API_URL=http://api:8001
+      - COMMAND_CENTER_API_VERSION=api/v1
       - COMMAND_CENTER_API_TOKEN=${API_TOKEN:-default_dev_token}
+      - OLLAMA_URL=http://ollama:11434/api/generate
+      - SAR_LLM_AUDIT_LOG=/app/data/audit/sar_llm_audit.jsonl
       - PYTHONPATH=/app/src
       - UNCERTAINTY_ZONE=${UNCERTAINTY_ZONE:-0.4,0.6}
       - RANDOM_SAMPLE_RATE=${RANDOM_SAMPLE_RATE:-0.01}
+      - RANDOM_SAMPLE_MAX_PROB=${RANDOM_SAMPLE_MAX_PROB:-0.1}
       - THREAD_POOL_SIZE=${THREAD_POOL_SIZE:-5}
+      - ALERT_ASYNC_TIMEOUT_SECONDS=${ALERT_ASYNC_TIMEOUT_SECONDS:-15}
       - RETRAIN_FEEDBACK_THRESHOLD=${RETRAIN_FEEDBACK_THRESHOLD:-100}
+      - DLQ_RETRY_INTERVAL_SECONDS=${DLQ_RETRY_INTERVAL_SECONDS:-60}
+      - DLQ_RETRY_MAX_ATTEMPTS=${DLQ_RETRY_MAX_ATTEMPTS:-3}
+      - SHAP_MIN_CONFIDENCE_FOR_SAR=${SHAP_MIN_CONFIDENCE_FOR_SAR:-0.0}
+      - TUNISIA_ISLAMIC_HOLIDAYS=${TUNISIA_ISLAMIC_HOLIDAYS:-2026-03-29,2026-03-30,2026-06-05,2026-06-06}
     depends_on:
       kafka:
         condition: service_healthy

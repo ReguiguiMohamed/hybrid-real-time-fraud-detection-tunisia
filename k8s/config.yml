@@ -18,21 +18,9 @@ data:
   champion_promotion_threshold: "0.02"
   drift_window_hours: "24"
   kafka_topic: "tunisian_transactions"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: fraud-secrets
-  namespace: amastan
-type: Opaque
-data:
-  # Base64-encoded values. In production, use external-secrets-operator
-  # echo -n "your-token" | base64
-  api-token: ZGVmYXVsdF9kZXZfdG9rZW4=
-  admin-token: ZGVmYXVsdF9hZG1pbl90b2tlbg==
-  analyst-token: ZGVmYXVsdF9hbmFseXN0X3Rva2Vu
-  pii-salt: YW1hc3Rhbi1kZWZhdWx0LXNhbHQtY2hhbmdlLWluLXByb2R1Y3Rpb24=
----
+  shap_min_confidence_for_sar: "0.0"
+  # Approximate 2026 Eid dates; update annually from an authoritative Tunisian calendar.
+  tunisia_islamic_holidays: "2026-03-29,2026-03-30,2026-06-05,2026-06-06"
 # Grafana Dashboard provisioning
 apiVersion: v1
 kind: ConfigMap

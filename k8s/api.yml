@@ -1,5 +1,6 @@
-# FastAPI Command Center with HPA
-# Scales based on request rate and latency
+# FastAPI Command Center
+# SQLite-backed deployment is intentionally single-replica until the alert
+# store moves to PostgreSQL/CockroachDB.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,7 +10,7 @@ metadata:
     app: fraud-api
     component: api
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: fraud-api
@@ -106,46 +107,6 @@ spec:
       protocol: TCP
       name: http
 ---
-# Horizontal Pod Autoscaler
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: fraud-api-hpa
-  namespace: amastan
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: fraud-api
-  minReplicas: 2
-  maxReplicas: 10
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: 80
-  behavior:
-    scaleUp:
-      stabilizationWindowSeconds: 60
-      policies:
-        - type: Pods
-          value: 2
-          periodSeconds: 60
-    scaleDown:
-      stabilizationWindowSeconds: 300
-      policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 120
----
 # Ingress for external access
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -158,6 +119,10 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - fraud-api.example.com
+      secretName: fraud-api-tls
   rules:
     - host: fraud-api.example.com
       http:

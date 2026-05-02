@@ -188,9 +188,8 @@ k8s-apply:
 	@echo "==> Manifests applied."
 
 k8s-dry-run:
-	@echo "==> Dry-run: validating Kubernetes manifests..."
-	kubectl apply -f k8s/namespace.yml --dry-run=client
-	kubectl apply -f k8s/ --dry-run=client
+	@echo "==> Dry-run: validating Kubernetes manifests locally..."
+	python scripts/validate_k8s_manifests.py
 	@echo "==> Validation complete."
 
 k8s-delete:
