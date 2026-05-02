@@ -69,7 +69,7 @@ class TestCtafFilingDeadline:
         assert result2.date() == datetime(2026, 3, 23).date()
 
     def test_skips_islamic_holidays_from_env(self):
-        # Inject a fake Islamic holiday on the first available business day
+        # Inject a deterministic Islamic holiday date on the first available business day
         start = datetime(2026, 5, 4)  # Monday
         # Without holiday, 1 business day = Tuesday May 5
         result_no_holiday = ctaf_filing_deadline(from_date=start, business_days=1)

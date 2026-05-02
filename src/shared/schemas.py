@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
@@ -81,33 +81,36 @@ def pydantic_to_spark_schema(model_class) -> StructType:
         int: StringType()  # Using StringType for flexibility with UUIDs and timestamps
     }
 
+    model_fields = getattr(model_class, "model_fields", {})
+
+    def unwrap_optional(field_type):
+        origin = get_origin(field_type)
+        if origin in (Union, getattr(__import__("types"), "UnionType", None)):
+            args = [arg for arg in get_args(field_type) if arg is not type(None)]
+            if len(args) == 1:
+                return args[0], True
+        return field_type, False
+
     # Get model fields and their types
     fields = []
     for field_name, field_info in model_class.__annotations__.items():
-        # Get the default value to determine the type if possible
-        if field_name in model_class.__fields__:
-            field_type = model_class.__fields__[field_name].annotation
-        else:
-            field_type = field_info
+        field = model_fields.get(field_name)
+        field_type = field.annotation if field else field_info
+        unwrapped_type, is_optional = unwrap_optional(field_type)
 
         # Map the type to Spark type
         spark_type = StringType()  # Default to StringType
-        if hasattr(field_type, '__origin__'):  # Handle Optional, Union, etc.
-            # For complex types, default to StringType
-            spark_type = StringType()
-        elif field_type in type_mapping:
-            spark_type = type_mapping[field_type]
+        if unwrapped_type in type_mapping:
+            spark_type = type_mapping[unwrapped_type]
         else:
             # For other types like UUID, datetime, etc., use StringType
             spark_type = StringType()
 
         # Determine if nullable based on whether it has a default value
-        is_optional = hasattr(field_info, '__origin__') and field_info.__origin__ is type(None)
-        if not is_optional and field_name in model_class.__fields__:
-            field_default = model_class.__fields__[field_name].default
-            is_optional = field_default != ...  # ... means required in Pydantic
+        if not is_optional and field is not None:
+            is_optional = not field.is_required()
 
-        fields.append(StructField(field_name, spark_type, True))
+        fields.append(StructField(field_name, spark_type, is_optional))
 
     return StructType(fields)
 

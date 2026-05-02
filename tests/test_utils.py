@@ -4,21 +4,29 @@ import sqlite3
 import pytest
 from shared.utils import (
     get_api_url, get_api_headers, get_sqlite_connection,
-    ensure_dlq_table, log_failed_alert, update_dlq_status
+    ensure_dlq_table, log_failed_alert, update_dlq_status, retry_failed_alerts
 )
 
 
 class TestApiHelpers:
     def test_get_api_url_default(self, monkeypatch):
         monkeypatch.delenv("COMMAND_CENTER_API_URL", raising=False)
-        assert get_api_url("alerts/") == "http://localhost:8001/alerts/"
+        monkeypatch.delenv("COMMAND_CENTER_API_VERSION", raising=False)
+        assert get_api_url("alerts/") == "http://localhost:8001/api/v1/alerts/"
 
     def test_get_api_url_strips_leading_slash(self, monkeypatch):
         monkeypatch.delenv("COMMAND_CENTER_API_URL", raising=False)
-        assert get_api_url("/alerts/") == "http://localhost:8001/alerts/"
+        monkeypatch.delenv("COMMAND_CENTER_API_VERSION", raising=False)
+        assert get_api_url("/alerts/") == "http://localhost:8001/api/v1/alerts/"
 
     def test_get_api_url_custom(self, monkeypatch):
         monkeypatch.setenv("COMMAND_CENTER_API_URL", "http://api:9000")
+        monkeypatch.delenv("COMMAND_CENTER_API_VERSION", raising=False)
+        assert get_api_url("health/") == "http://api:9000/api/v1/health/"
+
+    def test_get_api_url_legacy_prefix_disabled(self, monkeypatch):
+        monkeypatch.setenv("COMMAND_CENTER_API_URL", "http://api:9000")
+        monkeypatch.setenv("COMMAND_CENTER_API_VERSION", "")
         assert get_api_url("health/") == "http://api:9000/health/"
 
     def test_get_api_headers_with_token(self, monkeypatch):
@@ -95,3 +103,24 @@ class TestDeadLetterQueue:
         cursor.execute("SELECT status FROM failed_alerts WHERE id = ?", (record_id,))
         assert cursor.fetchone()[0] == "SUCCESS"
         conn.close()
+
+    def test_retry_failed_alerts_does_not_copy_error_to_sar_report(self, tmp_path, monkeypatch, sample_transaction_dict):
+        db_path = str(tmp_path / "dlq.db")
+        monkeypatch.setattr("shared.utils.DLQ_DB_PATH", db_path)
+        captured_payloads = []
+
+        def capture_request(method, endpoint, payload=None, timeout=10):
+            captured_payloads.append(payload)
+
+            class Response:
+                status_code = 200
+
+            return Response()
+
+        monkeypatch.setattr("shared.utils.make_authenticated_request", capture_request)
+        log_failed_alert(sample_transaction_dict, {}, "ERR", "Original API error")
+
+        retry_failed_alerts(max_attempts=3)
+
+        assert captured_payloads
+        assert captured_payloads[0]["sar_report"] is None

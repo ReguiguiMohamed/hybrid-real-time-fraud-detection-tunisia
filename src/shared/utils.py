@@ -194,7 +194,7 @@ def retry_failed_alerts(max_attempts=3):
                 "payment_method": payment_method,
                 "timestamp": timestamp,
                 "ml_probability": ml_probability,
-                "sar_report": error_message  # Using error message as placeholder
+                "sar_report": None,
             }
 
             # Attempt to resend the alert

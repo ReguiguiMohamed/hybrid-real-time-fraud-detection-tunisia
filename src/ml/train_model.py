@@ -309,20 +309,21 @@ class FraudModelTrainer:
             # Get feedback data with proper label mapping
             cursor.execute("""
                 SELECT
-                    transaction_id,
-                    user_id,
-                    amount_tnd,
-                    governorate,
-                    payment_method,
-                    ml_probability,
+                    fl.transaction_id,
+                    hra.user_id,
+                    hra.amount_tnd,
+                    hra.governorate,
+                    hra.payment_method,
+                    hra.ml_probability,
                     CASE
-                        WHEN analyst_label = 'Confirmed Fraud' THEN 1
-                        WHEN analyst_label = 'False Positive' THEN 0
-                        ELSE -1  -- Invalid/missing label
+                        WHEN fl.analyst_label = 'Confirmed Fraud' THEN 1
+                        WHEN fl.analyst_label = 'False Positive' THEN 0
+                        ELSE -1
                     END as verified_label
-                FROM feedback_labels
-                WHERE analyst_label IS NOT NULL
-                AND (analyst_label = 'Confirmed Fraud' OR analyst_label = 'False Positive')
+                FROM feedback_labels fl
+                INNER JOIN high_risk_alerts hra
+                    ON hra.transaction_id = fl.transaction_id
+                WHERE fl.analyst_label IN ('Confirmed Fraud', 'False Positive')
             """)
 
             feedback_records = cursor.fetchall()
@@ -336,9 +337,26 @@ class FraudModelTrainer:
                     ["transaction_id", "user_id", "amount_tnd", "governorate", "payment_method", "ml_probability", "verified_label"]
                 )
 
-                # Process feedback data to create features
-                enriched_feedback = feedback_df.withColumn("is_smurfing", when(col("amount_tnd").between(1400, 1500), 1).otherwise(0)) \
-                                              .withColumn("high_velocity_flag", lit(0))  # Placeholder - would need to compute from history
+                enhanced_threshold = self._parse_float_env("HIGH_VALUE_THRESHOLD_TND", 15000.0)
+                d17_soft_limit = self._parse_float_env("D17_SOFT_LIMIT_TND", 500.0)
+
+                # Reviewed alerts do not carry raw rolling-window counters, so only
+                # derive features that are directly supported by the stored alert.
+                enriched_feedback = (
+                    feedback_df
+                    .withColumn("avg_amount", col("amount_tnd"))
+                    .withColumn("is_smurfing", when(col("amount_tnd").between(1400, 1500), 1).otherwise(0))
+                    .withColumn("high_value_risk", when(col("amount_tnd") > lit(enhanced_threshold), 1.0).otherwise(0.0))
+                    .withColumn(
+                        "d17_risk",
+                        when(
+                            (col("payment_method") == lit("Flouci")) &
+                            (col("amount_tnd") > lit(d17_soft_limit)),
+                            1.0,
+                        ).otherwise(0.0),
+                    )
+                    .withColumn("risk_score", col("ml_probability"))
+                )
                 return enriched_feedback
             else:
                 return None
