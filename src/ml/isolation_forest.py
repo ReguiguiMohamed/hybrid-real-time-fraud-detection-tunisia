@@ -85,7 +85,7 @@ class IsolationForestAnomalyDetector:
             score_value = round(float(score), 6)
             results.append({
                 "anomaly_score": score_value,
-                "is_anomaly": prediction == -1,
+                "is_anomaly": bool(prediction == -1),
                 "alert_type": "HIGH_ANOMALY" if score_value < self.HIGH_ANOMALY_THRESHOLD else None,
                 "model_version": self.model_version,
             })
