@@ -24,6 +24,7 @@ from shared.quality_gates import (
     apply_tunicheque_rules,
     apply_ttn_rules,
     apply_fcy_rules,
+    apply_device_behavior_rules,
 )
 from shared.utils import make_authenticated_request, log_failed_alert, retry_failed_alerts, get_sqlite_connection
 from compliance.pkyc import PKYCPublisher
@@ -550,6 +551,7 @@ class FraudProcessor:
         enriched_with_d17 = apply_tunicheque_rules(enriched_with_d17)
         enriched_with_d17 = apply_ttn_rules(enriched_with_d17)
         enriched_with_d17 = apply_fcy_rules(enriched_with_d17)
+        enriched_with_d17 = apply_device_behavior_rules(enriched_with_d17)
         enriched_with_d17 = self._apply_sanctions_screening(enriched_with_d17)
 
         # Complex Windowing: Velocity + Multi-Gov
@@ -593,6 +595,10 @@ class FraudProcessor:
             expr("max(case when fcy_large_credit_flag = true then 1 else 0 end)").alias("fcy_large_credit"),
             # FCY multi-sender smurfing: count of distinct users sending to FCY accounts in window
             expr("sum(case when account_type = 'FCY' then 1 else 0 end)").alias("fcy_tx_count"),
+            # Device fingerprinting / behavioral biometrics flags
+            expr("max(case when device_vpn_new_high_amount_flag = true then 1 else 0 end)").alias("device_vpn_new_high_amount"),
+            expr("max(case when device_emulator_flag = true then 1 else 0 end)").alias("device_emulator"),
+            expr("max(case when device_shared_accounts_flag = true then 1 else 0 end)").alias("device_shared_accounts"),
         )
 
         # Fetch live rule thresholds from the rules engine.
@@ -656,6 +662,15 @@ class FraudProcessor:
             "pep_risk",
             when(col("pep_connected_flag") == lit(1), lit(1.0)).otherwise(lit(0.0))
         ).withColumn(
+            # Device risk: emulator, fresh-device VPN high amount, or shared-device mule pattern
+            "device_risk",
+            when(
+                (col("device_vpn_new_high_amount") == lit(1)) |
+                (col("device_emulator") == lit(1)) |
+                (col("device_shared_accounts") == lit(1)),
+                lit(1.0)
+            ).otherwise(lit(0.0))
+        ).withColumn(
             "risk_score",
             (col("sanctions_hit") * lit(1.0)) +
             (col("pep_risk") * RISK_WEIGHTS["high_value"]) +
@@ -668,7 +683,9 @@ class FraudProcessor:
             (col("tunicheque_risk") * RISK_WEIGHTS["high_value"]) +
             (col("ttn_risk") * RISK_WEIGHTS["high_value"]) +
             # FCY layering: round amount or large single credit into FCY account
-            (col("fcy_risk") * RISK_WEIGHTS["high_value"])
+            (col("fcy_risk") * RISK_WEIGHTS["high_value"]) +
+            # Device/behavioral biometric risks are strong EDD signals.
+            (col("device_risk") * RISK_WEIGHTS["high_value"])
         )
 
         # Prepare features for ML model regardless of model availability to ensure consistent schema

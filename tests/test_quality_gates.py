@@ -1,16 +1,32 @@
 """Tests for data quality gates."""
+import os
+import sys
+
 import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
 
-from shared.quality_gates import validate_transaction_quality, apply_d17_rule
+from shared.quality_gates import (
+    validate_transaction_quality,
+    apply_d17_rule,
+    apply_device_behavior_rules,
+)
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("RUN_SPARK_TESTS") != "1",
+    reason="Spark integration tests are opt-in; set RUN_SPARK_TESTS=1 to run them.",
+)
 
 
 @pytest.fixture(scope="module")
 def spark():
+    os.environ["PYSPARK_PYTHON"] = sys.executable
+    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
     session = SparkSession.builder \
         .master("local[1]") \
         .appName("TestQualityGates") \
+        .config("spark.pyspark.python", sys.executable) \
+        .config("spark.pyspark.driver.python", sys.executable) \
         .getOrCreate()
     yield session
     session.stop()
@@ -90,3 +106,54 @@ class TestApplyD17Rule:
         result = apply_d17_rule(df)
         boost = result.collect()[0]["d17_risk_boost"]
         assert boost == 0.0
+
+
+@pytest.fixture
+def device_schema():
+    return StructType([
+        StructField("transaction_id", StringType(), True),
+        StructField("amount_tnd", DoubleType(), True),
+        StructField("device_id", StringType(), True),
+        StructField("vpn_detected", BooleanType(), True),
+        StructField("emulator_detected", BooleanType(), True),
+        StructField("device_age_days", DoubleType(), True),
+        StructField("device_account_count_7d", DoubleType(), True),
+    ])
+
+
+class TestApplyDeviceBehaviorRules:
+    def test_vpn_new_device_high_amount_flag(self, spark, device_schema):
+        data = [("TXN_DEVICE_1", 1500.0, "DEV1", True, False, 0.0, 1.0)]
+        df = spark.createDataFrame(data, schema=device_schema)
+
+        result = apply_device_behavior_rules(df).collect()[0]
+
+        assert result["device_vpn_new_high_amount_flag"] is True
+        assert result["device_emulator_flag"] is False
+        assert result["device_shared_accounts_flag"] is False
+
+    def test_emulator_flag(self, spark, device_schema):
+        data = [("TXN_DEVICE_2", 200.0, "DEV2", False, True, 30.0, 1.0)]
+        df = spark.createDataFrame(data, schema=device_schema)
+
+        result = apply_device_behavior_rules(df).collect()[0]
+
+        assert result["device_emulator_flag"] is True
+
+    def test_shared_device_account_velocity_flag(self, spark, device_schema):
+        data = [("TXN_DEVICE_3", 200.0, "DEV3", False, False, 10.0, 4.0)]
+        df = spark.createDataFrame(data, schema=device_schema)
+
+        result = apply_device_behavior_rules(df).collect()[0]
+
+        assert result["device_shared_accounts_flag"] is True
+
+    def test_old_non_vpn_device_no_flag(self, spark, device_schema):
+        data = [("TXN_DEVICE_4", 1500.0, "DEV4", False, False, 30.0, 1.0)]
+        df = spark.createDataFrame(data, schema=device_schema)
+
+        result = apply_device_behavior_rules(df).collect()[0]
+
+        assert result["device_vpn_new_high_amount_flag"] is False
+        assert result["device_emulator_flag"] is False
+        assert result["device_shared_accounts_flag"] is False

@@ -54,7 +54,10 @@ class TestSparkSchemaConversion:
         "tunicheque_token", "tunicheque_provision_locked", "tunicheque_clearing_deadline",
         "ttn_clearance_token", "ttn_invoice_id",
         "account_type", "fcy_currency",
-        "device_id", "vpn_detected", "emulator_detected",
+        "device_id", "device_os", "device_model", "app_version",
+        "session_typing_cadence_ms", "session_copy_paste_ratio",
+        "network_type", "vpn_detected", "emulator_detected",
+        "device_age_days", "device_account_count_7d",
         "sender_account", "receiver_account", "pep_connected",
     ]
 
@@ -98,7 +101,15 @@ class TestTransactionOptionalFields:
         assert tx.account_type is None
         assert tx.fcy_currency is None
         assert tx.device_id is None
+        assert tx.device_os is None
+        assert tx.device_model is None
+        assert tx.app_version is None
+        assert tx.session_typing_cadence_ms is None
+        assert tx.session_copy_paste_ratio is None
+        assert tx.network_type is None
         assert tx.vpn_detected is None
+        assert tx.device_age_days is None
+        assert tx.device_account_count_7d is None
         assert tx.sender_account is None
         assert tx.receiver_account is None
         assert tx.pep_connected is None
@@ -144,3 +155,25 @@ class TestTransactionOptionalFields:
         assert tx.sender_account == "ACC-SENDER-1"
         assert tx.receiver_account == "ACC-RECEIVER-1"
         assert tx.pep_connected is True
+
+    def test_device_behavior_fields_accepted(self):
+        tx = Transaction(
+            user_id="U1", amount_tnd=1800.0,
+            governorate="Tunis", payment_method="Flouci", branch_id="B1",
+            device_id="DEV-HASH-1",
+            device_os="Android",
+            device_model="Pixel 9",
+            app_version="6.2.1",
+            session_typing_cadence_ms=95.5,
+            session_copy_paste_ratio=0.8,
+            network_type="VPN",
+            vpn_detected=True,
+            emulator_detected=False,
+            device_age_days=0.0,
+            device_account_count_7d=4.0,
+        )
+        assert tx.device_id == "DEV-HASH-1"
+        assert tx.network_type == "VPN"
+        assert tx.vpn_detected is True
+        assert tx.device_age_days == 0.0
+        assert tx.device_account_count_7d == 4.0

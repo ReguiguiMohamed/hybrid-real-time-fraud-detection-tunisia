@@ -116,6 +116,31 @@ class TestAlertEndpoints:
         assert explanation["shap_top5"][0]["description"] == "High velocity (v_count)"
         assert explanation["top_risk_factors"][0]["impact"] == 0.41
 
+    def test_add_high_anomaly_alert_persists_anomaly_fields(self, api_test_client, admin_headers):
+        alert = {
+            "transaction_id": "TXN_HIGH_ANOMALY_API",
+            "user_id": "USER_ANOMALY",
+            "amount_tnd": 1200.0,
+            "governorate": "Tunis",
+            "payment_method": "Flouci",
+            "branch_id": "Tunis-GNC",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "ml_probability": 0.22,
+            "alert_type": "HIGH_ANOMALY",
+            "anomaly_score": -0.41,
+            "anomaly_model_version": "iso_test",
+        }
+        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        assert response.status_code == 200
+
+        queue = api_test_client.get(
+            "/alerts/review-queue/?alert_type=HIGH_ANOMALY",
+            headers=admin_headers,
+        )
+        assert queue.status_code == 200
+        data = queue.json()
+        assert any(item["transaction_id"] == "TXN_HIGH_ANOMALY_API" for item in data)
+
 
 class TestFeedbackEndpoints:
     def test_submit_feedback(self, api_test_client, admin_headers, analyst_headers):
@@ -258,3 +283,14 @@ class TestExplainEndpoint:
     def test_explain_nonexistent_transaction(self, api_test_client, admin_headers):
         response = api_test_client.get("/alerts/NONEXISTENT/explain", headers=admin_headers)
         assert response.status_code == 404
+
+
+class TestDriftMetricsEndpoint:
+    def test_drift_metrics_shape(self, api_test_client, analyst_headers):
+        response = api_test_client.get("/metrics/drift", headers=analyst_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "psi_results" in data
+        assert "score_drift" in data
+        assert "decision" in data

@@ -7,6 +7,8 @@ import os
 from pyspark.sql.functions import col, when, lit, isnan, isnull, lower, datediff, to_date, current_date
 
 DEFAULT_FCY_LARGE_CREDIT_TND = 5000.0
+DEFAULT_DEVICE_HIGH_AMOUNT_TND = 1000.0
+DEFAULT_SHARED_DEVICE_ACCOUNT_THRESHOLD = 3.0
 
 
 def _float_env(name, default):
@@ -14,6 +16,57 @@ def _float_env(name, default):
         return float(os.getenv(name, str(default)))
     except ValueError:
         return default
+
+
+def evaluate_device_behavior_flags(
+    *,
+    amount_tnd,
+    device_id=None,
+    vpn_detected=False,
+    emulator_detected=False,
+    device_age_days=None,
+    device_account_count_7d=None,
+    high_amount_threshold=None,
+    shared_device_threshold=None,
+):
+    """Pure-Python device risk semantics used by Spark gates and unit tests."""
+    high_amount_threshold = (
+        DEFAULT_DEVICE_HIGH_AMOUNT_TND
+        if high_amount_threshold is None
+        else high_amount_threshold
+    )
+    shared_device_threshold = (
+        DEFAULT_SHARED_DEVICE_ACCOUNT_THRESHOLD
+        if shared_device_threshold is None
+        else shared_device_threshold
+    )
+
+    def as_float(value):
+        try:
+            if value is None or value == "":
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    amount = as_float(amount_tnd) or 0.0
+    device_age = as_float(device_age_days)
+    account_count = as_float(device_account_count_7d)
+
+    return {
+        "device_vpn_new_high_amount_flag": bool(
+            vpn_detected
+            and device_id
+            and device_age is not None
+            and device_age <= 1.0
+            and amount >= high_amount_threshold
+        ),
+        "device_emulator_flag": bool(emulator_detected),
+        "device_shared_accounts_flag": bool(
+            account_count is not None
+            and account_count > shared_device_threshold
+        ),
+    }
 
 def validate_transaction_quality(df):
     """
@@ -154,6 +207,54 @@ def apply_fcy_rules(df):
         when(
             (col("account_type") == lit("FCY")) &
             (col("amount_tnd") > lit(fcy_large_credit_threshold)),
+            lit(True),
+        ).otherwise(lit(False)),
+    )
+
+    return df
+
+
+def apply_device_behavior_rules(df):
+    """
+    Device fingerprinting and behavioral biometrics risk gates.
+
+    Rule 1 — VPN + new device + high amount: a high-value transaction from a VPN
+    on a newly observed device is escalated for review.
+    Rule 2 — Emulator detected: mobile emulator usage is an immediate review flag.
+    Rule 3 — Shared device velocity: one device used by many accounts in 7 days is
+    a synthetic-identity / mule-network signal.
+    """
+    high_amount_threshold = _float_env(
+        "DEVICE_HIGH_AMOUNT_THRESHOLD_TND",
+        DEFAULT_DEVICE_HIGH_AMOUNT_TND,
+    )
+    shared_device_threshold = _float_env(
+        "DEVICE_SHARED_ACCOUNT_THRESHOLD_7D",
+        DEFAULT_SHARED_DEVICE_ACCOUNT_THRESHOLD,
+    )
+
+    df = df.withColumn(
+        "device_vpn_new_high_amount_flag",
+        when(
+            (col("vpn_detected") == lit(True)) &
+            (col("device_id").isNotNull()) &
+            (col("device_age_days").isNotNull()) &
+            (col("device_age_days") <= lit(1.0)) &
+            (col("amount_tnd") >= lit(high_amount_threshold)),
+            lit(True),
+        ).otherwise(lit(False)),
+    )
+
+    df = df.withColumn(
+        "device_emulator_flag",
+        when(col("emulator_detected") == lit(True), lit(True)).otherwise(lit(False)),
+    )
+
+    df = df.withColumn(
+        "device_shared_accounts_flag",
+        when(
+            col("device_account_count_7d").isNotNull() &
+            (col("device_account_count_7d") > lit(shared_device_threshold)),
             lit(True),
         ).otherwise(lit(False)),
     )

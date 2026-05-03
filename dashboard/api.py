@@ -197,6 +197,8 @@ class TransactionAlert(BaseModel):
     sar_report: Optional[str] = None
     alert_type: Optional[str] = "high_risk"
     shap_top5: Optional[List[Dict[str, Any]]] = None
+    anomaly_score: Optional[float] = None
+    anomaly_model_version: Optional[str] = None
     ingestion_latency: Optional[float] = None
 
 def parse_feature_importance(feature_payload, limit=3):
@@ -316,6 +318,8 @@ def _init_database():
             sar_report TEXT,
             alert_type TEXT DEFAULT 'high_risk',
             shap_top5 TEXT,
+            anomaly_score REAL,
+            anomaly_model_version TEXT,
             ingestion_latency REAL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -380,6 +384,10 @@ def _init_database():
         cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN ingestion_latency REAL")
     if "shap_top5" not in existing_columns:
         cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN shap_top5 TEXT")
+    if "anomaly_score" not in existing_columns:
+        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN anomaly_score REAL")
+    if "anomaly_model_version" not in existing_columns:
+        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN anomaly_model_version TEXT")
 
     conn.commit()
     conn.close()
@@ -962,12 +970,14 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
         cursor.execute("""
             INSERT OR IGNORE INTO high_risk_alerts
             (transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id,
-             timestamp, ml_probability, sar_report, alert_type, shap_top5, ingestion_latency)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             timestamp, ml_probability, sar_report, alert_type, shap_top5,
+             anomaly_score, anomaly_model_version, ingestion_latency)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             alert.transaction_id, alert.user_id, alert.amount_tnd,
             alert.governorate, alert.payment_method, alert.branch_id, alert.timestamp,
-            alert.ml_probability, alert.sar_report, alert_type, shap_payload, alert.ingestion_latency
+            alert.ml_probability, alert.sar_report, alert_type, shap_payload,
+            alert.anomaly_score, alert.anomaly_model_version, alert.ingestion_latency
         ))
 
         conn.commit()
@@ -1278,12 +1288,17 @@ async def get_feedback_analysis(auth=Depends(require_scopes({"analyst", "admin"}
 async def get_threshold_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
     return monitoring_engine.get_ml_threshold_analysis()
 
+@router.get("/metrics/drift")
+async def get_drift_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
+    return monitoring_engine.get_drift_retraining_assessment()
+
 @router.get("/metrics/system-overview")
 async def get_system_overview(auth=Depends(require_scopes({"analyst", "admin"}))):
     return {
         "performance": monitoring_engine.get_performance_metrics(),
         "feedback": monitoring_engine.get_feedback_analysis(),
-        "threshold_recommendation": monitoring_engine.get_ml_threshold_analysis()
+        "threshold_recommendation": monitoring_engine.get_ml_threshold_analysis(),
+        "drift": monitoring_engine.get_drift_retraining_assessment(),
     }
 
 @router.post("/retrain-model/")
@@ -1362,6 +1377,11 @@ async def _legacy_compliance_kpis(branch_id: Optional[str] = None,
 @_legacy_router.get("/monitoring/model-performance/")
 async def _legacy_model_perf(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     return await get_model_performance(branch_id, auth)
+
+
+@_legacy_router.get("/metrics/drift")
+async def _legacy_drift_metrics(auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await get_drift_analysis(auth)
 
 
 @_legacy_router.get("/alerts/{transaction_id}/explain")

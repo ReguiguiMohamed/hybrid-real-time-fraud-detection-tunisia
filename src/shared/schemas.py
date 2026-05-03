@@ -60,10 +60,27 @@ class Transaction(BaseModel):
                     "Null for TND accounts.",
     )
 
-    # ── Device / channel signals (nullable — absent from API-originated transactions) ──
+    # ── Device / behavioral biometrics signals (nullable — absent from API-originated transactions) ──
     device_id: Optional[str] = Field(None, description="Hashed device fingerprint.")
+    device_os: Optional[str] = Field(None, description="Client device operating system, when supplied by the channel.")
+    device_model: Optional[str] = Field(None, description="Client device model, when supplied by the channel.")
+    app_version: Optional[str] = Field(None, description="Mobile or web application version used for the transaction.")
+    session_typing_cadence_ms: Optional[float] = Field(
+        None,
+        description="Median inter-keystroke delay in milliseconds for the authenticated session.",
+    )
+    session_copy_paste_ratio: Optional[float] = Field(
+        None,
+        description="Ratio of pasted input events to total text-entry events in the authenticated session.",
+    )
+    network_type: Optional[str] = Field(None, description="Observed network type: 4G, 5G, WIFI, VPN, TOR, or similar.")
     vpn_detected: Optional[bool] = Field(None, description="True if transaction originated via VPN.")
     emulator_detected: Optional[bool] = Field(None, description="True if mobile emulator detected.")
+    device_age_days: Optional[float] = Field(None, description="Days since this device fingerprint was first observed.")
+    device_account_count_7d: Optional[float] = Field(
+        None,
+        description="Distinct accounts seen from this device fingerprint over the last 7 days.",
+    )
 
     # Sanctions / PEP screening inputs.
     sender_account: Optional[str] = Field(None, description="Originating account identifier for sanctions screening.")
