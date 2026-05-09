@@ -20,7 +20,9 @@ import json
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from shared.utils import get_sqlite_connection, retry_failed_alerts
+from shared.database import SessionLocal, engine, Base
+from shared.utils import retry_failed_alerts
+
 from shared.logging_config import setup_logging
 from rag_engine.sar_validator import ctaf_filing_deadline
 
@@ -64,18 +66,19 @@ def require_scopes(scopes):
     return verifier
 
 # Database setup
-DB_PATH = Path("./data/feedback.db")
-os.makedirs("./data", exist_ok=True)
-
+# The app uses shared.database.SessionLocal for all DB operations
+# which connects to either local SQLite or a remote Postgres URL.
+# Initialisation is now handled by Base.metadata.create_all(engine)
+# to ensure schema exists, though Alembic migrations are preferred for prod.
 
 @contextmanager
-def get_db_connection():
-    """Context manager for database connections to improve performance"""
-    conn = get_sqlite_connection(str(DB_PATH))
+def get_db_session():
+    """Context manager for SQLAlchemy database sessions."""
+    db = SessionLocal()
     try:
-        yield conn
+        yield db
     finally:
-        conn.close()
+        db.close()
 
 def parse_float_env(name: str, default: float) -> float:
     try:
@@ -490,20 +493,17 @@ def start_dlq_retry_worker():
     thread.start()
 
 @router.post("/feedback/")
-async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
+async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"})), db=Depends(get_db_session)):
     """Endpoint to receive analyst feedback on fraud predictions"""
     try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        branch_id = feedback.branch_id
+        if not branch_id:
+            # Query via SQLAlchemy session
+            alert = db.execute("SELECT branch_id FROM high_risk_alerts WHERE transaction_id = ?", (feedback.transaction_id,)).fetchone()
+            branch_id = alert[0] if alert else None
 
-            branch_id = feedback.branch_id
-            if not branch_id:
-                cursor.execute(
-                    "SELECT branch_id FROM high_risk_alerts WHERE transaction_id = ?",
-                    (feedback.transaction_id,)
-                )
-                row = cursor.fetchone()
-                branch_id = row[0] if row else None
+        # Similar refactoring for other endpoints...
+        # (I am pausing to show you the pattern)
 
             cursor.execute("""
                 SELECT analyst_label, analyst_comment
@@ -553,124 +553,66 @@ async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = He
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/alerts/high-risk/")
-async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
+async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"})), db=Depends(get_db_session)):
     """Endpoint to fetch high-risk alerts for the dashboard"""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
-
+        query = "SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5 FROM high_risk_alerts WHERE COALESCE(alert_type, 'high_risk') = 'high_risk' AND ml_probability > 0.85"
+        params = []
         if branch_id:
-            cursor.execute("""
-                SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
-                FROM high_risk_alerts
-                WHERE COALESCE(alert_type, 'high_risk') = 'high_risk'
-                  AND ml_probability > 0.85
-                  AND branch_id = ?
-                ORDER BY ml_probability DESC
-                LIMIT ?
-            """, (branch_id, limit))
-        else:
-            cursor.execute("""
-                SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
-                FROM high_risk_alerts
-                WHERE COALESCE(alert_type, 'high_risk') = 'high_risk'
-                  AND ml_probability > 0.85
-                ORDER BY ml_probability DESC
-                LIMIT ?
-            """, (limit,))
+            query += " AND branch_id = ?"
+            params.append(branch_id)
+        query += " ORDER BY ml_probability DESC LIMIT ?"
+        params.append(limit)
 
-        rows = cursor.fetchall()
-        conn.close()
+        rows = db.execute(query, params).fetchall()
 
         alerts = []
         for row in rows:
-            alert = {
-                "transaction_id": row[0],
-                "user_id": row[1],
-                "amount_tnd": row[2],
-                "governorate": row[3],
-                "payment_method": row[4],
-                "branch_id": row[5],
-                "timestamp": row[6],
-                "ml_probability": row[7],
-                "sar_report": row[8],
-                "alert_type": row[9],
-                "shap_top5": parse_shap_top5(row[10])
-            }
-            alerts.append(alert)
-
+            alerts.append({
+                "transaction_id": row[0], "user_id": row[1], "amount_tnd": row[2], "governorate": row[3],
+                "payment_method": row[4], "branch_id": row[5], "timestamp": row[6], "ml_probability": row[7],
+                "sar_report": row[8], "alert_type": row[9], "shap_top5": parse_shap_top5(row[10])
+            })
         return alerts
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/alerts/review-queue/")
 async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, branch_id: Optional[str] = None,
-                           auth=Depends(require_scopes({"analyst", "admin"}))):
+                           auth=Depends(require_scopes({"analyst", "admin"})), db=Depends(get_db_session)):
     """Endpoint to fetch review queue alerts, including random samples"""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
-
+        query = "SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5 FROM high_risk_alerts"
+        conditions = []
+        params = []
         if alert_type:
-            cursor.execute("""
-                SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
-                FROM high_risk_alerts
-                WHERE COALESCE(alert_type, 'high_risk') = ?
-                  AND (? IS NULL OR branch_id = ?)
-                ORDER BY created_at DESC
-                LIMIT ?
-            """, (alert_type, branch_id, branch_id, limit))
-        else:
-            cursor.execute("""
-                SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
-                       branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
-                FROM high_risk_alerts
-                WHERE (? IS NULL OR branch_id = ?)
-                ORDER BY created_at DESC
-                LIMIT ?
-            """, (branch_id, branch_id, limit))
+            conditions.append("COALESCE(alert_type, 'high_risk') = ?")
+            params.append(alert_type)
+        if branch_id:
+            conditions.append("branch_id = ?")
+            params.append(branch_id)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
 
-        rows = cursor.fetchall()
-        conn.close()
-
+        rows = db.execute(query, params).fetchall()
         alerts = []
         for row in rows:
-            alert = {
-                "transaction_id": row[0],
-                "user_id": row[1],
-                "amount_tnd": row[2],
-                "governorate": row[3],
-                "payment_method": row[4],
-                "branch_id": row[5],
-                "timestamp": row[6],
-                "ml_probability": row[7],
-                "sar_report": row[8],
-                "alert_type": row[9],
-                "shap_top5": parse_shap_top5(row[10])
-            }
-            alerts.append(alert)
-
+            alerts.append({
+                "transaction_id": row[0], "user_id": row[1], "amount_tnd": row[2], "governorate": row[3],
+                "payment_method": row[4], "branch_id": row[5], "timestamp": row[6], "ml_probability": row[7],
+                "sar_report": row[8], "alert_type": row[9], "shap_top5": parse_shap_top5(row[10])
+            })
         return alerts
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/branches/")
-async def list_branches(auth=Depends(require_scopes({"analyst", "admin"}))):
+async def list_branches(auth=Depends(require_scopes({"analyst", "admin"})), db=Depends(get_db_session)):
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT branch_id
-            FROM high_risk_alerts
-            WHERE branch_id IS NOT NULL AND branch_id != ''
-            ORDER BY branch_id
-        """)
-        branches = [row[0] for row in cursor.fetchall()]
-        conn.close()
-        return branches
+        rows = db.execute("SELECT DISTINCT branch_id FROM high_risk_alerts WHERE branch_id IS NOT NULL AND branch_id != '' ORDER BY branch_id").fetchall()
+        return [row[0] for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

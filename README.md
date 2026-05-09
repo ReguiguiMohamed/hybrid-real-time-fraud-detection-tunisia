@@ -1,3 +1,8 @@
+---
+title: Amastan Fraud Shield Guard
+sdk: docker
+app_port: 7860
+---
 # Amastan Fraud Shield Guard - Hybrid Streaming & RAG Architecture
 
 A production-oriented real-time fraud mitigation prototype for Tunisian digital payments. Uses **Kafka + Spark Structured Streaming** for stateful detection, **XGBoost** for ML scoring, and **RAG (Ollama/ChromaDB)** for analyst-reviewed SAR drafting with deterministic compliance fallback.
