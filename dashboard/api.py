@@ -407,7 +407,8 @@ def _init_database():
 async def lifespan(application: FastAPI):
     # --- startup ---
     logger.info("Starting Fraud Detection Command Center API")
-    _init_database()
+    # Initialize tables using SQLAlchemy (works for both SQLite and Postgres)
+    Base.metadata.create_all(bind=engine)
     start_dlq_retry_worker()
     yield
     # --- shutdown ---
