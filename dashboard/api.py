@@ -277,7 +277,11 @@ def parse_shap_top5(shap_payload):
     normalized.sort(key=lambda item: item["abs_impact"], reverse=True)
     return normalized[:5]
 
-monitoring_engine = ForensicAnalyticEngine(DB_PATH)
+# Initialize monitoring with the database path
+# If using SQLite, we pass the local path; otherwise, a placeholder.
+db_path_for_monitoring = DATABASE_URL if DATABASE_URL.startswith("sqlite") else "./data/feedback.db"
+monitoring_engine = ForensicAnalyticEngine(db_path_for_monitoring)
+
 
 
 # ---------------------------------------------------------------------------
