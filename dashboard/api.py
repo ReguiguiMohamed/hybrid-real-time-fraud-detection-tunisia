@@ -20,7 +20,7 @@ import json
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from shared.database import SessionLocal, engine, Base
+from shared.database import SessionLocal, engine, Base, DATABASE_URL
 from shared.utils import retry_failed_alerts
 
 from shared.logging_config import setup_logging
