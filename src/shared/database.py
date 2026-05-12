@@ -14,13 +14,21 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 # Default to SQLite for local development
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/feedback.db")
 
-# Create engine
-# connect_args={'check_same_thread': False} is required for SQLite
+# Create engine.
+# SQLite needs check_same_thread disabled for FastAPI/TestClient.
+# Neon/serverless Postgres can close idle SSL connections, so pre-ping and
+# short recycling keep pooled connections from being reused after the server
+# has already dropped them.
 connect_args = {}
+engine_kwargs = {
+    "pool_pre_ping": True,
+    "pool_recycle": int(os.getenv("DATABASE_POOL_RECYCLE_SECONDS", "300")),
+}
 if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
+    engine_kwargs = {}
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(DATABASE_URL, connect_args=connect_args, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
