@@ -95,8 +95,9 @@ sequenceDiagram
     participant C as Spark Consumer
     participant R as Rules Engine
     participant M as XGBoost
-    participant A as FastAPI
     participant S as SAR Generator
+    participant A as FastAPI
+    participant DB as SQLAlchemy DB
     participant D as Dashboard
 
     P->>K: Generate dev/test TX events
@@ -106,14 +107,15 @@ sequenceDiagram
     C->>R: Dynamic risk scoring
     R->>M: ML inference (champion model)
     M->>C: ML probability
-    C->>A: Alert (async, thread pool)
-    A->>S: Generate SAR (RAG + validation)
-    S->>A: SAR report (validated or fallback)
-    A->>A: Store alert + DLQ
+    C->>S: Optional SAR draft (RAG + validation)
+    S->>C: SAR report or deterministic fallback
+    C->>A: POST alert + SHAP + optional SAR
+    A->>DB: Persist alert, audit, feedback
+    D->>A: Fetch review queue, stats, exports
     A->>D: Serve alert/review APIs
-    D->>D: Analyst review + feedback
-    D->>A: Feedback (fraud/FP)
-    A->>M: Champion-challenger retrain
+    D->>A: Submit analyst feedback
+    A->>M: Trigger background retraining
+    M->>DB: Update model registry
 ```
 
 ### Why These Technologies?
@@ -150,7 +152,7 @@ graph TB
     subgraph Intelligence["Layer 3: Intelligence (Gold)"]
         ML[XGBoost ML]
         RS[Risk Scoring]
-        SM[Active Learning Sampling]
+        AD["Alert Dispatch\nhigh risk + samples"]
     end
 
     subgraph Compliance["Layer 4: Compliance"]
@@ -175,16 +177,19 @@ graph TB
     SA --> RE
     RE --> RS
     RS --> ML
-    ML --> SM
-    SM --> API
-    API --> DB
-    API --> RAG
+    ML --> AD
+    AD --> RAG
     RAG --> SAR
+    SAR --> AD
+    AD --> API
+    API --> DB
     SAR --> CTAF
+    Dash --> API
     API --> Dash
     C -. metrics .-> Mon
     API -. metrics .-> Mon
-    API --> DLQ
+    C --> DLQ
+    DLQ --> API
 
     style Ingestion fill:#fff3e0
     style Processing fill:#e3f2fd
