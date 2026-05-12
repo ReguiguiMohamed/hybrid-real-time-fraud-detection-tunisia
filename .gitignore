@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.egg-info/
+.pytest_cache/
 dist/
 build/
 
@@ -22,6 +23,14 @@ Thumbs.db
 # Temporary files
 tmp/
 checkpoint/
+pytest-cache-files-*/
+data/pytest-cache-files-*/
+data/pytest_basetemp*/
+data/pytest_tmp/
+htmlcov/
+.coverage
+backtest_report.json
+notebooks/output_*.html
 
 # Runtime data (generated at runtime, not tracked)
 data/parquet/
@@ -74,5 +83,6 @@ ollama/
 # Session state (not for version control)
 CHECKPOINT.md
 FUTURE_WORK.md
+TECHNICAL_INTERVIEW_PREP_HANDOFF.md
 test_end_to_end.py
 test_end_toend.py

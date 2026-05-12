@@ -293,6 +293,11 @@ graph TB
 
 Files marked ★ are professional-grade additions that address the "amateur" markers.
 
+Runtime outputs are intentionally not tracked. Spark parquet output, SQLite
+databases, pytest caches, coverage reports, notebook HTML exports, model
+registry artifacts, DLQ files, and local checkpoint/session handoff files are
+ignored. Use `make clean` to remove generated artifacts from a local workspace.
+
 ---
 
 ## Quick Start

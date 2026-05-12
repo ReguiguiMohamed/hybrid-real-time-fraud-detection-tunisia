@@ -117,14 +117,7 @@ lint:
 
 chaos-test:
 	@echo "==> Running chaos/integration tests..."
-	@echo "==> Testing Kafka failure recovery..."
-	pytest tests/test_chaos_kafka.py -v --tb=short || true
-	@echo "==> Testing checkpoint recovery..."
-	pytest tests/test_chaos_checkpoint.py -v --tb=short || true
-	@echo "==> Testing Ollama fallback..."
-	pytest tests/test_chaos_ollama.py -v --tb=short || true
-	@echo "==> Testing DLQ behavior under load..."
-	python tests/test_chaos_dlq_load.py
+	pytest tests/test_chaos_integration.py -v --tb=short
 	@echo "==> Chaos tests complete."
 
 # ==========================================
@@ -240,7 +233,9 @@ clean:
 	rm -rf data/parquet data/reports tmp/checkpoint tmp/spark-warehouse tmp/checkpoint_stateful
 	rm -rf data/dedup_cache.db
 	rm -rf models/registry
-	rm -rf htmlcov .pytest_cache .coverage
+	rm -rf htmlcov .pytest_cache .coverage pytest-cache-files-*
+	rm -rf data/pytest-cache-files-* data/pytest_basetemp* data/pytest_tmp
+	rm -f backtest_report.json notebooks/output_*.html
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
