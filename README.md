@@ -11,7 +11,41 @@ Built for the 2026 Tunisian digital-payments landscape: digital usage is growing
 
 ---
 
-## Architecture
+## Live Deployment Verification
+
+The command-center API has been deployed on a Hugging Face Docker Space and connected to a Neon PostgreSQL database through SQLAlchemy. The screenshot below shows the deployed `/health/` endpoint, an authenticated Swagger request returning a persisted high-risk alert, and the same alert visible in Neon.
+
+![Hugging Face API, Swagger readback, and Neon PostgreSQL verification](resultscreenshot.png)
+
+This validates the free-tier deployment path used for the prototype: Hugging Face Spaces hosts the FastAPI service, Neon provides managed PostgreSQL persistence, and the same API can still fall back to local SQLite for development. It is a pragmatic demonstration setup, not a claim that the free-tier stack is sufficient for regulated production traffic.
+
+Verified path:
+
+`FastAPI on Hugging Face Spaces -> authenticated /api/v1 alert endpoint -> SQLAlchemy -> Neon PostgreSQL -> API readback`
+
+---
+
+## Verified Deployment Slice
+
+The hosted Space currently proves the command-center persistence slice:
+
+```mermaid
+flowchart LR
+    Client[Swagger / API Client] --> HF[Hugging Face Space\nFastAPI on port 7860]
+    HF --> Auth[Bearer-token RBAC\nadmin / analyst]
+    Auth --> SQLA[SQLAlchemy Session Layer]
+    SQLA --> Neon[(Neon PostgreSQL\nhigh_risk_alerts + feedback tables)]
+    Neon --> Readback[GET /api/v1/alerts/high-risk/]
+```
+
+The full Kafka/Spark/Ollama/Chroma stack below is the broader local and target
+system architecture. The Hugging Face Space intentionally runs only the FastAPI
+command-center API; stream processing, local SAR generation, monitoring, and
+dashboard components run in the local Docker/Kubernetes-oriented stack.
+
+---
+
+## Full System Architecture
 
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '20px'}}}%%
@@ -29,7 +63,7 @@ flowchart LR
 
     AP --> API[FastAPI\nCommand Center]
     API --> DB[(SQLAlchemy DB\nSQLite local / Neon Postgres)]
-    API --> RAG[RAG Engine\nOllama + ChromaDB]
+    API --> RAG[RAG Engine\nOllama + ChromaDB\nlocal/private runtime)]
 
     subgraph Loop["Active Learning Loop"]
         DB --> Dash[Streamlit\nAnalyst Review]
@@ -51,7 +85,7 @@ flowchart LR
     style Monitor fill:#e8f5e9
 ```
 
-### Data Flow
+### End-to-End Data Flow
 
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '20px'}}}%%
@@ -75,7 +109,8 @@ sequenceDiagram
     C->>A: Alert (async, thread pool)
     A->>S: Generate SAR (RAG + validation)
     S->>A: SAR report (validated or fallback)
-    A->>D: Store alert + DLQ
+    A->>A: Store alert + DLQ
+    A->>D: Serve alert/review APIs
     D->>D: Analyst review + feedback
     D->>A: Feedback (fraud/FP)
     A->>M: Champion-challenger retrain
@@ -119,13 +154,14 @@ graph TB
     end
 
     subgraph Compliance["Layer 4: Compliance"]
-        RAG[RAG Engine]
+        RAG[RAG Engine\nlocal/private runtime]
         SAR[SAR Generator + Validator]
         CTAF[CTAF Export]
     end
 
     subgraph Operations["Layer 5: Operations"]
-        API[FastAPI Command Center]
+        API[FastAPI Command Center\nHF Space verified]
+        DB[(SQLAlchemy Persistence\nSQLite local / Neon deployed)]
         Dash[Streamlit Dashboard]
         Mon[Prometheus + Grafana]
         DLQ[Dead Letter Queue]
@@ -141,6 +177,7 @@ graph TB
     RS --> ML
     ML --> SM
     SM --> API
+    API --> DB
     API --> RAG
     RAG --> SAR
     SAR --> CTAF
@@ -170,9 +207,10 @@ graph TB
 | Embeddings | SentenceTransformers | 3.0.1 | all-MiniLM-L6-v2 semantic search |
 | LLM | Ollama (Llama 3.1) | latest | Local SAR generation (data residency) |
 | API | FastAPI | 0.115.0 | Command Center REST API |
+| API Hosting | Hugging Face Spaces | Docker SDK | Verified free-tier deployment for the FastAPI service |
 | Dashboard | Streamlit | 1.39.0 | Analyst operational UI |
 | Monitoring | Prometheus + Grafana | 2.51 / 10.4 | Pipeline observability, alerting |
-| Database | SQLAlchemy + SQLite/PostgreSQL | 2.0.35 / Neon-ready | Feedback, alerts, model registry, audit logs, pKYC triggers |
+| Database | SQLAlchemy + SQLite/PostgreSQL | 2.0.35 / Neon verified | Feedback, alerts, model registry, audit logs, pKYC triggers |
 | Tracing | OpenTelemetry | 1.27.0 | Distributed tracing |
 | Secrets | HashiCorp Vault adapter | 2.3.0 | Enterprise secret management |
 
@@ -281,6 +319,12 @@ The FastAPI command center creates the core SQLAlchemy tables on startup:
 `pkyc_triggers`. Use managed migrations before treating the Neon database as a
 regulated production store.
 
+Deployment split:
+
+- **Verified hosted slice:** Hugging Face Space running FastAPI on port `7860`, writing and reading alerts from Neon PostgreSQL.
+- **Local/full-stack slice:** Docker Compose/Kubernetes-oriented Kafka, Spark consumer, Streamlit dashboard, Prometheus/Grafana, Ollama, and ChromaDB services.
+- **Shared persistence contract:** SQLAlchemy session layer with SQLite fallback locally and Neon PostgreSQL in the hosted API.
+
 ### 2. One Command Full Setup
 
 ```bash
@@ -334,7 +378,7 @@ make audit-deps       # Dependency pin audit
 
 ### Dynamic Rules Engine
 
-Risk rules are now stored in SQLite and can be updated by risk officers **without code deployment**:
+Risk rules are stored in the local rules database for development and can be updated by risk officers **without code deployment**. The command-center API persistence path now uses SQLAlchemy, with SQLite for local development and Neon PostgreSQL for the verified Hugging Face deployment:
 
 ```python
 from src.shared.rules_engine import get_rules_engine
