@@ -132,7 +132,7 @@ sequenceDiagram
 ## System Overview
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': { 'fontSize': '14px'}}}%%
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '14px'}}}%%
 graph TB
     subgraph Ingestion["Layer 1: Ingestion (Bronze)"]
         P1[Producer]
