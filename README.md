@@ -62,8 +62,8 @@ flowchart LR
     end
 
     AP --> API[FastAPI\nCommand Center]
-    API --> DB[(SQLAlchemy DB\nSQLite local / Neon Postgres)]
-    API --> RAG[RAG Engine\nOllama + ChromaDB\nlocal/private runtime)]
+    API --> DB[(SQLAlchemy DB\nSQLite local or Neon Postgres)]
+    API --> RAG["RAG Engine\nOllama + ChromaDB\nlocal private runtime"]
 
     subgraph Loop["Active Learning Loop"]
         DB --> Dash[Streamlit\nAnalyst Review]
@@ -154,14 +154,14 @@ graph TB
     end
 
     subgraph Compliance["Layer 4: Compliance"]
-        RAG[RAG Engine\nlocal/private runtime]
+        RAG["RAG Engine\nlocal private runtime"]
         SAR[SAR Generator + Validator]
         CTAF[CTAF Export]
     end
 
     subgraph Operations["Layer 5: Operations"]
         API[FastAPI Command Center\nHF Space verified]
-        DB[(SQLAlchemy Persistence\nSQLite local / Neon deployed)]
+        DB[(SQLAlchemy Persistence\nSQLite local or Neon deployed)]
         Dash[Streamlit Dashboard]
         Mon[Prometheus + Grafana]
         DLQ[Dead Letter Queue]
