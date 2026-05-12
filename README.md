@@ -28,7 +28,7 @@ flowchart LR
     end
 
     AP --> API[FastAPI\nCommand Center]
-    API --> DB[(SQLite\nFeedback + DLQ)]
+    API --> DB[(SQLAlchemy DB\nSQLite local / Neon Postgres)]
     API --> RAG[RAG Engine\nOllama + ChromaDB]
 
     subgraph Loop["Active Learning Loop"]
@@ -88,7 +88,7 @@ sequenceDiagram
 | **Kafka over Redis Streams** | Confluent Kafka 7.7 | Durability, consumer groups, replay capability. Redis is faster but loses messages on restart. |
 | **Spark over Benthos/Python workers** | PySpark 4.1.1 | Windowed stateful aggregation (5-min windows, per-user state) is native in Spark. Benthos lacks ML integration. Python workers don't handle watermarks. |
 | **XGBoost before deep learning** | SparkXGBClassifier | Fast, interpretable tabular baseline suitable for limited labelled feedback. Graph, sequence, and anomaly models are still planned before any state-of-the-art claim. |
-| **SQLite over PostgreSQL** | SQLite WAL mode | Single-service deployment, <10K writes/sec for feedback/DLQ/registry. PostgreSQL adds operational complexity with no benefit at this scale. Migration path to PostgreSQL/CockroachDB is available if alert volume or monitoring demands exceed WAL capacity. |
+| **SQLAlchemy persistence** | SQLite local / PostgreSQL on Neon | Local development keeps a zero-dependency SQLite fallback. Hugging Face Spaces deployment uses Neon PostgreSQL through the same SQLAlchemy session layer. |
 | **Ollama over Cloud LLMs** | Llama 3.1 local | PII never leaves the infrastructure. Cloud APIs violate Tunisian data residency requirements. |
 | **ChromaDB over Pinecone** | ChromaDB local | Same data residency concern. Embeddings (all-MiniLM-L6-v2) run locally. |
 
@@ -172,7 +172,7 @@ graph TB
 | API | FastAPI | 0.115.0 | Command Center REST API |
 | Dashboard | Streamlit | 1.39.0 | Analyst operational UI |
 | Monitoring | Prometheus + Grafana | 2.51 / 10.4 | Pipeline observability, alerting |
-| Database | SQLite (WAL) | 3.x | Feedback, alerts, model registry, DLQ |
+| Database | SQLAlchemy + SQLite/PostgreSQL | 2.0.35 / Neon-ready | Feedback, alerts, model registry, audit logs, pKYC triggers |
 | Tracing | OpenTelemetry | 1.27.0 | Distributed tracing |
 | Secrets | HashiCorp Vault adapter | 2.3.0 | Enterprise secret management |
 
@@ -263,8 +263,23 @@ Files marked ★ are professional-grade additions that address the "amateur" mar
 
 ```bash
 cp .env.example .env
-# Edit .env with your tokens, Vault address, and PII salt
+# Edit .env with your tokens, database URL, Vault address, and PII salt
 ```
+
+For local development, `DATABASE_URL=sqlite:///./data/feedback.db` is enough.
+For Hugging Face Spaces + Neon, set the Space secrets to at least:
+
+```bash
+DATABASE_URL=postgresql+psycopg2://USER:PASSWORD@HOST.neon.tech/DBNAME?sslmode=require
+ADMIN_TOKEN=...
+ANALYST_TOKEN=...
+API_TOKEN=...
+```
+
+The FastAPI command center creates the core SQLAlchemy tables on startup:
+`high_risk_alerts`, `feedback_labels`, `model_registry`, `audit_logs`, and
+`pkyc_triggers`. Use managed migrations before treating the Neon database as a
+regulated production store.
 
 ### 2. One Command Full Setup
 
@@ -286,6 +301,11 @@ make prod         # Start full Docker Compose stack
 | Grafana | http://localhost:3000 | Dashboards (admin/admin) |
 | Alertmanager | http://localhost:9093 | Alert routing |
 | ChromaDB | http://localhost:8000 | Vector store admin |
+
+For the Hugging Face Docker Space, the API listens on port `7860`. The direct
+Space host should expose `/health/`, `/docs`, and `/api/v1/...`. If the
+Hugging Face web UI proxy returns a root-level `404`, test the direct
+`*.hf.space` URL before debugging the API code.
 
 ### 4. Development Commands
 
@@ -479,7 +499,7 @@ The system ships with production-ready K8s manifests:
 
 - **StatefulSets** for Kafka and Zookeeper with persistent volumes
 - **Deployments** with resource requests/limits for all services
-- **Single API replica by default** while SQLite is the backing store; scale out after moving the command-center store to PostgreSQL/CockroachDB
+- **Single API replica by default** for local SQLite; use PostgreSQL/Neon before scaling the command-center API horizontally
 - **Ingress** with rate limiting (nginx annotations)
 - **PVCs** for all persistent data (180GB total)
 - **ConfigMaps** for hot-reloadable configuration

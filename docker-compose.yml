@@ -81,6 +81,7 @@ services:
       - API_TOKEN=${API_TOKEN:-default_dev_token}
       - ADMIN_TOKEN=${ADMIN_TOKEN:-default_admin_token}
       - ANALYST_TOKEN=${ANALYST_TOKEN:-default_analyst_token}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/feedback.db}
       - RANDOM_SAMPLE_RATE=${RANDOM_SAMPLE_RATE:-0.01}
       - DLQ_RETRY_INTERVAL_SECONDS=${DLQ_RETRY_INTERVAL_SECONDS:-60}
       - DLQ_RETRY_MAX_ATTEMPTS=${DLQ_RETRY_MAX_ATTEMPTS:-3}

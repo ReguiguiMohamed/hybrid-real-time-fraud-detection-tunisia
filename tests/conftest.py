@@ -6,6 +6,7 @@ import sys
 import sqlite3
 import tempfile
 import pytest
+import importlib
 from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
@@ -65,6 +66,7 @@ def tmp_db(tmp_path):
             transaction_id TEXT NOT NULL,
             analyst_label TEXT,
             analyst_comment TEXT,
+            analyst_id TEXT,
             branch_id TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -83,6 +85,9 @@ def tmp_db(tmp_path):
             ml_probability REAL,
             sar_report TEXT,
             alert_type TEXT DEFAULT 'high_risk',
+            shap_top5 TEXT,
+            anomaly_score REAL,
+            anomaly_model_version TEXT,
             ingestion_latency REAL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -111,6 +116,19 @@ def tmp_db(tmp_path):
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
             previous_state TEXT,
             new_state TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pkyc_triggers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            trigger_reason TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            current_risk_tier TEXT NOT NULL,
+            signals TEXT NOT NULL,
+            transaction_id TEXT
         )
     """)
 
@@ -183,13 +201,14 @@ def api_test_client(tmp_db, monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "test_admin_token")
     monkeypatch.setenv("ANALYST_TOKEN", "test_analyst_token")
     monkeypatch.setenv("API_TOKEN", "test_admin_token")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_db.as_posix()}")
 
-    # Patch DB_PATH before importing the app
+    import shared.database as database_module
+    importlib.reload(database_module)
     import dashboard.api as api_module
-    monkeypatch.setattr(api_module, "DB_PATH", tmp_db)
+    importlib.reload(api_module)
 
-    # Re-run database init with the temp path
-    api_module._init_database()
+    api_module.Base.metadata.create_all(bind=api_module.engine)
 
     from fastapi.testclient import TestClient
     client = TestClient(api_module.app)

@@ -11,8 +11,7 @@ from pydantic import BaseModel, field_validator
 from typing import Optional, List, Dict, Any
 import os
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timezone, timedelta
 import threading
 import hashlib
 import logging
@@ -28,6 +27,7 @@ from rag_engine.sar_validator import ctaf_filing_deadline
 
 sys.path.append(os.path.dirname(__file__))
 from monitoring import ForensicAnalyticEngine
+from sqlalchemy import text
 
 # Initialize structured logging
 setup_logging(service_name="fraud-api")
@@ -79,6 +79,7 @@ def get_db_session():
         yield db
     finally:
         db.close()
+
 
 def parse_float_env(name: str, default: float) -> float:
     try:
@@ -137,18 +138,15 @@ FEATURE_LABELS = {
 }
 
 def get_champion_model_path():
-    conn = get_sqlite_connection(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("""
+    with get_db_session() as db:
+        row = db.execute(text("""
         SELECT model_path
         FROM model_registry
         WHERE is_champion = 1
         ORDER BY promoted_at DESC
         LIMIT 1
-    """)
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else None
+        """)).fetchone()
+        return row[0] if row else None
 
 class FeedbackRequest(BaseModel):
     transaction_id: str
@@ -172,21 +170,20 @@ class FeedbackRequest(BaseModel):
         return v.strip()
 
 def log_audit_event(entity_type, entity_id, action, user_id, previous_state, new_state):
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
+    with get_db_session() as db:
+        db.execute(text("""
             INSERT INTO audit_logs
             (entity_type, entity_id, action, user_id, previous_state, new_state)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            entity_type,
-            entity_id,
-            action,
-            user_id,
-            previous_state,
-            new_state
-        ))
-        conn.commit()
+            VALUES (:entity_type, :entity_id, :action, :user_id, :previous_state, :new_state)
+        """), {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "action": action,
+            "user_id": user_id,
+            "previous_state": previous_state,
+            "new_state": new_state,
+        })
+        db.commit()
 
 class TransactionAlert(BaseModel):
     transaction_id: str
@@ -292,122 +289,18 @@ RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))
 RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 
-# ---------------------------------------------------------------------------
-# Database initialisation (called at startup)
-# ---------------------------------------------------------------------------
-def _init_database():
-    """Initialize the database tables on startup"""
-    conn = get_sqlite_connection(str(DB_PATH))
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS feedback_labels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transaction_id TEXT NOT NULL,
-            analyst_label TEXT,
-            analyst_comment TEXT,
-            branch_id TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS high_risk_alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transaction_id TEXT NOT NULL UNIQUE,
-            user_id TEXT,
-            amount_tnd REAL,
-            governorate TEXT,
-            payment_method TEXT,
-            branch_id TEXT,
-            timestamp TEXT,
-            ml_probability REAL,
-            sar_report TEXT,
-            alert_type TEXT DEFAULT 'high_risk',
-            shap_top5 TEXT,
-            anomaly_score REAL,
-            anomaly_model_version TEXT,
-            ingestion_latency REAL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    cursor.execute("PRAGMA table_info(feedback_labels)")
-    feedback_columns = {row[1] for row in cursor.fetchall()}
-    if "branch_id" not in feedback_columns:
-        cursor.execute("ALTER TABLE feedback_labels ADD COLUMN branch_id TEXT")
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS model_registry (
-            version_id TEXT PRIMARY KEY,
-            model_path TEXT NOT NULL,
-            f1_score REAL,
-            auc REAL,
-            is_champion INTEGER DEFAULT 0,
-            promoted_at DATETIME,
-            training_samples_count INTEGER,
-            feature_importance TEXT
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS audit_logs (
-            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entity_type TEXT,
-            entity_id TEXT,
-            action TEXT,
-            user_id TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            previous_state TEXT,
-            new_state TEXT
-        )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pkyc_triggers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT NOT NULL,
-            account_id TEXT NOT NULL,
-            trigger_reason TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            current_risk_tier TEXT NOT NULL,
-            signals TEXT NOT NULL,
-            transaction_id TEXT
-        )
-    """)
-
-    cursor.execute("PRAGMA table_info(model_registry)")
-    registry_columns = {row[1] for row in cursor.fetchall()}
-    if "feature_importance" not in registry_columns:
-        cursor.execute("ALTER TABLE model_registry ADD COLUMN feature_importance TEXT")
-
-    cursor.execute("PRAGMA table_info(high_risk_alerts)")
-    existing_columns = {row[1] for row in cursor.fetchall()}
-    if "alert_type" not in existing_columns:
-        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN alert_type TEXT DEFAULT 'high_risk'")
-        cursor.execute("UPDATE high_risk_alerts SET alert_type = 'high_risk' WHERE alert_type IS NULL")
-    if "branch_id" not in existing_columns:
-        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN branch_id TEXT")
-    if "ingestion_latency" not in existing_columns:
-        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN ingestion_latency REAL")
-    if "shap_top5" not in existing_columns:
-        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN shap_top5 TEXT")
-    if "anomaly_score" not in existing_columns:
-        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN anomaly_score REAL")
-    if "anomaly_model_version" not in existing_columns:
-        cursor.execute("ALTER TABLE high_risk_alerts ADD COLUMN anomaly_model_version TEXT")
-
-    conn.commit()
-    conn.close()
-
+# --- Database initialisation ---
+# The database schema is managed via Base.metadata.create_all(engine)
+# triggered in the lifespan context manager.
 
 # ---------------------------------------------------------------------------
-# Lifespan (replaces deprecated @app.on_event)
+# Lifespan (modern startup/shutdown)
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     # --- startup ---
     logger.info("Starting Fraud Detection Command Center API")
-    # Initialize tables using SQLAlchemy (works for both SQLite and Postgres)
+    # Initialize tables using SQLAlchemy
     Base.metadata.create_all(bind=engine)
     start_dlq_retry_worker()
     yield
@@ -498,40 +391,38 @@ def start_dlq_retry_worker():
     thread.start()
 
 @router.post("/feedback/")
-async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"})), db=Depends(get_db_session)):
+async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
     """Endpoint to receive analyst feedback on fraud predictions"""
     try:
-        branch_id = feedback.branch_id
-        if not branch_id:
-            # Query via SQLAlchemy session
-            alert = db.execute("SELECT branch_id FROM high_risk_alerts WHERE transaction_id = ?", (feedback.transaction_id,)).fetchone()
-            branch_id = alert[0] if alert else None
+        with get_db_session() as db:
+            branch_id = feedback.branch_id
+            if not branch_id:
+                alert = db.execute(
+                    text("SELECT branch_id FROM high_risk_alerts WHERE transaction_id = :transaction_id"),
+                    {"transaction_id": feedback.transaction_id},
+                ).fetchone()
+                branch_id = alert[0] if alert else None
 
-        # Similar refactoring for other endpoints...
-        # (I am pausing to show you the pattern)
-
-            cursor.execute("""
+            previous_feedback = db.execute(text("""
                 SELECT analyst_label, analyst_comment
                 FROM feedback_labels
-                WHERE transaction_id = ?
+                WHERE transaction_id = :transaction_id
                 ORDER BY timestamp DESC
                 LIMIT 1
-            """, (feedback.transaction_id,))
-            previous_feedback = cursor.fetchone()
+            """), {"transaction_id": feedback.transaction_id}).fetchone()
 
-            # Insert feedback into database
-            cursor.execute("""
+            db.execute(text("""
                 INSERT INTO feedback_labels
-                (transaction_id, analyst_label, analyst_comment, branch_id)
-                VALUES (?, ?, ?, ?)
-            """, (
-                feedback.transaction_id,
-                feedback.analyst_label,
-                feedback.analyst_comment,
-                branch_id
-            ))
-
-            conn.commit()
+                (transaction_id, analyst_label, analyst_comment, analyst_id, branch_id)
+                VALUES (:transaction_id, :analyst_label, :analyst_comment, :analyst_id, :branch_id)
+            """), {
+                "transaction_id": feedback.transaction_id,
+                "analyst_label": feedback.analyst_label,
+                "analyst_comment": feedback.analyst_comment,
+                "analyst_id": user_id or auth["role"],
+                "branch_id": branch_id,
+            })
+            db.commit()
 
         previous_state = None
         if previous_feedback:
@@ -558,18 +449,18 @@ async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = He
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/alerts/high-risk/")
-async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"})), db=Depends(get_db_session)):
+async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Endpoint to fetch high-risk alerts for the dashboard"""
     try:
-        query = "SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5 FROM high_risk_alerts WHERE COALESCE(alert_type, 'high_risk') = 'high_risk' AND ml_probability > 0.85"
-        params = []
+        query = "SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk') AS alert_type, shap_top5 FROM high_risk_alerts WHERE COALESCE(alert_type, 'high_risk') = 'high_risk' AND ml_probability > 0.85"
+        params = {"limit": limit}
         if branch_id:
-            query += " AND branch_id = ?"
-            params.append(branch_id)
-        query += " ORDER BY ml_probability DESC LIMIT ?"
-        params.append(limit)
+            query += " AND branch_id = :branch_id"
+            params["branch_id"] = branch_id
+        query += " ORDER BY ml_probability DESC LIMIT :limit"
 
-        rows = db.execute(query, params).fetchall()
+        with get_db_session() as db:
+            rows = db.execute(text(query), params).fetchall()
 
         alerts = []
         for row in rows:
@@ -584,24 +475,24 @@ async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None,
 
 @router.get("/alerts/review-queue/")
 async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, branch_id: Optional[str] = None,
-                           auth=Depends(require_scopes({"analyst", "admin"})), db=Depends(get_db_session)):
+                           auth=Depends(require_scopes({"analyst", "admin"}))):
     """Endpoint to fetch review queue alerts, including random samples"""
     try:
-        query = "SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5 FROM high_risk_alerts"
+        query = "SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk') AS alert_type, shap_top5 FROM high_risk_alerts"
         conditions = []
-        params = []
+        params = {"limit": limit}
         if alert_type:
-            conditions.append("COALESCE(alert_type, 'high_risk') = ?")
-            params.append(alert_type)
+            conditions.append("COALESCE(alert_type, 'high_risk') = :alert_type")
+            params["alert_type"] = alert_type
         if branch_id:
-            conditions.append("branch_id = ?")
-            params.append(branch_id)
+            conditions.append("branch_id = :branch_id")
+            params["branch_id"] = branch_id
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY created_at DESC LIMIT :limit"
 
-        rows = db.execute(query, params).fetchall()
+        with get_db_session() as db:
+            rows = db.execute(text(query), params).fetchall()
         alerts = []
         for row in rows:
             alerts.append({
@@ -614,9 +505,10 @@ async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, b
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/branches/")
-async def list_branches(auth=Depends(require_scopes({"analyst", "admin"})), db=Depends(get_db_session)):
+async def list_branches(auth=Depends(require_scopes({"analyst", "admin"}))):
     try:
-        rows = db.execute("SELECT DISTINCT branch_id FROM high_risk_alerts WHERE branch_id IS NOT NULL AND branch_id != '' ORDER BY branch_id").fetchall()
+        with get_db_session() as db:
+            rows = db.execute(text("SELECT DISTINCT branch_id FROM high_risk_alerts WHERE branch_id IS NOT NULL AND branch_id != '' ORDER BY branch_id")).fetchall()
         return [row[0] for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -625,39 +517,32 @@ async def list_branches(auth=Depends(require_scopes({"analyst", "admin"})), db=D
 async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Get system statistics for monitoring"""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
+        with get_db_session() as db:
+            params = {"branch_id": branch_id} if branch_id else {}
+            branch_where = "WHERE branch_id = :branch_id" if branch_id else ""
+            total_feedback = db.execute(
+                text(f"SELECT COUNT(*) FROM feedback_labels {branch_where}"),
+                params,
+            ).scalar() or 0
 
-        # Get total feedback count
-        if branch_id:
-            cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE branch_id = ?", (branch_id,))
-        else:
-            cursor.execute("SELECT COUNT(*) FROM feedback_labels")
-        total_feedback = cursor.fetchone()[0]
+            label_counts = dict(db.execute(
+                text(f"SELECT analyst_label, COUNT(*) FROM feedback_labels {branch_where} GROUP BY analyst_label"),
+                params,
+            ).fetchall())
 
-        # Get fraud vs false positive counts
-        if branch_id:
-            cursor.execute(
-                "SELECT analyst_label, COUNT(*) FROM feedback_labels WHERE branch_id = ? GROUP BY analyst_label",
-                (branch_id,)
-            )
-        else:
-            cursor.execute("SELECT analyst_label, COUNT(*) FROM feedback_labels GROUP BY analyst_label")
-        label_counts = dict(cursor.fetchall())
-
-        if branch_id:
-            cursor.execute("""
+            if branch_id:
+                label_rows = db.execute(text("""
                 SELECT COALESCE(hra.alert_type, 'unknown') AS alert_type,
                        fl.analyst_label,
                        COUNT(*)
                 FROM feedback_labels fl
                 LEFT JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IS NOT NULL
-                  AND fl.branch_id = ?
+                  AND fl.branch_id = :branch_id
                 GROUP BY alert_type, fl.analyst_label
-            """, (branch_id,))
-        else:
-            cursor.execute("""
+                """), params).fetchall()
+            else:
+                label_rows = db.execute(text("""
                 SELECT COALESCE(hra.alert_type, 'unknown') AS alert_type,
                        fl.analyst_label,
                        COUNT(*)
@@ -665,60 +550,33 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
                 LEFT JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IS NOT NULL
                 GROUP BY alert_type, fl.analyst_label
-            """)
-        label_counts_by_type = {}
-        for alert_type, analyst_label, count in cursor.fetchall():
-            label_counts_by_type.setdefault(alert_type, {})[analyst_label] = count
+                """)).fetchall()
+            label_counts_by_type = {}
+            for alert_type_value, analyst_label, count in label_rows:
+                label_counts_by_type.setdefault(alert_type_value, {})[analyst_label] = count
 
-        # Get high-risk alert count
-        if branch_id:
-            cursor.execute("""
+            branch_alert_clause = "AND branch_id = :branch_id" if branch_id else ""
+            high_risk_count = db.execute(text(f"""
                 SELECT COUNT(*) FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = 'high_risk'
                   AND ml_probability > 0.85
-                  AND branch_id = ?
-            """, (branch_id,))
-        else:
-            cursor.execute("""
-                SELECT COUNT(*) FROM high_risk_alerts
-                WHERE COALESCE(alert_type, 'high_risk') = 'high_risk'
-                  AND ml_probability > 0.85
-            """)
-        high_risk_count = cursor.fetchone()[0]
-
-        if branch_id:
-            cursor.execute("""
+                  {branch_alert_clause}
+            """), params).scalar() or 0
+            random_sample_count = db.execute(text(f"""
                 SELECT COUNT(*) FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = 'random_sample'
-                  AND branch_id = ?
-            """, (branch_id,))
-        else:
-            cursor.execute("""
-                SELECT COUNT(*) FROM high_risk_alerts
-                WHERE COALESCE(alert_type, 'high_risk') = 'random_sample'
-            """)
-        random_sample_count = cursor.fetchone()[0]
-
-        if branch_id:
-            cursor.execute("""
+                  {branch_alert_clause}
+            """), params).scalar() or 0
+            uncertainty_sample_count = db.execute(text(f"""
                 SELECT COUNT(*) FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = 'uncertainty_sample'
-                  AND branch_id = ?
-            """, (branch_id,))
-        else:
-            cursor.execute("""
-                SELECT COUNT(*) FROM high_risk_alerts
-                WHERE COALESCE(alert_type, 'high_risk') = 'uncertainty_sample'
-            """)
-        uncertainty_sample_count = cursor.fetchone()[0]
-
-        if branch_id:
-            cursor.execute("SELECT COUNT(*) FROM high_risk_alerts WHERE branch_id = ?", (branch_id,))
-        else:
-            cursor.execute("SELECT COUNT(*) FROM high_risk_alerts")
-        review_queue_total = cursor.fetchone()[0]
-
-        conn.close()
+                  {branch_alert_clause}
+            """), params).scalar() or 0
+            review_where = "WHERE branch_id = :branch_id" if branch_id else ""
+            review_queue_total = db.execute(
+                text(f"SELECT COUNT(*) FROM high_risk_alerts {review_where}"),
+                params,
+            ).scalar() or 0
 
         # Calculate precision based on high-risk alerts only
         high_risk_counts = label_counts_by_type.get("high_risk", {})
@@ -756,114 +614,110 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
     """Return compliance KPIs derived only from recorded alerts, SARs, feedback, and pKYC audit events."""
     try:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
+        since_30d = now - timedelta(days=30)
 
-        branch_clause = "AND branch_id = ?" if branch_id else ""
-        branch_params = (branch_id,) if branch_id else ()
+        branch_clause = "AND branch_id = :branch_id" if branch_id else ""
+        params = {"branch_id": branch_id, "since_30d": since_30d} if branch_id else {"since_30d": since_30d}
 
-        cursor.execute(f"""
+        with get_db_session() as db:
+            sar_reports_30d = db.execute(text(f"""
             SELECT COUNT(*)
             FROM high_risk_alerts
             WHERE sar_report IS NOT NULL
               AND TRIM(sar_report) != ''
-              AND datetime(created_at) >= datetime('now', '-30 days')
+              AND created_at >= :since_30d
               {branch_clause}
-        """, branch_params)
-        sar_reports_30d = cursor.fetchone()[0]
+            """), params).scalar() or 0
 
-        cursor.execute(f"""
+            filed_rows = db.execute(text(f"""
             SELECT transaction_id, timestamp, created_at
             FROM high_risk_alerts
             WHERE sar_report IS NOT NULL
               AND TRIM(sar_report) != ''
               {branch_clause}
-        """, branch_params)
-        filed_rows = cursor.fetchall()
+            """), params).fetchall()
 
-        on_time = 0
-        evaluated_sars = 0
-        for _, detection_timestamp, created_at in filed_rows:
-            detected_at = parse_datetime_value(detection_timestamp)
-            filed_at = parse_datetime_value(created_at)
-            if detected_at is None or filed_at is None:
-                continue
-            evaluated_sars += 1
-            if filed_at <= ctaf_filing_deadline(from_date=detected_at, business_days=10):
-                on_time += 1
+            on_time = 0
+            evaluated_sars = 0
+            for _, detection_timestamp, created_at in filed_rows:
+                detected_at = parse_datetime_value(detection_timestamp)
+                filed_at = parse_datetime_value(created_at)
+                if detected_at is None or filed_at is None:
+                    continue
+                evaluated_sars += 1
+                if filed_at <= ctaf_filing_deadline(from_date=detected_at, business_days=10):
+                    on_time += 1
 
-        cursor.execute(f"""
+            pending_rows = db.execute(text(f"""
             SELECT transaction_id, timestamp
             FROM high_risk_alerts
             WHERE COALESCE(alert_type, 'high_risk') IN ('high_risk', 'SANCTIONS_HIT')
               AND (sar_report IS NULL OR TRIM(sar_report) = '')
               {branch_clause}
-        """, branch_params)
-        pending_rows = cursor.fetchall()
+            """), params).fetchall()
 
-        overdue_sars = []
-        for transaction_id, detection_timestamp in pending_rows:
-            detected_at = parse_datetime_value(detection_timestamp)
-            if detected_at is None:
-                continue
-            deadline = ctaf_filing_deadline(from_date=detected_at, business_days=10)
-            if now > deadline:
-                overdue_sars.append({
-                    "transaction_id": transaction_id,
-                    "detected_at": detected_at.isoformat(),
-                    "deadline": deadline.isoformat(),
-                })
+            overdue_sars = []
+            for transaction_id, detection_timestamp in pending_rows:
+                detected_at = parse_datetime_value(detection_timestamp)
+                if detected_at is None:
+                    continue
+                deadline = ctaf_filing_deadline(from_date=detected_at, business_days=10)
+                if now > deadline:
+                    overdue_sars.append({
+                        "transaction_id": transaction_id,
+                        "detected_at": detected_at.isoformat(),
+                        "deadline": deadline.isoformat(),
+                    })
 
-        cursor.execute(f"""
+            sanctions_hits_30d = db.execute(text(f"""
             SELECT COUNT(*)
             FROM high_risk_alerts
             WHERE COALESCE(alert_type, 'high_risk') = 'SANCTIONS_HIT'
-              AND datetime(created_at) >= datetime('now', '-30 days')
+              AND created_at >= :since_30d
               {branch_clause}
-        """, branch_params)
-        sanctions_hits_30d = cursor.fetchone()[0]
+            """), params).scalar() or 0
 
-        if branch_id:
-            cursor.execute("""
+            if branch_id:
+                feedback_rows = db.execute(text("""
                 SELECT fl.analyst_label, COUNT(*)
                 FROM feedback_labels fl
                 JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IN ('Confirmed Fraud', 'False Positive')
-                  AND fl.branch_id = ?
+                  AND fl.branch_id = :branch_id
                 GROUP BY fl.analyst_label
-            """, (branch_id,))
-        else:
-            cursor.execute("""
+                """), params).fetchall()
+            else:
+                feedback_rows = db.execute(text("""
                 SELECT analyst_label, COUNT(*)
                 FROM feedback_labels
                 WHERE analyst_label IN ('Confirmed Fraud', 'False Positive')
                 GROUP BY analyst_label
-            """)
-        feedback_counts = dict(cursor.fetchall())
-        reviewed_total = sum(feedback_counts.values())
-        false_positives = feedback_counts.get("False Positive", 0)
+                """)).fetchall()
+            feedback_counts = dict(feedback_rows)
+            reviewed_total = sum(feedback_counts.values())
+            false_positives = feedback_counts.get("False Positive", 0)
 
-        if branch_id:
-            cursor.execute("""
+            if branch_id:
+                pkyc_rows = db.execute(text("""
                 SELECT pt.trigger_reason, COUNT(*)
                 FROM pkyc_triggers pt
                 JOIN high_risk_alerts hra ON hra.transaction_id = pt.transaction_id
-                WHERE datetime(pt.timestamp) >= datetime('now', '-30 days')
-                  AND hra.branch_id = ?
+                WHERE pt.timestamp >= :since_30d_text
+                  AND hra.branch_id = :branch_id
                 GROUP BY pt.trigger_reason
                 ORDER BY COUNT(*) DESC, pt.trigger_reason
-            """, (branch_id,))
-        else:
-            cursor.execute("""
+                """), {**params, "since_30d_text": since_30d.isoformat()}).fetchall()
+            else:
+                pkyc_rows = db.execute(text("""
                 SELECT trigger_reason, COUNT(*)
                 FROM pkyc_triggers
-                WHERE datetime(timestamp) >= datetime('now', '-30 days')
+                WHERE timestamp >= :since_30d_text
                 GROUP BY trigger_reason
                 ORDER BY COUNT(*) DESC, trigger_reason
-            """)
-        pkyc_by_reason = dict(cursor.fetchall())
+                """), {"since_30d_text": since_30d.isoformat()}).fetchall()
+            pkyc_by_reason = dict(pkyc_rows)
 
-        cursor.execute(f"""
+            accounts_by_tier = dict(db.execute(text(f"""
             SELECT
                 CASE
                     WHEN ml_probability >= 0.85 THEN 'CRITICAL'
@@ -876,13 +730,10 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
             WHERE user_id IS NOT NULL
               AND user_id != ''
               AND COALESCE(alert_type, 'high_risk') IN ('high_risk', 'SANCTIONS_HIT')
-              AND datetime(created_at) >= datetime('now', '-30 days')
+              AND created_at >= :since_30d
               {branch_clause}
             GROUP BY risk_tier
-        """, branch_params)
-        accounts_by_tier = dict(cursor.fetchall())
-
-        conn.close()
+            """), params).fetchall())
 
         return {
             "window_days": 30,
@@ -907,28 +758,42 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
 async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scopes({"admin"}))):
     """Endpoint to add high-risk alerts from the streaming pipeline"""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
-
         alert_type = alert.alert_type or "high_risk"
         shap_payload = json.dumps(alert.shap_top5 or [])
 
-        # Insert alert into database
-        cursor.execute("""
-            INSERT OR IGNORE INTO high_risk_alerts
-            (transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id,
-             timestamp, ml_probability, sar_report, alert_type, shap_top5,
-             anomaly_score, anomaly_model_version, ingestion_latency)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            alert.transaction_id, alert.user_id, alert.amount_tnd,
-            alert.governorate, alert.payment_method, alert.branch_id, alert.timestamp,
-            alert.ml_probability, alert.sar_report, alert_type, shap_payload,
-            alert.anomaly_score, alert.anomaly_model_version, alert.ingestion_latency
-        ))
+        with get_db_session() as db:
+            existing = db.execute(
+                text("SELECT id FROM high_risk_alerts WHERE transaction_id = :transaction_id"),
+                {"transaction_id": alert.transaction_id},
+            ).fetchone()
+            if existing:
+                return {"status": "success", "message": "Alert already exists"}
 
-        conn.commit()
-        conn.close()
+            db.execute(text("""
+                INSERT INTO high_risk_alerts
+                (transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id,
+                 timestamp, ml_probability, sar_report, alert_type, shap_top5,
+                 anomaly_score, anomaly_model_version, ingestion_latency)
+                VALUES (:transaction_id, :user_id, :amount_tnd, :governorate, :payment_method,
+                        :branch_id, :timestamp, :ml_probability, :sar_report, :alert_type,
+                        :shap_top5, :anomaly_score, :anomaly_model_version, :ingestion_latency)
+            """), {
+                "transaction_id": alert.transaction_id,
+                "user_id": alert.user_id,
+                "amount_tnd": alert.amount_tnd,
+                "governorate": alert.governorate,
+                "payment_method": alert.payment_method,
+                "branch_id": alert.branch_id,
+                "timestamp": alert.timestamp,
+                "ml_probability": alert.ml_probability,
+                "sar_report": alert.sar_report,
+                "alert_type": alert_type,
+                "shap_top5": shap_payload,
+                "anomaly_score": alert.anomaly_score,
+                "anomaly_model_version": alert.anomaly_model_version,
+                "ingestion_latency": alert.ingestion_latency,
+            })
+            db.commit()
 
         return {"status": "success", "message": "Alert added successfully"}
     except Exception as e:
@@ -938,34 +803,24 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
 async def get_model_performance(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Get model performance metrics based on human feedback"""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
-
-        # Get feedback data to calculate performance metrics
-        # IMPORTANT: This represents performance on the subset of transactions that were reviewed by analysts
-        # NOT the overall model performance across all transactions
-        if branch_id:
-            cursor.execute("""
+        with get_db_session() as db:
+            if branch_id:
+                prob_label_pairs = db.execute(text("""
                 SELECT hra.ml_probability, COALESCE(hra.alert_type, 'high_risk'), fl.analyst_label
                 FROM high_risk_alerts hra
                 JOIN feedback_labels fl ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IS NOT NULL
                   AND COALESCE(hra.alert_type, 'high_risk') IN ('high_risk', 'random_sample')
-                  AND fl.branch_id = ?
-            """, (branch_id,))
-        else:
-            cursor.execute("""
+                  AND fl.branch_id = :branch_id
+                """), {"branch_id": branch_id}).fetchall()
+            else:
+                prob_label_pairs = db.execute(text("""
                 SELECT hra.ml_probability, COALESCE(hra.alert_type, 'high_risk'), fl.analyst_label
                 FROM high_risk_alerts hra
                 JOIN feedback_labels fl ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IS NOT NULL
                 AND COALESCE(hra.alert_type, 'high_risk') IN ('high_risk', 'random_sample')
-            """)
-    
-
-
-        prob_label_pairs = cursor.fetchall()
-        conn.close()
+                """)).fetchall()
 
         if not prob_label_pairs:
             return {
@@ -1028,27 +883,22 @@ async def get_model_performance(branch_id: Optional[str] = None, auth=Depends(re
 async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Explain the top risk factors for a transaction using model feature importance."""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute("""
+        with get_db_session() as db:
+            row = db.execute(text("""
             SELECT transaction_id, COALESCE(alert_type, 'high_risk'), shap_top5
             FROM high_risk_alerts
-            WHERE transaction_id = ?
-        """, (transaction_id,))
-        row = cursor.fetchone()
-        if not row:
-            conn.close()
-            raise HTTPException(status_code=404, detail="Transaction not found")
+            WHERE transaction_id = :transaction_id
+            """), {"transaction_id": transaction_id}).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Transaction not found")
 
-        cursor.execute("""
+            registry_row = db.execute(text("""
             SELECT feature_importance
             FROM model_registry
             WHERE is_champion = 1
             ORDER BY promoted_at DESC
             LIMIT 1
-        """)
-        registry_row = cursor.fetchone()
-        conn.close()
+            """)).fetchone()
 
         shap_top5 = parse_shap_top5(row[2])
         if shap_top5:
@@ -1085,37 +935,31 @@ async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analy
 async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Export a single alert for compliance filing."""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute("""
+        with get_db_session() as db:
+            alert_row = db.execute(text("""
             SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
                    branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
             FROM high_risk_alerts
-            WHERE transaction_id = ?
-        """, (transaction_id,))
-        alert_row = cursor.fetchone()
-        if not alert_row:
-            conn.close()
-            raise HTTPException(status_code=404, detail="Transaction not found")
+            WHERE transaction_id = :transaction_id
+            """), {"transaction_id": transaction_id}).fetchone()
+            if not alert_row:
+                raise HTTPException(status_code=404, detail="Transaction not found")
 
-        cursor.execute("""
+            feedback_row = db.execute(text("""
             SELECT analyst_label, analyst_comment, timestamp
             FROM feedback_labels
-            WHERE transaction_id = ?
+            WHERE transaction_id = :transaction_id
             ORDER BY timestamp DESC
             LIMIT 1
-        """, (transaction_id,))
-        feedback_row = cursor.fetchone()
+            """), {"transaction_id": transaction_id}).fetchone()
 
-        cursor.execute("""
+            registry_row = db.execute(text("""
             SELECT feature_importance
             FROM model_registry
             WHERE is_champion = 1
             ORDER BY promoted_at DESC
             LIMIT 1
-        """)
-        registry_row = cursor.fetchone()
-        conn.close()
+            """)).fetchone()
 
         shap_top5 = parse_shap_top5(alert_row[10])
         factors = shap_top5 or parse_feature_importance(registry_row[0] if registry_row else None, limit=3)
@@ -1153,44 +997,39 @@ async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analys
 async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depends(require_scopes({"admin"}))):
     """Export confirmed fraud alerts for CTAF reporting."""
     try:
-        conn = get_sqlite_connection(str(DB_PATH))
-        cursor = conn.cursor()
-        cutoff = f"-{days} days"
-        if branch_id:
-            cursor.execute("""
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+        with get_db_session() as db:
+            if branch_id:
+                rows = db.execute(text("""
                 SELECT hra.transaction_id, hra.user_id, hra.amount_tnd, hra.governorate, hra.payment_method,
                        hra.branch_id, hra.timestamp, hra.ml_probability, hra.sar_report, hra.shap_top5,
                        fl.analyst_label, fl.analyst_comment, fl.timestamp
                 FROM feedback_labels fl
                 JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label = 'Confirmed Fraud'
-                  AND fl.timestamp >= datetime('now', ?)
-                  AND fl.branch_id = ?
+                  AND fl.timestamp >= :cutoff
+                  AND fl.branch_id = :branch_id
                 ORDER BY fl.timestamp DESC
-            """, (cutoff, branch_id))
-        else:
-            cursor.execute("""
+                """), {"cutoff": cutoff, "branch_id": branch_id}).fetchall()
+            else:
+                rows = db.execute(text("""
                 SELECT hra.transaction_id, hra.user_id, hra.amount_tnd, hra.governorate, hra.payment_method,
                        hra.branch_id, hra.timestamp, hra.ml_probability, hra.sar_report, hra.shap_top5,
                        fl.analyst_label, fl.analyst_comment, fl.timestamp
                 FROM feedback_labels fl
                 JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label = 'Confirmed Fraud'
-                  AND fl.timestamp >= datetime('now', ?)
+                  AND fl.timestamp >= :cutoff
                 ORDER BY fl.timestamp DESC
-            """, (cutoff,))
+                """), {"cutoff": cutoff}).fetchall()
 
-        rows = cursor.fetchall()
-
-        cursor.execute("""
+            registry_row = db.execute(text("""
             SELECT feature_importance
             FROM model_registry
             WHERE is_champion = 1
             ORDER BY promoted_at DESC
             LIMIT 1
-        """)
-        registry_row = cursor.fetchone()
-        conn.close()
+            """)).fetchone()
 
         factors = parse_feature_importance(registry_row[0] if registry_row else None, limit=3)
 
