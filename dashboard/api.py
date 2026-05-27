@@ -1193,6 +1193,21 @@ async def _legacy_retrain(background_tasks: BackgroundTasks, auth=Depends(requir
 app.include_router(_legacy_router)
 
 
+@app.get("/")
+async def root_status():
+    """Root status endpoint for hosted environments and browser checks."""
+    return {
+        "status": "healthy",
+        "service": "fraud-detection-command-center-api",
+        "version": "1.0.0",
+        "routes": {
+            "health": "/health/",
+            "docs": "/docs",
+            "api": "/api/v1/",
+        },
+    }
+
+
 @app.get("/health/")
 async def health_check():
     """Health check endpoint for the API (always at root, not versioned)"""

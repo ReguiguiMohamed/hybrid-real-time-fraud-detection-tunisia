@@ -5,6 +5,14 @@ from datetime import datetime, timezone, timedelta
 
 
 class TestHealthEndpoint:
+    def test_root_status(self, api_test_client):
+        response = api_test_client.get("/")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["routes"]["health"] == "/health/"
+        assert data["routes"]["docs"] == "/docs"
+
     def test_health_check(self, api_test_client):
         response = api_test_client.get("/health/")
         assert response.status_code == 200

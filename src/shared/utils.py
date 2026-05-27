@@ -3,11 +3,13 @@ Shared utilities for the fraud detection system
 """
 
 import os
+import logging
 import requests
 import sqlite3
 from datetime import datetime
 
 DLQ_DB_PATH = "./data/dead_letter_queue.db"
+logger = logging.getLogger(__name__)
 
 
 def get_sqlite_connection(db_path, timeout=30):
@@ -153,7 +155,7 @@ def retry_failed_alerts(max_attempts=3):
     """Retry failed alerts from the dead letter queue"""
     try:
         if not os.path.exists(DLQ_DB_PATH):
-            print("No dead letter queue database found.")
+            logger.debug("No dead letter queue database found.")
             return
 
         conn = get_sqlite_connection(DLQ_DB_PATH)

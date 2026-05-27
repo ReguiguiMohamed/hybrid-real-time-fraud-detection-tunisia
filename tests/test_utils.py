@@ -124,3 +124,13 @@ class TestDeadLetterQueue:
 
         assert captured_payloads
         assert captured_payloads[0]["sar_report"] is None
+
+    def test_retry_failed_alerts_missing_db_is_quiet(self, tmp_path, monkeypatch, capsys):
+        db_path = str(tmp_path / "missing_dlq.db")
+        monkeypatch.setattr("shared.utils.DLQ_DB_PATH", db_path)
+
+        retry_failed_alerts(max_attempts=3)
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
