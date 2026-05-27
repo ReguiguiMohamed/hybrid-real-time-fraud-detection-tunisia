@@ -17,7 +17,9 @@ The command-center API has been deployed on a Hugging Face Docker Space and conn
 
 ![Hugging Face API, Swagger readback, and Neon PostgreSQL verification](resultscreenshot.png)
 
-Grafana evidence is captured separately in `docs/grafana.png`. It combines the hosted dashboard view and the metric verification view into one image so the operational path is visible at a glance.
+![Grafana Cloud dashboard and Explore verification](docs/grafana.png)
+
+Grafana evidence is captured separately in the image above. It combines the hosted dashboard view and the metric verification view into one image so the operational path is visible at a glance.
 
 This validates the free-tier deployment path used for the prototype: Hugging Face Spaces hosts the FastAPI service, Neon provides managed PostgreSQL persistence, and the same API can still fall back to local SQLite for development. It is a pragmatic demonstration setup, not a claim that the free-tier stack is sufficient for regulated production traffic.
 
@@ -562,27 +564,6 @@ hosted Grafana Cloud slice, start with alerts on absent `amastan_api_info`,
 
 ---
 
-## Infrastructure Cost
-
-```bash
-python scripts/cost_estimate.py --cloud all --tx-per-day 1000000
-```
-
-### Estimated Monthly Cost Scenario (1M tx/day, 0.01% fraud)
-
-| Provider | Monthly | Per Transaction | Notes |
-|----------|---------|----------------|-------|
-| **AWS** (us-east-1) | ~$2,800 | $0.000093 | GPU instance is 35% of cost |
-| **GCP** (us-central1) | ~$2,700 | $0.000090 | L4 GPU slightly cheaper |
-| **Azure** (eastus) | ~$2,950 | $0.000098 | T4 GPU premium |
-| **EU-Nearshore** (OVH/Hetzner) | ~$1,800–$2,200 | $0.000060–$0.000073 | Lower cost, closer to Tunisia, better data residency alignment |
-
-**Cost optimization**: Running Ollama on CPU (no GPU) reduces cost by ~$800/month with 2-3x latency increase. For strict Tunisian data-residency compliance, consider EU-nearshore providers (OVH, Hetzner) or local providers to minimize cross-border data transfer.
-
-See `scripts/cost_estimate.py` for full breakdown.
-
----
-
 ## Kubernetes Deployment (Target Architecture)
 
 The repo contains Kubernetes manifests, but Kubernetes is not part of the
@@ -624,3 +605,5 @@ This system was built with production requirements in mind:
 7. **Data privacy**: PII is hashed, k-anonymity is checked, and retention policies are enforced
 
 The architecture prioritizes **reliability over cleverness**. A fraud detection system that silently drops 1% of alerts due to unhandled errors is worse than one that uses simpler technology but handles every failure mode.
+
+
