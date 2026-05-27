@@ -23,6 +23,7 @@ setup(
         "google-generativeai==0.8.6",
         "fastapi==0.115.0",
         "uvicorn==0.32.0",
+        "prometheus-client==0.14.1",
         "streamlit==1.39.0",
         "plotly==5.24.0",
         "pandas==2.2.0",
