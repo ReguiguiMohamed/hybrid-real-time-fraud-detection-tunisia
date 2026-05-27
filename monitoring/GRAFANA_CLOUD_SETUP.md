@@ -80,6 +80,18 @@ The Metrics Endpoint integration requires an HTTPS, publicly reachable, authenti
 
 The dashboard should show the hosted API state, request rates, p95 latency, persisted alerts by type, review queue count, feedback count, and SQLAlchemy/Neon readback health.
 
+## Evidence To Keep In The Repo
+
+Keep these artifacts in GitHub so the result is easy to review later:
+
+- The dashboard JSON export from Grafana Cloud
+- The repo copy in `monitoring/grafana_dashboards/hosted_api_persistence.json`
+- The combined dashboard + Explore screenshot in `docs/grafana.png`
+- The verification screenshot in `resultscreenshot.png`
+- The deployed runtime notes in the README, centered on the hosted path
+
+That combination is stronger than only describing the stack in prose because it shows the live dashboard, the captured config, and the deployment proof together.
+
 ### 4. Validate Data in Explore
 
 Open **Explore**, select the Grafana Cloud Prometheus data source, and run:

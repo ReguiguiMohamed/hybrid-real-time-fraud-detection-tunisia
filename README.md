@@ -17,6 +17,8 @@ The command-center API has been deployed on a Hugging Face Docker Space and conn
 
 ![Hugging Face API, Swagger readback, and Neon PostgreSQL verification](resultscreenshot.png)
 
+Grafana evidence is captured separately in `docs/grafana.png`. It combines the hosted dashboard view and the metric verification view into one image so the operational path is visible at a glance.
+
 This validates the free-tier deployment path used for the prototype: Hugging Face Spaces hosts the FastAPI service, Neon provides managed PostgreSQL persistence, and the same API can still fall back to local SQLite for development. It is a pragmatic demonstration setup, not a claim that the free-tier stack is sufficient for regulated production traffic.
 
 Verified path:
@@ -499,6 +501,16 @@ The system keeps SAR drafting grounded in stored facts and requires human approv
 ---
 
 ## Monitoring & Observability
+
+The strongest way to document the Grafana advancement is to treat the live
+Grafana Cloud dashboard export as the operating artifact and keep a repo copy
+beside it as the reproducible record. For this project, the evidence bundle is:
+
+- Grafana Cloud dashboard export for the hosted API slice
+- Repo copy of the dashboard JSON in `monitoring/grafana_dashboards/`
+- Grafana screenshot evidence in `docs/grafana.png`
+- Prometheus scrape proof from the hosted Hugging Face Space
+- Screenshot evidence of the API, Swagger readback, and Neon persistence
 
 The verified hosted observability path is Grafana Cloud Free Plan using the
 Metrics Endpoint integration to scrape the Hugging Face Space `/metrics`
