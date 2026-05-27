@@ -224,19 +224,20 @@ graph TB
 ## Project Structure
 
 ```
-├── k8s/                          # Kubernetes manifests (production deployment)
+├── k8s/                          # Target Kubernetes manifests (not hosted runtime)
 │   ├── namespace.yml             # Namespace definition
 │   ├── kafka.yml                 # Kafka + Zookeeper StatefulSets
 │   ├── consumer.yml              # Spark Consumer + PVCs
 │   ├── api.yml                   # FastAPI deployment + Ingress
 │   ├── ollama.yml                # Ollama (GPU) + ChromaDB
 │   └── config.yml                # ConfigMap + Secrets
-├── monitoring/                   # Production observability
+├── monitoring/                   # Grafana Cloud setup + local observability scaffolding
 │   ├── prometheus.yml            # Prometheus scrape config + alert rules
 │   ├── alert_rules.yml           # 12 alert rules (latency, lag, error rate)
 │   ├── alertmanager.yml          # Notification routing (email/Slack/PagerDuty)
 │   ├── metrics_exporter.py       # Prometheus metrics for all pipeline components
-│   ├── docker-compose.monitoring.yml  # Monitoring stack extension
+│   ├── docker-compose.monitoring.yml  # Local monitoring stack extension
+│   ├── GRAFANA_CLOUD_SETUP.md    # Hosted API Grafana Cloud runbook
 │   └── grafana_dashboards/       # Pre-built Grafana dashboards
 ├── migrations/                   # Database schema migrations
 │   ├── 0001_initial_schema.py    # Baseline: alerts, feedback, registry, audit, DLQ
@@ -331,8 +332,8 @@ regulated production store.
 
 Deployment split:
 
-- **Verified hosted slice:** Hugging Face Space running FastAPI on port `7860`, writing and reading alerts from Neon PostgreSQL.
-- **Local/full-stack slice:** Docker Compose/Kubernetes-oriented Kafka, Spark consumer, Streamlit dashboard, Prometheus/Grafana, Ollama, and ChromaDB services.
+- **Verified hosted slice:** Hugging Face Space running FastAPI on port `7860`, writing and reading alerts from Neon PostgreSQL, with `/metrics` available for Grafana Cloud scraping when `METRICS_TOKEN` is set.
+- **Local/full-stack slice:** Docker Compose/Kubernetes-oriented Kafka, Spark consumer, Streamlit dashboard, Prometheus/Grafana, Ollama, and ChromaDB services. These are not the currently verified hosted runtime.
 - **Shared persistence contract:** SQLAlchemy session layer with SQLite fallback locally and Neon PostgreSQL in the hosted API.
 
 ### 2. One Command Full Setup
@@ -357,9 +358,9 @@ make prod         # Start full Docker Compose stack
 | ChromaDB | http://localhost:8000 | Vector store admin |
 
 For the Hugging Face Docker Space, the API listens on port `7860`. The direct
-Space host should expose `/health/`, `/docs`, and `/api/v1/...`. If the
-Hugging Face web UI proxy returns a root-level `404`, test the direct
-`*.hf.space` URL before debugging the API code.
+Space host should expose `/`, `/health/`, `/docs`, `/api/v1/...`, and the
+Prometheus-compatible `/metrics` endpoint. Protect `/metrics` with
+`METRICS_TOKEN` before connecting it to Grafana Cloud.
 
 ### 4. Development Commands
 
@@ -499,10 +500,30 @@ The system keeps SAR drafting grounded in stored facts and requires human approv
 
 ## Monitoring & Observability
 
+The verified hosted observability path is Grafana Cloud Free Plan using the
+Metrics Endpoint integration to scrape the Hugging Face Space `/metrics`
+endpoint over HTTPS with Bearer authentication. The importable dashboard for
+this slice is `monitoring/grafana_dashboards/hosted_api_persistence.json`, and
+the setup runbook is `monitoring/GRAFANA_CLOUD_SETUP.md`.
+
+This hosted dashboard tracks the real deployed path:
+
+`FastAPI on Hugging Face Spaces -> authenticated /api/v1 alert endpoint -> SQLAlchemy -> Neon PostgreSQL -> API readback`
+
+The broader Prometheus/Grafana files for Kafka, Spark, DLQ, model metrics, and
+local infrastructure remain local/full-stack scaffolding until those services
+are deployed and revalidated.
+
 ### Prometheus Metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
+| `amastan_api_info` | Gauge | Hosted API deployment identity and DB backend |
+| `amastan_api_requests_total` | Counter | FastAPI requests by method, route, and status |
+| `amastan_api_request_latency_seconds` | Histogram | FastAPI request latency |
+| `amastan_alerts_ingested_total` | Counter | Authenticated alert ingestion results |
+| `amastan_db_alerts_total` | Gauge | Persisted alerts by alert type |
+| `amastan_db_metrics_scrape_success` | Gauge | SQLAlchemy/Neon metrics readback health |
 | `fraud_predictions_total` | Counter | Total predictions by alert type |
 | `fraud_alerts_total` | Counter | Alerts by type and status |
 | `fraud_ingestion_latency_seconds` | Histogram | Event-to-processing latency (P95/P99) |
@@ -522,7 +543,10 @@ The system keeps SAR drafting grounded in stored facts and requires human approv
 | ModelF1Degradation | Critical | F1 < 0.70 for 1h | Model retrain needed |
 | FraudRateSpike | Critical | 3x hourly average | Possible attack |
 
-See `monitoring/alert_rules.yml` for all rules.
+See `monitoring/alert_rules.yml` for the local/full-stack rules. For the
+hosted Grafana Cloud slice, start with alerts on absent `amastan_api_info`,
+`amastan_db_metrics_scrape_success == 0`, and 5xx rates from
+`amastan_api_requests_total`.
 
 ---
 
@@ -547,9 +571,11 @@ See `scripts/cost_estimate.py` for full breakdown.
 
 ---
 
-## Kubernetes Deployment
+## Kubernetes Deployment (Target Architecture)
 
-The system ships with production-ready K8s manifests:
+The repo contains Kubernetes manifests, but Kubernetes is not part of the
+verified Hugging Face + Neon deployment. Treat these files as target
+architecture scaffolding until a real cluster is provisioned and tested.
 
 - **StatefulSets** for Kafka and Zookeeper with persistent volumes
 - **Deployments** with resource requests/limits for all services

@@ -202,6 +202,7 @@ def api_test_client(tmp_db, monkeypatch):
     monkeypatch.setenv("ANALYST_TOKEN", "test_analyst_token")
     monkeypatch.setenv("API_TOKEN", "test_admin_token")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_db.as_posix()}")
+    monkeypatch.delenv("METRICS_TOKEN", raising=False)
 
     import shared.database as database_module
     importlib.reload(database_module)

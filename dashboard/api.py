@@ -3,10 +3,11 @@ from contextlib import asynccontextmanager, contextmanager
 from collections import defaultdict
 import time as _time
 
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Depends, Header, Request
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Depends, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel, field_validator
 from typing import Optional, List, Dict, Any
 import os
@@ -39,6 +40,7 @@ security = HTTPBearer()
 # Load API tokens from environment variables
 ANALYST_TOKEN = os.getenv("ANALYST_TOKEN")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or os.getenv("API_TOKEN")
+METRICS_TOKEN = os.getenv("METRICS_TOKEN")
 
 if not ANALYST_TOKEN:
     print("WARNING: ANALYST_TOKEN not set. Using default token for development.")
@@ -122,7 +124,109 @@ def format_percent(numerator: int, denominator: int) -> float:
         return 0.0
     return round((numerator / denominator) * 100.0, 2)
 
+def metrics_path_label(request: Request) -> str:
+    route = request.scope.get("route")
+    path = getattr(route, "path", request.url.path)
+    if route is None and path.startswith("/api/v1/"):
+        return "api_v1_unmatched"
+    if path.startswith("/api/v1/"):
+        return path
+    if path in {"/", "/health/", "/metrics", "/docs", "/openapi.json"}:
+        return path
+    return "unmatched"
+
+def require_metrics_token(request: Request):
+    if not METRICS_TOKEN:
+        return
+    expected = f"Bearer {METRICS_TOKEN}"
+    if request.headers.get("authorization") != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+def refresh_database_metrics():
+    try:
+        with get_db_session() as db:
+            alert_rows = db.execute(text("""
+                SELECT COALESCE(alert_type, 'high_risk') AS alert_type, COUNT(*)
+                FROM high_risk_alerts
+                GROUP BY COALESCE(alert_type, 'high_risk')
+            """)).fetchall()
+            for alert_type, count in alert_rows:
+                db_alerts_total.labels(alert_type=alert_type or "unknown").set(count)
+
+            feedback_count = db.execute(text("SELECT COUNT(*) FROM feedback_labels")).scalar() or 0
+            review_queue_count = db.execute(text("SELECT COUNT(*) FROM high_risk_alerts")).scalar() or 0
+
+        db_feedback_total.set(feedback_count)
+        db_review_queue_total.set(review_queue_count)
+        db_metrics_scrape_success.set(1)
+    except Exception:
+        db_metrics_scrape_success.set(0)
+        logger.exception("Unable to refresh database metrics")
+
 RANDOM_SAMPLE_RATE = max(0.0, min(parse_float_env("RANDOM_SAMPLE_RATE", 0.01), 1.0))
+ENVIRONMENT = os.getenv("DEPLOYMENT_ENVIRONMENT", "production")
+DATABASE_BACKEND = "postgresql" if DATABASE_URL.startswith("postgresql") else "sqlite"
+
+prometheus_registry = CollectorRegistry()
+api_info = Gauge(
+    "amastan_api_info",
+    "Static information about the verified command-center API deployment.",
+    ["service", "environment", "database_backend", "runtime"],
+    registry=prometheus_registry,
+)
+api_requests_total = Counter(
+    "amastan_api_requests_total",
+    "Total HTTP requests handled by the FastAPI command-center API.",
+    ["method", "path", "status_code"],
+    registry=prometheus_registry,
+)
+api_request_latency_seconds = Histogram(
+    "amastan_api_request_latency_seconds",
+    "FastAPI command-center request latency in seconds.",
+    ["method", "path"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+    registry=prometheus_registry,
+)
+alerts_ingested_total = Counter(
+    "amastan_alerts_ingested_total",
+    "Alerts accepted through the authenticated command-center ingestion endpoint.",
+    ["alert_type", "result"],
+    registry=prometheus_registry,
+)
+db_readback_total = Counter(
+    "amastan_db_readback_total",
+    "Database-backed API readback operations.",
+    ["endpoint", "result"],
+    registry=prometheus_registry,
+)
+db_alerts_total = Gauge(
+    "amastan_db_alerts_total",
+    "Current persisted alerts by alert type.",
+    ["alert_type"],
+    registry=prometheus_registry,
+)
+db_feedback_total = Gauge(
+    "amastan_db_feedback_total",
+    "Current persisted analyst feedback labels.",
+    registry=prometheus_registry,
+)
+db_review_queue_total = Gauge(
+    "amastan_db_review_queue_total",
+    "Current persisted alerts awaiting review.",
+    registry=prometheus_registry,
+)
+db_metrics_scrape_success = Gauge(
+    "amastan_db_metrics_scrape_success",
+    "Whether the latest metrics scrape could read the SQLAlchemy database.",
+    registry=prometheus_registry,
+)
+
+api_info.labels(
+    service="fraud-detection-command-center-api",
+    environment=ENVIRONMENT,
+    database_backend=DATABASE_BACKEND,
+    runtime="huggingface-space",
+).set(1)
 
 FEATURE_LABELS = {
     "v_count": "High velocity (v_count)",
@@ -336,20 +440,50 @@ app.add_middleware(
 async def rate_limit_middleware(request: Request, call_next):
     client_ip = request.client.host if request.client else "unknown"
     now = _time.time()
+    start_time = _time.perf_counter()
 
     # Clean old entries
     _rate_limit_store[client_ip] = [
         t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW
     ]
 
+    path_label = metrics_path_label(request)
     if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
+        api_requests_total.labels(
+            method=request.method,
+            path=path_label,
+            status_code="429",
+        ).inc()
         return JSONResponse(
             status_code=429,
             content={"detail": "Rate limit exceeded. Try again later."},
         )
 
     _rate_limit_store[client_ip].append(now)
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        api_requests_total.labels(
+            method=request.method,
+            path=path_label,
+            status_code="500",
+        ).inc()
+        api_request_latency_seconds.labels(
+            method=request.method,
+            path=path_label,
+        ).observe(_time.perf_counter() - start_time)
+        raise
+
+    path_label = metrics_path_label(request)
+    api_requests_total.labels(
+        method=request.method,
+        path=path_label,
+        status_code=str(response.status_code),
+    ).inc()
+    api_request_latency_seconds.labels(
+        method=request.method,
+        path=path_label,
+    ).observe(_time.perf_counter() - start_time)
     return response
 
 
@@ -469,8 +603,10 @@ async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None,
                 "payment_method": row[4], "branch_id": row[5], "timestamp": row[6], "ml_probability": row[7],
                 "sar_report": row[8], "alert_type": row[9], "shap_top5": parse_shap_top5(row[10])
             })
+        db_readback_total.labels(endpoint="alerts_high_risk", result="success").inc()
         return alerts
     except Exception as e:
+        db_readback_total.labels(endpoint="alerts_high_risk", result="error").inc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/alerts/review-queue/")
@@ -767,6 +903,7 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
                 {"transaction_id": alert.transaction_id},
             ).fetchone()
             if existing:
+                alerts_ingested_total.labels(alert_type=alert_type, result="duplicate").inc()
                 return {"status": "success", "message": "Alert already exists"}
 
             db.execute(text("""
@@ -795,8 +932,10 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
             })
             db.commit()
 
+        alerts_ingested_total.labels(alert_type=alert_type, result="success").inc()
         return {"status": "success", "message": "Alert added successfully"}
     except Exception as e:
+        alerts_ingested_total.labels(alert_type=alert.alert_type or "high_risk", result="error").inc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/monitoring/model-performance/")
@@ -1206,6 +1345,14 @@ async def root_status():
             "api": "/api/v1/",
         },
     }
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics(request: Request):
+    """Prometheus/OpenMetrics endpoint for Grafana Cloud Metrics Endpoint scraping."""
+    require_metrics_token(request)
+    refresh_database_metrics()
+    return Response(content=generate_latest(prometheus_registry), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health/")

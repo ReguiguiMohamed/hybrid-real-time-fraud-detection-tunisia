@@ -19,6 +19,40 @@ class TestHealthEndpoint:
         data = response.json()
         assert data["status"] == "healthy"
 
+    def test_prometheus_metrics_exports_verified_slice(self, api_test_client, admin_headers):
+        alert = {
+            "transaction_id": "TXN_METRICS_001",
+            "user_id": "USER_METRICS",
+            "amount_tnd": 7600.0,
+            "governorate": "Tunis",
+            "payment_method": "Flouci",
+            "branch_id": "Tunis-GNC",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "ml_probability": 0.94,
+            "alert_type": "high_risk",
+        }
+        api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+
+        response = api_test_client.get("/metrics")
+
+        assert response.status_code == 200
+        body = response.text
+        assert "amastan_api_info" in body
+        assert 'database_backend="sqlite"' in body
+        assert 'amastan_db_alerts_total{alert_type="high_risk"}' in body
+        assert 'amastan_alerts_ingested_total{alert_type="high_risk",result="success"}' in body
+
+    def test_prometheus_metrics_can_require_bearer_token(self, api_test_client, monkeypatch):
+        import dashboard.api as api_module
+
+        monkeypatch.setattr(api_module, "METRICS_TOKEN", "metrics_secret")
+
+        unauthorized = api_test_client.get("/metrics")
+        authorized = api_test_client.get("/metrics", headers={"Authorization": "Bearer metrics_secret"})
+
+        assert unauthorized.status_code == 401
+        assert authorized.status_code == 200
+
 
 class TestAuthEndpoints:
     def test_whoami_admin(self, api_test_client, admin_headers):
