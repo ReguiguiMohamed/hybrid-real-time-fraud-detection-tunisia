@@ -359,8 +359,8 @@ make prod         # Start full Docker Compose stack
 
 For the Hugging Face Docker Space, the API listens on port `7860`. The direct
 Space host should expose `/`, `/health/`, `/docs`, `/api/v1/...`, and the
-Prometheus-compatible `/metrics` endpoint. Protect `/metrics` with
-`METRICS_TOKEN` before connecting it to Grafana Cloud.
+Prometheus-compatible `/metrics` endpoint. PostgreSQL/Neon deployments require
+`METRICS_TOKEN` before `/metrics` can be scraped by Grafana Cloud.
 
 ### 4. Development Commands
 

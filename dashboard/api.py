@@ -41,6 +41,7 @@ security = HTTPBearer()
 ANALYST_TOKEN = os.getenv("ANALYST_TOKEN")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or os.getenv("API_TOKEN")
 METRICS_TOKEN = os.getenv("METRICS_TOKEN")
+METRICS_ALLOW_PUBLIC = os.getenv("METRICS_ALLOW_PUBLIC", "").lower() in {"1", "true", "yes"}
 
 if not ANALYST_TOKEN:
     print("WARNING: ANALYST_TOKEN not set. Using default token for development.")
@@ -136,7 +137,7 @@ def metrics_path_label(request: Request) -> str:
     return "unmatched"
 
 def require_metrics_token(request: Request):
-    if not METRICS_TOKEN:
+    if not METRICS_TOKEN and (DATABASE_BACKEND == "sqlite" or METRICS_ALLOW_PUBLIC):
         return
     expected = f"Bearer {METRICS_TOKEN}"
     if request.headers.get("authorization") != expected:

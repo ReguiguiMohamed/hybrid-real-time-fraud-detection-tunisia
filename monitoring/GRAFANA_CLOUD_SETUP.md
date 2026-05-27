@@ -12,7 +12,7 @@ remain local/target architecture until they are deployed and verified separately
 ## What Is Ready in This Repo
 
 - `GET /metrics` on the FastAPI app exports Prometheus-compatible aggregate metrics.
-- `METRICS_TOKEN` can protect `/metrics` with Bearer authentication.
+- `METRICS_TOKEN` protects `/metrics` with Bearer authentication. On PostgreSQL/Neon deployments, `/metrics` fails closed when this token is not set.
 - `monitoring/grafana_dashboards/hosted_api_persistence.json` is the Grafana Cloud dashboard for the hosted API + Neon persistence slice.
 - `monitoring/prometheus.grafana-cloud.example.yml` is only an optional collector-based fallback. The recommended free-plan setup is Grafana Cloud Metrics Endpoint integration because it can scrape the public Hugging Face Space directly.
 
