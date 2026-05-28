@@ -217,6 +217,49 @@ class TestFeedbackEndpoints:
         response = api_test_client.post("/feedback/", json=feedback, headers=analyst_headers)
         assert response.status_code == 422  # Validation error
 
+    def test_batch_feedback_all_success(self, api_test_client, admin_headers, analyst_headers):
+        alert1 = {"transaction_id": "TXN_BATCH_01", "user_id": "U1", "amount_tnd": 1000.0, "governorate": "Tunis", "payment_method": "D17", "branch_id": "Tunis-GNC", "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.95}
+        alert2 = {"transaction_id": "TXN_BATCH_02", "user_id": "U2", "amount_tnd": 2000.0, "governorate": "Sfax", "payment_method": "Flouci", "branch_id": "Sfax-Nord", "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.91}
+        api_test_client.post("/alerts/add/", json=alert1, headers=admin_headers)
+        api_test_client.post("/alerts/add/", json=alert2, headers=admin_headers)
+
+        batch = {"feedback_items": [
+            {"transaction_id": "TXN_BATCH_01", "analyst_label": "Confirmed Fraud", "analyst_comment": "Batch fraud"},
+            {"transaction_id": "TXN_BATCH_02", "analyst_label": "False Positive", "analyst_comment": "Batch fp"},
+        ]}
+        response = api_test_client.post("/feedback/batch/", json=batch, headers=analyst_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["total"] == 2
+        assert data["success_count"] == 2
+        assert data["error_count"] == 0
+        assert "_links" in data
+
+    def test_batch_feedback_returns_links(self, api_test_client, admin_headers, analyst_headers):
+        api_test_client.post("/alerts/add/", json={"transaction_id": "TXN_BATCH_LINKS", "user_id": "U1", "amount_tnd": 1000.0, "governorate": "Tunis", "payment_method": "D17", "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.95}, headers=admin_headers)
+        batch = {"feedback_items": [
+            {"transaction_id": "TXN_BATCH_LINKS", "analyst_label": "Confirmed Fraud", "analyst_comment": "Has links"},
+        ]}
+        response = api_test_client.post("/feedback/batch/", json=batch, headers=analyst_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["success_count"] == 1
+        assert "_links" in data
+        assert "feedback_batch" in data["_links"]
+
+    def test_batch_feedback_empty_list(self, api_test_client, analyst_headers):
+        response = api_test_client.post("/feedback/batch/", json={"feedback_items": []}, headers=analyst_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["total"] == 0
+
+    def test_batch_feedback_requires_auth(self, api_test_client):
+        response = api_test_client.post("/feedback/batch/", json={"feedback_items": []})
+        assert response.status_code == 401
+
 
 class TestStatsEndpoint:
     def test_get_stats(self, api_test_client, admin_headers):
@@ -754,3 +797,37 @@ class TestLegacyEndpoints:
     def test_legacy_explain_and_branches(self, api_test_client, admin_headers):
         assert api_test_client.get("/alerts/NONEXISTENT/explain", headers=admin_headers).status_code == 404
         assert api_test_client.get("/branches/", headers=admin_headers).status_code == 200
+
+
+class TestHateoasLinks:
+    def test_whoami_has_links(self, api_test_client, admin_headers):
+        response = api_test_client.get("/auth/whoami", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "_links" in data
+        assert data["_links"]["self"] == "/api/v1/auth/whoami"
+        assert data["_links"]["stats"] == "/api/v1/stats/"
+
+    def test_stats_has_links(self, api_test_client, admin_headers):
+        response = api_test_client.get("/stats/", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "_links" in data
+        assert data["_links"]["self"] == "/api/v1/stats/"
+        assert data["_links"]["branches"] == "/api/v1/branches/"
+
+    def test_ctaf_export_has_links(self, api_test_client, admin_headers, analyst_headers):
+        api_test_client.post("/alerts/add/", json={"transaction_id": "TXN_HATEOAS_01", "user_id": "U1", "amount_tnd": 1000.0, "governorate": "Tunis", "payment_method": "D17", "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.95}, headers=admin_headers)
+        api_test_client.post("/feedback/", json={"transaction_id": "TXN_HATEOAS_01", "analyst_label": "Confirmed Fraud"}, headers=analyst_headers)
+        response = api_test_client.get("/alerts/ctaf-export?days=30", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "_links" in data
+        assert data["_links"]["self"] == "/api/v1/alerts/ctaf-export"
+
+    def test_feedback_has_links(self, api_test_client, admin_headers, analyst_headers):
+        api_test_client.post("/alerts/add/", json={"transaction_id": "TXN_HATEOAS_FB", "user_id": "U1", "amount_tnd": 1000.0, "governorate": "Tunis", "payment_method": "D17", "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.95}, headers=admin_headers)
+        response = api_test_client.post("/feedback/", json={"transaction_id": "TXN_HATEOAS_FB", "analyst_label": "Confirmed Fraud"}, headers=analyst_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "_links" in data

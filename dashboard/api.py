@@ -255,7 +255,7 @@ def get_champion_model_path():
 
 class FeedbackRequest(BaseModel):
     transaction_id: str
-    analyst_label: str  # "Confirmed Fraud" or "False Positive"
+    analyst_label: str
     analyst_comment: Optional[str] = None
     branch_id: Optional[str] = None
 
@@ -273,6 +273,10 @@ class FeedbackRequest(BaseModel):
         if not v or len(v) > 256:
             raise ValueError("transaction_id must be non-empty and at most 256 characters")
         return v.strip()
+
+
+class BatchFeedbackRequest(BaseModel):
+    feedback_items: List[FeedbackRequest]
 
 def log_audit_event(entity_type, entity_id, action, user_id, previous_state, new_state):
     with get_db_session() as db:
@@ -501,7 +505,15 @@ async def whoami(user_id: Optional[str] = Header(None), auth=Depends(require_sco
     return {
         "user_id": user_id or "unknown",
         "role": role.upper(),
-        "authenticated": True
+        "authenticated": True,
+        "_links": {
+            "self": "/api/v1/auth/whoami",
+            "stats": "/api/v1/stats/",
+            "review_queue": "/api/v1/alerts/review-queue/",
+            "branches": "/api/v1/branches/",
+            "compliance_kpis": "/api/v1/compliance/kpis/",
+            "model_performance": "/api/v1/monitoring/model-performance/"
+        }
     }
 
 def start_dlq_retry_worker():
@@ -579,9 +591,80 @@ async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = He
             new_state
         )
 
-        return {"status": "success", "message": "Feedback recorded successfully"}
+        return {"status": "success", "message": "Feedback recorded successfully", "_links": {"feedback": "/api/v1/feedback/", "alert": f"/api/v1/alerts/{feedback.transaction_id}/explain", "stats": "/api/v1/stats/"}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/feedback/batch/")
+async def submit_batch_feedback(batch: BatchFeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Submit multiple feedback entries at once."""
+    results = []
+    for item in batch.feedback_items:
+        try:
+            with get_db_session() as db:
+                branch_id = item.branch_id
+                if not branch_id:
+                    alert = db.execute(
+                        text("SELECT branch_id FROM high_risk_alerts WHERE transaction_id = :transaction_id"),
+                        {"transaction_id": item.transaction_id},
+                    ).fetchone()
+                    branch_id = alert[0] if alert else None
+
+                previous_feedback = db.execute(text("""
+                    SELECT analyst_label, analyst_comment
+                    FROM feedback_labels
+                    WHERE transaction_id = :transaction_id
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """), {"transaction_id": item.transaction_id}).fetchone()
+
+                db.execute(text("""
+                    INSERT INTO feedback_labels
+                    (transaction_id, analyst_label, analyst_comment, analyst_id, branch_id)
+                    VALUES (:transaction_id, :analyst_label, :analyst_comment, :analyst_id, :branch_id)
+                """), {
+                    "transaction_id": item.transaction_id,
+                    "analyst_label": item.analyst_label,
+                    "analyst_comment": item.analyst_comment,
+                    "analyst_id": user_id or auth["role"],
+                    "branch_id": branch_id,
+                })
+                db.commit()
+
+            previous_state = None
+            if previous_feedback:
+                previous_state = json.dumps({
+                    "analyst_label": previous_feedback[0],
+                    "analyst_comment": previous_feedback[1]
+                })
+            new_state = json.dumps({
+                "analyst_label": item.analyst_label,
+                "analyst_comment": item.analyst_comment,
+                "branch_id": branch_id
+            })
+            log_audit_event(
+                "ALERT",
+                item.transaction_id,
+                "CLASSIFY",
+                user_id or "unknown",
+                previous_state,
+                new_state
+            )
+            results.append({"transaction_id": item.transaction_id, "status": "success"})
+        except Exception as e:
+            results.append({"transaction_id": item.transaction_id, "status": "error", "detail": str(e)})
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+    error_count = sum(1 for r in results if r["status"] == "error")
+    return {
+        "status": "success" if error_count == 0 else "partial",
+        "total": len(results),
+        "success_count": success_count,
+        "error_count": error_count,
+        "results": results,
+        "_links": {"feedback": "/api/v1/feedback/", "feedback_batch": "/api/v1/feedback/batch/", "stats": "/api/v1/stats/"}
+    }
 
 @router.get("/alerts/high-risk/")
 async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
@@ -741,7 +824,15 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
             "precision": round(high_risk_precision, 3),
             "precision_scope": "high_risk_only",
             "high_risk_precision": round(high_risk_precision, 3),
-            "random_sample_fraud_rate": round(random_sample_fraud_rate, 3)
+            "random_sample_fraud_rate": round(random_sample_fraud_rate, 3),
+            "_links": {
+                "self": "/api/v1/stats/",
+                "review_queue": "/api/v1/alerts/review-queue/",
+                "compliance_kpis": "/api/v1/compliance/kpis/",
+                "model_performance": "/api/v1/monitoring/model-performance/",
+                "ctaf_export": "/api/v1/alerts/ctaf-export",
+                "branches": "/api/v1/branches/"
+            }
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1197,7 +1288,12 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
             "days": days,
             "branch_id": branch_id,
             "total_cases": len(cases),
-            "cases": cases
+            "cases": cases,
+            "_links": {
+                "self": "/api/v1/alerts/ctaf-export",
+                "stats": "/api/v1/stats/",
+                "review_queue": "/api/v1/alerts/review-queue/"
+            }
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1275,6 +1371,12 @@ async def _legacy_whoami(
 async def _legacy_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None),
                            auth=Depends(require_scopes({"analyst", "admin"}))):
     return await submit_feedback(feedback, user_id, auth)
+
+
+@_legacy_router.post("/feedback/batch/")
+async def _legacy_batch_feedback(batch: BatchFeedbackRequest, user_id: Optional[str] = Header(None),
+                                 auth=Depends(require_scopes({"analyst", "admin"}))):
+    return await submit_batch_feedback(batch, user_id, auth)
 
 
 @_legacy_router.get("/alerts/review-queue/")

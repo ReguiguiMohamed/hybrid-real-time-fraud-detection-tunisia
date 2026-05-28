@@ -9,10 +9,11 @@
 ### 1.4 Fix Deprecation Warnings [DONE]
 - `datetime.utcnow()` → `datetime.now(timezone.utc).replace(tzinfo=None)` — 28 occurrences fixed across 9 files
 
-### 1.2 Add Missing API Endpoints
-- Identify which endpoints the dashboard calls but are missing or incomplete
-- Verify HATEOAS-style links in responses
-- Add batch operations if needed (bulk feedback, bulk export)
+### 1.2 Add Missing API Endpoints [DONE]
+- Gap analysis: zero missing endpoints — dashboard calls all match existing routes
+- Added `POST /api/v1/feedback/batch/` with legacy alias for bulk feedback submission
+- Added `_links` HATEOAS to whoami, stats, CTAF export, and feedback responses
+- 8 new tests covering batch feedback and HATEOAS links, all passing
 
 ### 1.3 Documentation Improvements
 - `docs/` directory: add API reference, operational runbook, deployment guide
@@ -101,4 +102,4 @@
 
 | Date | Work Done |
 |------|-----------|
-| 2026-05-28 | Roadmap created. Task 1.1: expanded API test coverage — 153 tests total, all passing. Task 1.4: fixed 28 `datetime.utcnow()` deprecation warnings across 9 files. |
+| 2026-05-28 | Roadmap created. Task 1.1: expanded API test coverage — 153 tests total, all passing. Task 1.4: fixed 28 `datetime.utcnow()` deprecation warnings across 9 files. Task 1.2: no missing endpoints found, added batch feedback endpoint, added HATEOAS `_links` to responses, 8 new tests (161 total). |
