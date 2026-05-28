@@ -9,7 +9,7 @@ from xgboost.spark import SparkXGBClassifier
 from pyspark.ml import Pipeline, PipelineModel
 from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from pyspark.sql.types import DoubleType, IntegerType, FloatType
 from shared.utils import get_sqlite_connection
@@ -644,13 +644,13 @@ class FraudModelTrainer:
         approved_by = self._get_model_promotion_approver()
         promote = promotion_candidate and approved_by is not None
 
-        version_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        version_id = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
         model_path = str(Path("models") / "registry" / f"fraud_xgb_{version_id}")
         Path(model_path).parent.mkdir(parents=True, exist_ok=True)
         challenger_model.write().overwrite().save(model_path)
         self.save_shap_artifacts(challenger_model, model_path)
 
-        promoted_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") if promote else None
+        promoted_at = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S") if promote else None
         self._record_model_registry_entry(
             version_id=version_id,
             model_path=model_path,

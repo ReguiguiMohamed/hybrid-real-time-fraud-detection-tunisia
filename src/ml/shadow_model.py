@@ -26,7 +26,7 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import numpy as np
@@ -107,7 +107,7 @@ class ShadowModelManager:
             return False
 
         if version_id is None:
-            version_id = f"shadow_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+            version_id = f"shadow_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y%m%d_%H%M%S')}"
 
         try:
             # Try loading as Spark XGBoost model
@@ -144,7 +144,7 @@ class ShadowModelManager:
         conn.commit()
         conn.close()
 
-        self._shadow_registered_at = datetime.utcnow()
+        self._shadow_registered_at = datetime.now(timezone.utc).replace(tzinfo=None)
         logger.info(f"Shadow model registered: {version_id} from {path}")
         return True
 
@@ -219,7 +219,7 @@ class ShadowModelManager:
         conn = sqlite3.connect(self.feedback_db_path)
         cursor = conn.cursor()
 
-        cutoff = (datetime.utcnow() - timedelta(hours=window_hours)).isoformat()
+        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=window_hours)).isoformat()
 
         # Get all comparisons in the window
         cursor.execute("""

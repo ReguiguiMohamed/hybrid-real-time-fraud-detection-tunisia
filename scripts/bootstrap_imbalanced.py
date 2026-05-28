@@ -19,7 +19,7 @@ import json
 import os
 import pickle
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import numpy as np
@@ -109,7 +109,7 @@ class ImbalancedTransactionGenerator:
 
             # Timestamp: business hours weighted (9am-6pm Tunisia time)
             hours_ago = self.rng.exponential(scale=48)  # Most transactions within 48h
-            timestamp = datetime.utcnow() - timedelta(hours=float(hours_ago))
+            timestamp = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=float(hours_ago))
 
             transactions.append({
                 "transaction_id": f"TX-{i:08d}",
@@ -153,7 +153,7 @@ class ImbalancedTransactionGenerator:
             payment_method = self.rng.choice(PAYMENT_METHODS, p=PAYMENT_METHODS)
             branch_id = self.rng.choice(BRANCHES)
 
-            timestamp = datetime.utcnow() - timedelta(hours=float(self.rng.exponential(scale=24)))
+            timestamp = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=float(self.rng.exponential(scale=24)))
 
             if pattern == "smurfing":
                 # Smurfing: amounts just below D17 reporting threshold
@@ -163,7 +163,7 @@ class ImbalancedTransactionGenerator:
                 # High velocity: large amounts, rapid succession
                 amount = round(self.rng.lognormal(mean=7, sigma=1), 2)
                 # Timestamps clustered (within hours)
-                timestamp = datetime.utcnow() - timedelta(minutes=float(self.rng.uniform(5, 120)))
+                timestamp = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=float(self.rng.uniform(5, 120)))
             elif pattern == "geo_anomaly":
                 # Geographic anomaly: unusual locations
                 # Use less common governorates more often
@@ -324,7 +324,7 @@ def train_on_imbalanced_data(df: pd.DataFrame, output_path: str = "./models/v1_i
         "model": model,
         "feature_columns": available_cols,
         "metrics": metrics,
-        "trained_at": datetime.utcnow().isoformat(),
+        "trained_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         "fraud_rate": float(y.mean()),
     }
     with open(output_path, "wb") as f:

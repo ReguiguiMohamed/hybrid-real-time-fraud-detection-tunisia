@@ -21,7 +21,7 @@ import logging
 import sqlite3
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from dataclasses import dataclass, asdict
 
@@ -284,8 +284,8 @@ class BacktestEngine:
             BacktestResult with comparison metrics.
         """
         result = BacktestResult()
-        result.test_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        result.run_at = datetime.utcnow().isoformat()
+        result.test_id = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y%m%d_%H%M%S")
+        result.run_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         result.changes_applied = {
             "weight_changes": weight_changes or {},
             "threshold_changes": threshold_changes or {},

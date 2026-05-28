@@ -18,7 +18,7 @@ import logging
 import sqlite3
 import pickle
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -348,7 +348,7 @@ class FraudDetectionPipeline:
             raise RuntimeError("No trained pipeline to save")
 
         if version_id is None:
-            version_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            version_id = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y%m%d_%H%M%S")
 
         model_dir = self.model_output_path / f"fraud_pipeline_{version_id}"
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -463,7 +463,7 @@ class FraudDetectionPipeline:
             model_path,
             f1,
             pr_auc_val,  # Use PR-AUC for AUC column (more meaningful for imbalanced data)
-            datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
             train_samples,
             json.dumps(self.metrics.get("feature_columns", [])),
         ))
@@ -513,7 +513,7 @@ def main():
     cv_metrics = pipeline_trainer.cross_validate(df)
 
     # Save model
-    version_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    version_id = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y%m%d_%H%M%S")
     model_path = pipeline_trainer.save_model(version_id)
 
     logger.info("\n" + "=" * 60)

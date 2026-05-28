@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -309,7 +309,7 @@ Respond ONLY with a valid JSON object (no markdown, no commentary) with this exa
 
     def _generate_validated_report(self, tx_data: dict, ml_score: float) -> SARReport:
         filing_deadline = ctaf_filing_deadline(
-            from_date=datetime.utcnow(), business_days=10
+            from_date=datetime.now(timezone.utc).replace(tzinfo=None), business_days=10
         ).strftime("%Y-%m-%d")
         context, retrieved_chunks = self._retrieve_context(tx_data)
         source_truth = self._build_source_of_truth(
@@ -368,7 +368,7 @@ Respond ONLY with a valid JSON object (no markdown, no commentary) with this exa
         final_fact_check = self._fact_check_report(final_report, source_truth)
         self._append_audit_event(
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                 "transaction_id": source_truth["transaction"]["transaction_id"],
                 "model_version": "llama3.1",
                 "source_truth_hash": self._sha256(source_truth),

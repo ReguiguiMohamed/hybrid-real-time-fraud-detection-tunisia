@@ -9,7 +9,7 @@ Covers:
 """
 import os
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from rag_engine.sar_validator import (
@@ -87,9 +87,9 @@ class TestCtafFilingDeadline:
             assert result.weekday() < 5, f"Deadline from {start.date()} landed on a weekend"
 
     def test_default_from_date_is_now(self):
-        before = datetime.utcnow()
+        before = datetime.now(timezone.utc).replace(tzinfo=None)
         result = ctaf_filing_deadline()
-        after = datetime.utcnow()
+        after = datetime.now(timezone.utc).replace(tzinfo=None)
         # Deadline must be after both before and after (it's in the future)
         assert result > before
 
@@ -115,15 +115,15 @@ class TestDeterministicFallbackCompliance:
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.8)
         deadline_str = report.urgency_assessment.filing_deadline
         deadline = datetime.strptime(deadline_str, "%Y-%m-%d")
-        assert deadline.date() > datetime.utcnow().date(), (
+        assert deadline.date() > datetime.now(timezone.utc).replace(tzinfo=None).date(), (
             f"filing_deadline {deadline_str} must be in the future"
         )
 
     def test_filing_deadline_is_not_today(self):
-        # Old bug: deadline was set to datetime.utcnow() (i.e., now / today)
+        # Old bug: deadline was set to datetime.now(timezone.utc).replace(tzinfo=None) (i.e., now / today)
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.5)
         deadline_str = report.urgency_assessment.filing_deadline
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d")
         assert deadline_str != today, (
             "filing_deadline must not be today — must be 10 business days from now"
         )
@@ -132,7 +132,7 @@ class TestDeterministicFallbackCompliance:
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.7)
         deadline_str = report.urgency_assessment.filing_deadline
         deadline = datetime.strptime(deadline_str, "%Y-%m-%d")
-        delta = (deadline.date() - datetime.utcnow().date()).days
+        delta = (deadline.date() - datetime.now(timezone.utc).replace(tzinfo=None).date()).days
         # 10 business days = 14–16 calendar days depending on weekends/holidays
         assert 10 <= delta <= 20, f"Deadline gap {delta} days is outside expected range"
 

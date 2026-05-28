@@ -8,7 +8,7 @@ This ensures CTAF compliance even when the LLM produces gibberish, empty, or mal
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
@@ -54,7 +54,7 @@ def ctaf_filing_deadline(from_date: datetime = None, business_days: int = 10) ->
     Tunisian work week: Monday–Friday. Weekends (Sat/Sun) and public holidays excluded.
     """
     if from_date is None:
-        from_date = datetime.utcnow()
+        from_date = datetime.now(timezone.utc).replace(tzinfo=None)
 
     islamic_holidays = _load_islamic_holidays()
     current = from_date
@@ -205,7 +205,7 @@ def validate_sar_output(raw_llm_output: str, tx_data: dict, ml_score: float) -> 
         # Add required metadata if not in LLM output
         parsed_data["transaction_id"] = parsed_data.get("transaction_id", tx_data.get("transaction_id", "unknown"))
         parsed_data["user_id"] = parsed_data.get("user_id", tx_data.get("user_id", "unknown"))
-        parsed_data["generated_at"] = parsed_data.get("generated_at", datetime.utcnow().isoformat())
+        parsed_data["generated_at"] = parsed_data.get("generated_at", datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
         parsed_data["ml_score"] = parsed_data.get("ml_score", ml_score)
         parsed_data["amount_tnd"] = parsed_data.get("amount_tnd", tx_data.get("amount_tnd", 0.0))
         parsed_data["governorate"] = parsed_data.get("governorate", tx_data.get("governorate", "unknown"))
@@ -236,7 +236,7 @@ def generate_deterministic_fallback(tx_data: dict, ml_score: float, raw_llm_outp
     timestamp = tx_data.get("timestamp", "unknown")
     branch_id = tx_data.get("branch_id", "unknown")
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     # CTAF requires filing within 10 business days (jours ouvrables) of detection.
     # Penalty for non-compliance: up to TND 50,000 fine or license revocation.
     deadline_dt = ctaf_filing_deadline(from_date=now, business_days=10)
@@ -324,7 +324,7 @@ def generate_deterministic_fallback(tx_data: dict, ml_score: float, raw_llm_outp
     return SARReport(
         transaction_id=tx_id,
         user_id=user_id,
-        generated_at=datetime.utcnow().isoformat(),
+        generated_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         executive_summary=(
             f"Automated suspicious activity detection for user {user_id}. "
             f"Transaction of {amount:.2f} TND via {payment_method} in {governorate} "

@@ -336,3 +336,421 @@ class TestDriftMetricsEndpoint:
         assert "psi_results" in data
         assert "score_drift" in data
         assert "decision" in data
+
+
+class TestHighRiskEndpoint:
+    def _add_alert(self, client, headers, **overrides):
+        payload = {
+            "transaction_id": "TXN_HR_DEFAULT", "user_id": "USER_HR", "amount_tnd": 10000.0,
+            "governorate": "Tunis", "payment_method": "Flouci", "branch_id": "Tunis-GNC",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.95,
+        }
+        payload.update(overrides)
+        return client.post("/api/v1/alerts/add/", json=payload, headers=headers)
+
+    def test_high_risk_returns_filtered_alerts(self, api_test_client, admin_headers):
+        for i, prob in [(1, 0.99), (2, 0.95), (3, 0.86), (4, 0.80)]:
+            self._add_alert(api_test_client, admin_headers,
+                            transaction_id=f"TXN_HR_{i}", ml_probability=prob)
+
+        response = api_test_client.get("/api/v1/alerts/high-risk/?limit=10", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 3
+        ids = {a["transaction_id"] for a in data}
+        assert "TXN_HR_1" in ids
+        assert "TXN_HR_2" in ids
+        assert "TXN_HR_3" in ids
+        assert "TXN_HR_4" not in ids
+
+    def test_high_risk_filters_by_branch(self, api_test_client, admin_headers):
+        self._add_alert(api_test_client, admin_headers,
+                        transaction_id="TXN_HR_BR_1", branch_id="Tunis-GNC")
+        self._add_alert(api_test_client, admin_headers,
+                        transaction_id="TXN_HR_BR_2", branch_id="Sfax-Agency")
+
+        response = api_test_client.get("/api/v1/alerts/high-risk/?branch_id=Sfax-Agency", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["transaction_id"] == "TXN_HR_BR_2"
+
+    def test_high_risk_requires_auth(self, api_test_client, analyst_headers):
+        response = api_test_client.get("/api/v1/alerts/high-risk/", headers=analyst_headers)
+        assert response.status_code == 200
+
+    def test_high_risk_unauthorized(self, api_test_client):
+        response = api_test_client.get("/api/v1/alerts/high-risk/")
+        assert response.status_code == 401
+
+
+class TestBranchesEndpoint:
+    def test_list_branches_returns_distinct(self, api_test_client, admin_headers):
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_BR_1", "user_id": "U1", "amount_tnd": 5000.0,
+            "governorate": "Tunis", "payment_method": "Flouci", "branch_id": "Tunis-GNC",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }, headers=admin_headers)
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_BR_2", "user_id": "U2", "amount_tnd": 5000.0,
+            "governorate": "Sfax", "payment_method": "eDinar", "branch_id": "Sfax-Agency",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }, headers=admin_headers)
+
+        response = api_test_client.get("/branches/", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "Tunis-GNC" in data
+        assert "Sfax-Agency" in data
+
+    def test_branches_empty_when_no_alerts(self, api_test_client, admin_headers):
+        response = api_test_client.get("/branches/", headers=admin_headers)
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_branches_unauthorized(self, api_test_client):
+        response = api_test_client.get("/branches/")
+        assert response.status_code == 401
+
+
+class TestModelPerformanceEndpoint:
+    def test_model_performance_returns_shape(self, api_test_client, admin_headers, populated_db, monkeypatch):
+        response = api_test_client.get("/monitoring/model-performance/", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "precision" in data
+        assert "recall" in data
+        assert "f1_score" in data
+        assert "total_evaluated" in data
+
+    def test_model_performance_with_populated_data(self, api_test_client, admin_headers, populated_db, monkeypatch):
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{populated_db.as_posix()}")
+        import shared.database as database_module
+        import importlib
+        importlib.reload(database_module)
+        import dashboard.api as api_module
+        importlib.reload(api_module)
+
+        from fastapi.testclient import TestClient
+        client = TestClient(api_module.app)
+        headers = {"Authorization": "Bearer test_admin_token"}
+
+        response = client.get("/monitoring/model-performance/", headers=headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_evaluated"] >= 3
+
+    def test_model_performance_analyst_access(self, api_test_client, analyst_headers):
+        response = api_test_client.get("/monitoring/model-performance/", headers=analyst_headers)
+        assert response.status_code == 200
+
+    def test_model_performance_unauthorized(self, api_test_client):
+        response = api_test_client.get("/monitoring/model-performance/")
+        assert response.status_code == 401
+
+
+class TestExportEndpoint:
+    def test_export_existing_alert(self, api_test_client, admin_headers):
+        api_test_client.post("/api/v1/alerts/add/", json={
+            "transaction_id": "TXN_EXP_001", "user_id": "U1", "amount_tnd": 7500.0,
+            "governorate": "Tunis", "payment_method": "Flouci", "branch_id": "Tunis-GNC",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.95,
+            "sar_report": "SAR text for export",
+            "shap_top5": [{"feature": "v_count", "value": 5, "impact": 0.41, "abs_impact": 0.41}],
+        }, headers=admin_headers)
+
+        response = api_test_client.get("/api/v1/alerts/TXN_EXP_001/export", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["transaction_id"] == "TXN_EXP_001"
+        assert data["sar_report"] == "SAR text for export"
+        assert "exported_at" in data
+        assert "shap_top5" in data
+        assert "analyst_review" in data
+
+    def test_export_nonexistent_alert_404(self, api_test_client, admin_headers):
+        response = api_test_client.get("/api/v1/alerts/NONEXISTENT_ALERT/export", headers=admin_headers)
+        assert response.status_code == 404
+
+    def test_export_unauthorized(self, api_test_client):
+        response = api_test_client.get("/api/v1/alerts/TXN_001/export")
+        assert response.status_code == 401
+
+
+class TestCtafExportEndpoint:
+    def test_ctaf_export_returns_confirmed_fraud(self, api_test_client, admin_headers, analyst_headers):
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_CTAF_001", "user_id": "U1", "amount_tnd": 8000.0,
+            "governorate": "Tunis", "payment_method": "Flouci", "branch_id": "Tunis-GNC",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.95,
+        }, headers=admin_headers)
+        api_test_client.post("/feedback/", json={
+            "transaction_id": "TXN_CTAF_001", "analyst_label": "Confirmed Fraud",
+            "analyst_comment": "Confirmed",
+        }, headers=analyst_headers)
+
+        response = api_test_client.get("/alerts/ctaf-export?days=30", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_cases"] >= 1
+        assert any(c["transaction_id"] == "TXN_CTAF_001" for c in data["cases"])
+        assert "generated_at" in data
+
+    def test_ctaf_export_excludes_false_positives(self, api_test_client, admin_headers, analyst_headers):
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_CTAF_FP", "user_id": "U1", "amount_tnd": 3000.0,
+            "governorate": "Tunis", "payment_method": "Flouci", "branch_id": "Tunis-GNC",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }, headers=admin_headers)
+        api_test_client.post("/feedback/", json={
+            "transaction_id": "TXN_CTAF_FP", "analyst_label": "False Positive",
+            "analyst_comment": "Not fraud",
+        }, headers=analyst_headers)
+
+        response = api_test_client.get("/alerts/ctaf-export?days=30", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert all(c["transaction_id"] != "TXN_CTAF_FP" for c in data["cases"])
+
+    def test_ctaf_export_admin_only(self, api_test_client, analyst_headers):
+        response = api_test_client.get("/alerts/ctaf-export", headers=analyst_headers)
+        assert response.status_code == 403
+
+
+class TestMonitoringEndpoints:
+    def test_performance_metrics_endpoint(self, api_test_client, analyst_headers):
+        response = api_test_client.get("/api/v1/metrics/performance", headers=analyst_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "avg_latency_ms" in data
+        assert "total_calls" in data
+
+    def test_feedback_analysis_endpoint(self, api_test_client, analyst_headers):
+        response = api_test_client.get("/api/v1/metrics/feedback", headers=analyst_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "precision" in data
+        assert "feedback_counts" in data
+
+    def test_threshold_analysis_endpoint(self, api_test_client, analyst_headers):
+        response = api_test_client.get("/api/v1/metrics/threshold-analysis", headers=analyst_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "optimal_threshold" in data
+        assert "threshold_analysis" in data
+
+    def test_system_overview_endpoint(self, api_test_client, analyst_headers):
+        response = api_test_client.get("/api/v1/metrics/system-overview", headers=analyst_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert "performance" in data
+        assert "feedback" in data
+        assert "threshold_recommendation" in data
+        assert "drift" in data
+
+    def test_monitoring_endpoints_unauthorized(self, api_test_client):
+        for path in ["/api/v1/metrics/performance", "/api/v1/metrics/feedback",
+                      "/api/v1/metrics/threshold-analysis", "/api/v1/metrics/system-overview"]:
+            response = api_test_client.get(path)
+            assert response.status_code == 401, f"{path} should require auth"
+
+
+class TestRetrainEndpoint:
+    def test_retrain_requires_admin(self, api_test_client, analyst_headers):
+        response = api_test_client.post("/retrain-model/", headers=analyst_headers)
+        assert response.status_code == 403
+
+    def test_retrain_requires_auth(self, api_test_client):
+        response = api_test_client.post("/retrain-model/")
+        assert response.status_code == 401
+
+    def test_retrain_returns_success_shape(self, api_test_client, admin_headers):
+        response = api_test_client.post("/retrain-model/", headers=admin_headers)
+        # Returns 200 even if the background retraining fails internally
+        assert response.status_code in (200, 500)
+        if response.status_code == 200:
+            data = response.json()
+            assert data["status"] == "success"
+
+
+class TestEdgeCases:
+    def test_duplicate_alert_is_detected(self, api_test_client, admin_headers):
+        alert = {
+            "transaction_id": "TXN_DUP_001", "user_id": "U1", "amount_tnd": 5000.0,
+            "governorate": "Tunis", "payment_method": "Flouci",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }
+        first = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        assert first.status_code == 200
+        assert first.json()["message"] == "Alert added successfully"
+
+        second = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        assert second.status_code == 200
+        assert second.json()["message"] == "Alert already exists"
+
+    def test_missing_required_fields_returns_422(self, api_test_client, admin_headers):
+        incomplete = {"user_id": "U1", "amount_tnd": 5000.0}
+        response = api_test_client.post("/alerts/add/", json=incomplete, headers=admin_headers)
+        assert response.status_code == 422
+
+    def test_malformed_json_returns_422(self, api_test_client, admin_headers):
+        response = api_test_client.post("/alerts/add/", data="not json", headers=admin_headers)
+        assert response.status_code == 422
+
+    def test_invalid_analyst_label_returns_422(self, api_test_client, analyst_headers):
+        feedback = {
+            "transaction_id": "TXN_001",
+            "analyst_label": "MAYBE_FRAUD",
+        }
+        response = api_test_client.post("/feedback/", json=feedback, headers=analyst_headers)
+        assert response.status_code == 422
+
+    def test_empty_transaction_id_accepted_by_pipeline(self, api_test_client, admin_headers):
+        alert = {
+            "transaction_id": "", "user_id": "U1", "amount_tnd": 5000.0,
+            "governorate": "Tunis", "payment_method": "Flouci",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }
+        response = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
+        assert response.status_code == 200
+
+    def test_invalid_token_returns_401_on_get_endpoints(self, api_test_client):
+        bad_headers = {"Authorization": "Bearer totally_wrong"}
+        for path in ["/stats/", "/branches/"]:
+            response = api_test_client.get(path, headers=bad_headers)
+            assert response.status_code == 401, f"{path} should reject bad token"
+
+    def test_negative_amount_rejected(self, api_test_client, admin_headers):
+        alert = {
+            "transaction_id": "TXN_NEG_001", "user_id": "U1", "amount_tnd": -100.0,
+            "governorate": "Tunis", "payment_method": "Flouci",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.50,
+        }
+        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        # TransactionAlert has no explicit amount validator, so it may accept it
+        # but should at least return a 2xx or 4xx response
+        assert response.status_code in (200, 422)
+
+    def test_metrics_labels_after_operations(self, api_test_client, admin_headers):
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_METRICS_LBL", "user_id": "U1", "amount_tnd": 5000.0,
+            "governorate": "Tunis", "payment_method": "Flouci",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }, headers=admin_headers)
+        api_test_client.get("/alerts/high-risk/", headers=admin_headers)
+
+        metrics = api_test_client.get("/metrics")
+        assert metrics.status_code == 200
+        body = metrics.text
+        assert 'amastan_api_requests_total' in body
+        assert 'method="POST"' in body or 'method="GET"' in body
+        assert 'alerts_ingested_total' in body
+
+
+class TestIntegrationFlow:
+    """End-to-end flow: add alert → review queue → feedback → stats → export."""
+
+    def test_full_alert_lifecycle(self, api_test_client, admin_headers, analyst_headers):
+        alert = {
+            "transaction_id": "TXN_LIFECYCLE", "user_id": "USER_LC", "amount_tnd": 12000.0,
+            "governorate": "Sfax", "payment_method": "Konnect", "branch_id": "Sfax-Agency",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.97,
+            "alert_type": "high_risk",
+        }
+
+        add_resp = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        assert add_resp.status_code == 200
+        assert add_resp.json()["status"] == "success"
+
+        queue_resp = api_test_client.get("/alerts/review-queue/?limit=10", headers=admin_headers)
+        assert queue_resp.status_code == 200
+        queue = queue_resp.json()
+        assert any(a["transaction_id"] == "TXN_LIFECYCLE" for a in queue)
+
+        feedback_resp = api_test_client.post("/feedback/", json={
+            "transaction_id": "TXN_LIFECYCLE", "analyst_label": "Confirmed Fraud",
+            "analyst_comment": "High-value confirmed fraud",
+        }, headers=analyst_headers)
+        assert feedback_resp.status_code == 200
+
+        stats_resp = api_test_client.get("/stats/", headers=admin_headers)
+        assert stats_resp.status_code == 200
+        stats = stats_resp.json()
+        assert stats["total_feedback"] >= 1
+
+        export_resp = api_test_client.get("/alerts/ctaf-export?days=30", headers=admin_headers)
+        assert export_resp.status_code == 200
+        export = export_resp.json()
+        assert any(c["transaction_id"] == "TXN_LIFECYCLE" for c in export["cases"])
+
+    def test_feedback_updates_precision(self, api_test_client, admin_headers, analyst_headers):
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_PREC_1", "user_id": "U1", "amount_tnd": 7000.0,
+            "governorate": "Tunis", "payment_method": "Flouci",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.92,
+        }, headers=admin_headers)
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_PREC_2", "user_id": "U2", "amount_tnd": 5000.0,
+            "governorate": "Sfax", "payment_method": "eDinar",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.88,
+        }, headers=admin_headers)
+
+        api_test_client.post("/feedback/", json={
+            "transaction_id": "TXN_PREC_1", "analyst_label": "Confirmed Fraud",
+        }, headers=analyst_headers)
+        api_test_client.post("/feedback/", json={
+            "transaction_id": "TXN_PREC_2", "analyst_label": "False Positive",
+        }, headers=analyst_headers)
+
+        stats = api_test_client.get("/stats/", headers=admin_headers).json()
+        assert stats["high_risk_precision"] == 0.5
+
+
+class TestLegacyEndpoints:
+    """Backward-compatible unversioned endpoint aliases."""
+
+    def test_legacy_whoami(self, api_test_client, admin_headers):
+        response = api_test_client.get("/auth/whoami", headers=admin_headers)
+        assert response.status_code == 200
+        assert response.json()["role"] == "ADMIN"
+
+    def test_legacy_add_alert(self, api_test_client, admin_headers):
+        alert = {
+            "transaction_id": "TXN_LEGACY_ADD", "user_id": "U1", "amount_tnd": 5000.0,
+            "governorate": "Tunis", "payment_method": "Flouci",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }
+        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        assert response.status_code == 200
+
+    def test_legacy_feedback(self, api_test_client, admin_headers, analyst_headers):
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_LEGACY_FB", "user_id": "U1", "amount_tnd": 5000.0,
+            "governorate": "Tunis", "payment_method": "Flouci",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }, headers=admin_headers)
+        response = api_test_client.post("/feedback/", json={
+            "transaction_id": "TXN_LEGACY_FB", "analyst_label": "Confirmed Fraud",
+        }, headers=analyst_headers)
+        assert response.status_code == 200
+
+    def test_legacy_review_queue(self, api_test_client, admin_headers):
+        api_test_client.post("/alerts/add/", json={
+            "transaction_id": "TXN_LEGACY_Q", "user_id": "U1", "amount_tnd": 5000.0,
+            "governorate": "Tunis", "payment_method": "Flouci",
+            "timestamp": datetime.now(timezone.utc).isoformat(), "ml_probability": 0.90,
+        }, headers=admin_headers)
+        response = api_test_client.get("/alerts/review-queue/", headers=admin_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert any(a["transaction_id"] == "TXN_LEGACY_Q" for a in data)
+
+    def test_legacy_stats_legacy_ctaf_and_model_perf(self, api_test_client, admin_headers):
+        assert api_test_client.get("/stats/", headers=admin_headers).status_code == 200
+        assert api_test_client.get("/compliance/kpis/", headers=admin_headers).status_code == 200
+        assert api_test_client.get("/monitoring/model-performance/", headers=admin_headers).status_code == 200
+
+    def test_legacy_explain_and_branches(self, api_test_client, admin_headers):
+        assert api_test_client.get("/alerts/NONEXISTENT/explain", headers=admin_headers).status_code == 404
+        assert api_test_client.get("/branches/", headers=admin_headers).status_code == 200

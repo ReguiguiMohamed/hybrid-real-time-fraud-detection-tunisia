@@ -1126,7 +1126,7 @@ async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analys
             "shap_top5": shap_top5,
             "top_risk_factors": factors,
             "analyst_review": analyst_payload,
-            "exported_at": datetime.utcnow().isoformat()
+            "exported_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         }
     except HTTPException:
         raise
@@ -1193,7 +1193,7 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
             })
 
         return {
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             "days": days,
             "branch_id": branch_id,
             "total_cases": len(cases),
