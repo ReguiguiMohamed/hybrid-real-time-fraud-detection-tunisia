@@ -35,8 +35,9 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if [ -z "$HF_TOKEN" ]; then
-            echo "ERROR: HF_TOKEN secret not set. Skipping deploy."
-            exit 1
+            echo "HF_TOKEN secret not set. Skipping deploy."
+            echo "To enable: add HF_TOKEN to GitHub repo secrets (Settings > Secrets and variables > Actions)"
+            exit 0
           fi
 
           SPACE_NAME="MohamedReg/amastan-fraud-shield-api"
