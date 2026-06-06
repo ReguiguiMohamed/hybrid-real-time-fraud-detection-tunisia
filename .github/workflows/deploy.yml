@@ -1,0 +1,74 @@
+name: Deploy to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "dashboard/**"
+      - "src/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - ".env.example"
+      - "Dockerfile.api"
+
+concurrency:
+  group: hf-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy API to Hugging Face Space
+    if: github.repository == 'ReguiguiMohamed/hybrid-real-time-fraud-detection-tunisia'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Push API files to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "ERROR: HF_TOKEN secret not set. Skipping deploy."
+            exit 1
+          fi
+
+          SPACE_NAME="MohamedReg/amastan-fraud-shield-api"
+          CLONE_DIR="hf-space"
+
+          echo "Cloning current HF Space state..."
+          git clone --depth=1 \
+            "https://user:${HF_TOKEN}@huggingface.co/spaces/${SPACE_NAME}" \
+            "$CLONE_DIR"
+
+          cd "$CLONE_DIR"
+
+          git rm -rf --quiet . 2>/dev/null || true
+
+          echo "Copying API files from source..."
+          cp -r "$GITHUB_WORKSPACE/Dockerfile" .
+          cp -r "$GITHUB_WORKSPACE/Dockerfile.api" .
+          cp -r "$GITHUB_WORKSPACE/.env.example" .
+          cp -r "$GITHUB_WORKSPACE/requirements.txt" .
+          cp -r "$GITHUB_WORKSPACE/dashboard" ./dashboard/
+          cp -r "$GITHUB_WORKSPACE/src" ./src/
+          cp -r "$GITHUB_WORKSPACE/monitoring/metrics_exporter.py" ./monitoring/ 2>/dev/null || true
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to deploy."
+            exit 0
+          fi
+
+          SOURCE_SHA=$(cd "$GITHUB_WORKSPACE" && git rev-parse --short HEAD)
+          git commit -m "Deploy amastan-fraud-shield@${SOURCE_SHA}"
+
+          echo "Pushing to Hugging Face Space..."
+          git push origin main

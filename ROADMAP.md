@@ -47,17 +47,17 @@
 
 ## Priority 3: CI/CD Pipeline
 
-### 3.1 GitHub Actions
-- Only `security-scan.yml` exists — add a full CI workflow:
-  - `pip install` → `pytest tests/` (excluding chaos + quality_gates)
-  - `bandit` + `pip-audit` + `safety`
-  - Coverage report upload
-- Dependabot already configured — verify it works
+### 3.1 GitHub Actions [DONE]
+- `ci.yml`: Full CI workflow — lint, unit tests (70% coverage min), API tests, security scan (bandit/pip-audit/safety)
+- `deploy.yml`: CD workflow — pushes API files to Hugging Face Space on `main` pushes
+- `security-scan.yml`: Weekly scheduled security audit (pre-existing)
+- `dependabot.yml`: Weekly dependency updates for pip, docker, GitHub Actions (pre-existing)
 
-### 3.2 Quality Gates in CI
-- Enforce test pass before merge
-- Enforce minimum coverage (start at 70%)
+### 3.2 Quality Gates in CI [DONE]
+- Test pass enforced before merge
+- Minimum 70% coverage enforced
 - Lint check (flake8 + black + isort)
+- Security scan on every PR
 
 ---
 
@@ -103,4 +103,4 @@
 | Date | Work Done |
 |------|-----------|
 | 2026-05-28 | Roadmap created. Task 1.1: expanded API test coverage — 153 tests total, all passing. Task 1.4: fixed 28 `datetime.utcnow()` deprecation warnings across 9 files. Task 1.2: no missing endpoints found, added batch feedback endpoint, added HATEOAS `_links` to responses, 8 new tests (161 total). |
-| 2026-06-06 | Task 1.3: created `docs/` directory with API_REFERENCE.md, DEPLOYMENT_GUIDE.md, OPERATIONAL_RUNBOOK.md. Added docstrings to all 6 missing endpoint handlers (branches, performance, feedback, threshold, drift, system-overview). Task 1.5: fixed SQLAlchemy datetime adapter deprecation (registered adapter in `src/shared/database.py`), fixed httpx raw bytes warning (changed `data=` to `content=` in test). Priority 3: created `.github/workflows/ci.yml` with lint, test, API test, and security jobs with coverage enforcement. |
+| 2026-06-06 | Task 1.3: created `docs/` directory with API_REFERENCE.md, DEPLOYMENT_GUIDE.md, OPERATIONAL_RUNBOOK.md. Added docstrings to all 6 missing endpoint handlers (branches, performance, feedback, threshold, drift, system-overview). Task 1.5: fixed SQLAlchemy datetime adapter deprecation (registered adapter in `src/shared/database.py`), fixed httpx raw bytes warning (changed `data=` to `content=` in test). Priority 3: created `.github/workflows/ci.yml` with lint, test, API test, and security jobs with coverage enforcement. Created `.github/workflows/deploy.yml` CD pipeline targeting Hugging Face Space. |
