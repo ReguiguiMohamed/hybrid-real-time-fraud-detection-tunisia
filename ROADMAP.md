@@ -103,3 +103,4 @@
 | Date | Work Done |
 |------|-----------|
 | 2026-05-28 | Roadmap created. Task 1.1: expanded API test coverage — 153 tests total, all passing. Task 1.4: fixed 28 `datetime.utcnow()` deprecation warnings across 9 files. Task 1.2: no missing endpoints found, added batch feedback endpoint, added HATEOAS `_links` to responses, 8 new tests (161 total). |
+| 2026-06-06 | Task 1.3: created `docs/` directory with API_REFERENCE.md, DEPLOYMENT_GUIDE.md, OPERATIONAL_RUNBOOK.md. Added docstrings to all 6 missing endpoint handlers (branches, performance, feedback, threshold, drift, system-overview). Task 1.5: fixed SQLAlchemy datetime adapter deprecation (registered adapter in `src/shared/database.py`), fixed httpx raw bytes warning (changed `data=` to `content=` in test). Priority 3: created `.github/workflows/ci.yml` with lint, test, API test, and security jobs with coverage enforcement. |

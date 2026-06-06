@@ -638,7 +638,7 @@ class TestEdgeCases:
         assert response.status_code == 422
 
     def test_malformed_json_returns_422(self, api_test_client, admin_headers):
-        response = api_test_client.post("/alerts/add/", data="not json", headers=admin_headers)
+        response = api_test_client.post("/alerts/add/", content="not json", headers=admin_headers)
         assert response.status_code == 422
 
     def test_invalid_analyst_label_returns_422(self, api_test_client, analyst_headers):

@@ -726,6 +726,7 @@ async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, b
 
 @router.get("/branches/")
 async def list_branches(auth=Depends(require_scopes({"analyst", "admin"}))):
+    """List all distinct branch IDs that have triggered alerts."""
     try:
         with get_db_session() as db:
             rows = db.execute(text("SELECT DISTINCT branch_id FROM high_risk_alerts WHERE branch_id IS NOT NULL AND branch_id != '' ORDER BY branch_id")).fetchall()
@@ -1300,22 +1301,27 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
 
 @router.get("/metrics/performance")
 async def get_performance_metrics(auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Get model performance metrics including precision, recall, and drift indicators."""
     return monitoring_engine.get_performance_metrics()
 
 @router.get("/metrics/feedback")
 async def get_feedback_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Return analyst feedback breakdown and label distribution metrics."""
     return monitoring_engine.get_feedback_analysis()
 
 @router.get("/metrics/threshold-analysis")
 async def get_threshold_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Analyze ML probability threshold trade-offs and recommend optimal cutoffs."""
     return monitoring_engine.get_ml_threshold_analysis()
 
 @router.get("/metrics/drift")
 async def get_drift_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Assess model drift and recommend retraining based on feature distribution shifts."""
     return monitoring_engine.get_drift_retraining_assessment()
 
 @router.get("/metrics/system-overview")
 async def get_system_overview(auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Aggregated system overview combining performance, feedback, threshold, and drift metrics."""
     return {
         "performance": monitoring_engine.get_performance_metrics(),
         "feedback": monitoring_engine.get_feedback_analysis(),

@@ -1,4 +1,6 @@
 import os
+import sqlite3
+from datetime import datetime
 from sqlalchemy import (
     Column,
     DateTime,
@@ -10,6 +12,12 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+# Register adapters for Python 3.12+ sqlite3 deprecation
+def _adapt_datetime(value):
+    return value.isoformat() if isinstance(value, datetime) else value
+
+sqlite3.register_adapter(datetime, _adapt_datetime)
 
 # Default to SQLite for local development
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/feedback.db")
