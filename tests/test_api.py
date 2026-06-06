@@ -258,7 +258,7 @@ class TestFeedbackEndpoints:
 
     def test_batch_feedback_requires_auth(self, api_test_client):
         response = api_test_client.post("/feedback/batch/", json={"feedback_items": []})
-        assert response.status_code == 401
+        assert response.status_code == 403
 
 
 class TestStatsEndpoint:
@@ -425,7 +425,7 @@ class TestHighRiskEndpoint:
 
     def test_high_risk_unauthorized(self, api_test_client):
         response = api_test_client.get("/api/v1/alerts/high-risk/")
-        assert response.status_code == 401
+        assert response.status_code == 403
 
 
 class TestBranchesEndpoint:
@@ -454,7 +454,7 @@ class TestBranchesEndpoint:
 
     def test_branches_unauthorized(self, api_test_client):
         response = api_test_client.get("/branches/")
-        assert response.status_code == 401
+        assert response.status_code == 403
 
 
 class TestModelPerformanceEndpoint:
@@ -490,7 +490,7 @@ class TestModelPerformanceEndpoint:
 
     def test_model_performance_unauthorized(self, api_test_client):
         response = api_test_client.get("/monitoring/model-performance/")
-        assert response.status_code == 401
+        assert response.status_code == 403
 
 
 class TestExportEndpoint:
@@ -518,7 +518,7 @@ class TestExportEndpoint:
 
     def test_export_unauthorized(self, api_test_client):
         response = api_test_client.get("/api/v1/alerts/TXN_001/export")
-        assert response.status_code == 401
+        assert response.status_code == 403
 
 
 class TestCtafExportEndpoint:
@@ -596,7 +596,7 @@ class TestMonitoringEndpoints:
         for path in ["/api/v1/metrics/performance", "/api/v1/metrics/feedback",
                       "/api/v1/metrics/threshold-analysis", "/api/v1/metrics/system-overview"]:
             response = api_test_client.get(path)
-            assert response.status_code == 401, f"{path} should require auth"
+            assert response.status_code == 403, f"{path} should reject missing auth"
 
 
 class TestRetrainEndpoint:
@@ -606,7 +606,7 @@ class TestRetrainEndpoint:
 
     def test_retrain_requires_auth(self, api_test_client):
         response = api_test_client.post("/retrain-model/")
-        assert response.status_code == 401
+        assert response.status_code == 403
 
     def test_retrain_returns_success_shape(self, api_test_client, admin_headers):
         response = api_test_client.post("/retrain-model/", headers=admin_headers)
