@@ -11,9 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@39cd1854d5c9e1a8e407c9f0c0e5b389c364b01d  # v5.5.0
         with:
           python-version: "3.11"
 
@@ -25,7 +25,7 @@ jobs:
 
       - name: Upload dependency report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65c4c4a1d7e2d1f4a7a2b00f0c0f5a8e3b9a1c1  # v4.6.2
         with:
           name: pip-audit-report
           path: pip-audit-report.json
@@ -38,14 +38,14 @@ jobs:
     container:
       image: returntocorp/semgrep:1.105.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
       - name: Generate Semgrep report
         run: semgrep --config p/python --config p/security-audit --json --output semgrep-report.json src dashboard scripts
 
       - name: Upload Semgrep report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65c4c4a1d7e2d1f4a7a2b00f0c0f5a8e3b9a1c1  # v4.6.2
         with:
           name: semgrep-report
           path: semgrep-report.json

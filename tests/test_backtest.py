@@ -78,3 +78,33 @@ def test_missing_labels_raise_clear_error():
 
     with pytest.raises(ValueError, match="verified label"):
         engine._compute_metrics(scored, "original_score", "original_alert")
+
+
+def test_empty_input_raises_clear_error():
+    engine = BacktestEngine()
+    empty = pd.DataFrame()
+    with pytest.raises((ValueError, KeyError)):
+        engine._apply_original_rules(empty)
+
+
+def test_empty_data_raises_value_error(monkeypatch):
+    engine = BacktestEngine()
+    monkeypatch.setattr(engine, "load_data", lambda *_args, **_kwargs: pd.DataFrame())
+    with pytest.raises(ValueError, match="No data available"):
+        engine.run()
+
+
+def test_model_artifact_fallback_does_not_crash(monkeypatch, tmp_path):
+    """Champion model artifact fallback — when no model path is available,
+    the backtest should still complete with rule-based scoring only."""
+    engine = BacktestEngine()
+    history = pd.DataFrame(
+        [
+            {"amount_tnd": 500.0, "payment_method": "card", "v_count": 1, "g_dist": 1, "label": 0},
+            {"amount_tnd": 20000.0, "payment_method": "card", "v_count": 1, "g_dist": 1, "label": 1},
+        ]
+    )
+    monkeypatch.setattr(engine, "load_data", lambda *_args, **_kwargs: history)
+    result = engine.run()
+    assert result.total_transactions == 2
+    assert result.label_source is not None

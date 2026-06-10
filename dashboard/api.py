@@ -40,11 +40,9 @@ METRICS_TOKEN = os.getenv("METRICS_TOKEN")
 METRICS_ALLOW_PUBLIC = os.getenv("METRICS_ALLOW_PUBLIC", "").lower() in {"1", "true", "yes"}
 
 if not ANALYST_TOKEN:
-    print("WARNING: ANALYST_TOKEN not set. Using default token for development.")
-    ANALYST_TOKEN = "default_analyst_token"
+    raise RuntimeError("ANALYST_TOKEN must be set via environment variable.")
 if not ADMIN_TOKEN:
-    print("WARNING: ADMIN_TOKEN not set. Using default token for development.")
-    ADMIN_TOKEN = "default_admin_token"
+    raise RuntimeError("ADMIN_TOKEN must be set via environment variable.")
 
 ANALYST_TOKEN_HASH = hashlib.sha256(ANALYST_TOKEN.encode()).hexdigest()
 ADMIN_TOKEN_HASH = hashlib.sha256(ADMIN_TOKEN.encode()).hexdigest()
@@ -1690,6 +1688,18 @@ async def get_retraining_status(job_id: str, auth=Depends(require_scopes({"admin
         if not job:
             raise HTTPException(status_code=404, detail="Retraining job not found")
         return dict(job)
+
+
+@router.get("/retrain-model/summary")
+async def get_retraining_summary(auth=Depends(require_scopes({"analyst", "admin"}))):
+    """Return persistent training status from the model registry."""
+    try:
+        from ml.model_repository import ModelRepository
+        repo = ModelRepository()
+        summary = repo.get_champion_training_status()
+        return {"status": "available", **summary}
+    except Exception as e:
+        return {"status": "unavailable", "detail": str(e)}
 
 
 # ---------------------------------------------------------------------------

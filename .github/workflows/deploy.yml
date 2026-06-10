@@ -23,12 +23,12 @@ jobs:
     if: github.repository == 'ReguiguiMohamed/hybrid-real-time-fraud-detection-tunisia'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@39cd1854d5c9e1a8e407c9f0c0e5b389c364b01d  # v5.5.0
         with:
           python-version: "3.11"
 

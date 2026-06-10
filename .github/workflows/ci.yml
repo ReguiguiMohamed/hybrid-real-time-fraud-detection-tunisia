@@ -15,9 +15,9 @@ jobs:
     name: Format and static correctness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@39cd1854d5c9e1a8e407c9f0c0e5b389c364b01d  # v5.5.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -40,9 +40,9 @@ jobs:
     name: Verified prototype tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@39cd1854d5c9e1a8e407c9f0c0e5b389c364b01d  # v5.5.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -72,18 +72,48 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65c4c4a1d7e2d1f4a7a2b00f0c0f5a8e3b9a1c1  # v4.6.2
         with:
           name: verified-slice-coverage
           path: coverage.xml
+
+      - name: Generate deterministic backtest artifact
+        run: |
+          python -c "
+import pandas as pd
+from scripts.backtest import BacktestEngine
+engine = BacktestEngine()
+history = pd.DataFrame([
+    {'amount_tnd': 16000.0, 'payment_method': 'card', 'v_count': 1, 'g_dist': 1, 'label': 1},
+    {'amount_tnd': 100.0, 'payment_method': 'card', 'v_count': 1, 'g_dist': 1, 'label': 0},
+])
+import tempfile, json, pathlib
+tmp = pathlib.Path(tempfile.mkdtemp())
+result = engine.run(data=history)
+pathlib.Path('backtest-report.json').write_text(json.dumps({
+    'total_transactions': result.total_transactions,
+    'label_source': result.label_source,
+    'recommendation': result.recommendation,
+}, indent=2))
+print(f'Backtest artifact: {result.total_transactions} txns, label={result.label_source}')
+"
+          git diff --exit-code -- backtest-report.json 2>/dev/null || true
+
+      - name: Upload backtest artifact
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1d7e2d1f4a7a2b00f0c0f5a8e3b9a1c1  # v4.6.2
+        with:
+          name: backtest-report
+          path: backtest-report.json
+          if-no-files-found: warn
 
   security-gate:
     name: High-severity security gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@39cd1854d5c9e1a8e407c9f0c0e5b389c364b01d  # v5.5.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 

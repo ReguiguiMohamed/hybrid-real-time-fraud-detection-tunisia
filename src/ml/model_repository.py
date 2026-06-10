@@ -1,7 +1,7 @@
 """Persistence boundary for model lifecycle operations."""
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import create_engine, func
@@ -118,6 +118,9 @@ class ModelRepository:
         promoted_at,
         training_samples_count,
         feature_importance,
+        last_training_success_at=None,
+        last_training_failure_at=None,
+        last_training_error=None,
     ):
         if promoted_at and isinstance(promoted_at, str):
             promoted_at = datetime.fromisoformat(promoted_at)
@@ -138,8 +141,65 @@ class ModelRepository:
                     promoted_at=promoted_at,
                     training_samples_count=training_samples_count,
                     feature_importance=feature_importance,
+                    last_training_success_at=last_training_success_at,
+                    last_training_failure_at=last_training_failure_at,
+                    last_training_error=last_training_error,
                 )
             )
+
+    def record_training_outcome(
+        self,
+        *,
+        version_id,
+        success,
+        error_message=None,
+    ):
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        with self.session() as db:
+            entry = db.query(ModelRegistry).filter(ModelRegistry.version_id == version_id).first()
+            if entry:
+                if success:
+                    entry.last_training_success_at = now
+                else:
+                    entry.last_training_failure_at = now
+                    entry.last_training_error = error_message
+
+    def get_training_status(self):
+        with self.session() as db:
+            success_row = (
+                db.query(func.max(ModelRegistry.last_training_success_at))
+                .scalar()
+            )
+            failure_row = (
+                db.query(
+                    ModelRegistry.last_training_failure_at,
+                    ModelRegistry.last_training_error,
+                )
+                .filter(ModelRegistry.last_training_failure_at.isnot(None))
+                .order_by(ModelRegistry.last_training_failure_at.desc())
+                .first()
+            )
+            return {
+                "last_success_at": success_row.isoformat() if success_row else None,
+                "last_failure_at": failure_row[0].isoformat() if failure_row else None,
+                "last_error": failure_row[1] if failure_row else None,
+            }
+
+    def get_champion_training_status(self):
+        with self.session() as db:
+            row = (
+                db.query(ModelRegistry)
+                .filter(ModelRegistry.is_champion == 1)
+                .order_by(ModelRegistry.promoted_at.desc())
+                .first()
+            )
+            if not row:
+                return {"last_success_at": None, "last_failure_at": None, "last_error": None}
+            return {
+                "last_success_at": row.last_training_success_at.isoformat() if row.last_training_success_at else None,
+                "last_failure_at": row.last_training_failure_at.isoformat() if row.last_training_failure_at else None,
+                "last_error": row.last_training_error,
+            }
 
     def log_audit_event(
         self,

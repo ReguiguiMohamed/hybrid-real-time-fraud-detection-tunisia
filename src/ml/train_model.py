@@ -560,161 +560,182 @@ class FraudModelTrainer:
 
         print("Starting champion-challenger model training...")
 
-        dataset = self.load_and_enrich()
-        train_data, test_data = dataset.randomSplit([0.8, 0.2], seed=42)
-        training_samples_count = train_data.count()
-
-        print("Training challenger model...")
-
-        available_cols = set(train_data.columns)
-        potential_feature_cols = [
-            "v_count",
-            "g_dist",
-            "avg_amount",
-            "is_smurfing",
-            "high_velocity_flag",
-            "velocity_risk",
-            "travel_risk",
-            "high_value_risk",
-            "d17_risk",
-            "risk_score",
-        ]
-
-        feature_cols = [col for col in potential_feature_cols if col in available_cols and col != "label"]
-
-        print(f"Using features: {feature_cols}")
-
-        if not feature_cols:
-            raise ValueError("No valid feature columns found in training data")
-
-        assembler = VectorAssembler(inputCols=feature_cols, outputCol="features", handleInvalid="skip")
-
-        from xgboost.spark import SparkXGBClassifier
-
-        xgb = SparkXGBClassifier(
-            featuresCol="features", labelCol="label", max_depth=6, n_estimators=100, learning_rate=0.1
-        )
-
-        pipeline = Pipeline(stages=[assembler, xgb])
-        challenger_model = pipeline.fit(train_data)
-
-        challenger_metrics = self.evaluate_model(challenger_model, test_data)
-        feature_scores = self.get_feature_scores(challenger_model)
-        feature_importance = json.dumps([{"feature": name, "score": float(score)} for name, score in feature_scores])
-        print(f"Challenger model metrics: {challenger_metrics}")
-
-        champion_entry = self._get_current_champion()
-        champion_metrics = None
-        if champion_entry:
-            print("Evaluating champion model...")
-            try:
-                champion_model = PipelineModel.load(champion_entry["model_path"])
-                champion_metrics = self.evaluate_model(champion_model, test_data)
-                print(f"Champion model metrics: {champion_metrics}")
-            except Exception as e:
-                print(f"Error evaluating champion model: {e}")
-
-        promotion_threshold = self._parse_float_env("CHAMPION_PROMOTION_THRESHOLD", 0.02)
-        approved_by = self._get_model_promotion_approver()
-        decision = self._promotion_decision(
-            challenger_metrics,
-            champion_metrics,
-            promotion_threshold,
-            approved_by,
-        )
-        promotion_candidate = decision["metric_eligible"]
-        promote = decision["promote"]
-
         version_id = (
             datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
         )
-        model_path = str(Path("models") / "registry" / f"fraud_xgb_{version_id}")
-        Path(model_path).parent.mkdir(parents=True, exist_ok=True)
-        challenger_model.write().overwrite().save(model_path)
-        self.save_shap_artifacts(challenger_model, model_path)
 
-        promoted_at = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S") if promote else None
-        self._record_model_registry_entry(
-            version_id=version_id,
-            model_path=model_path,
-            f1_score=challenger_metrics["f1_score"],
-            auc=challenger_metrics["auc"],
-            is_champion=promote,
-            promoted_at=promoted_at,
-            training_samples_count=training_samples_count,
-            feature_importance=feature_importance,
-        )
+        try:
+            dataset = self.load_and_enrich()
+            train_data, test_data = dataset.randomSplit([0.8, 0.2], seed=42)
+            training_samples_count = train_data.count()
 
-        if promote:
-            print("Challenger model promoted to champion.")
-            previous_state = json.dumps(champion_entry) if champion_entry else None
-            new_state = json.dumps(
-                {
-                    "version_id": version_id,
-                    "model_path": model_path,
-                    "f1_score": challenger_metrics["f1_score"],
-                    "auc": challenger_metrics["auc"],
-                    "approved_by": approved_by,
-                    "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
-                    "promotion_threshold": promotion_threshold,
-                }
+            print("Training challenger model...")
+
+            available_cols = set(train_data.columns)
+            potential_feature_cols = [
+                "v_count",
+                "g_dist",
+                "avg_amount",
+                "is_smurfing",
+                "high_velocity_flag",
+                "velocity_risk",
+                "travel_risk",
+                "high_value_risk",
+                "d17_risk",
+                "risk_score",
+            ]
+
+            feature_cols = [col for col in potential_feature_cols if col in available_cols and col != "label"]
+
+            print(f"Using features: {feature_cols}")
+
+            if not feature_cols:
+                raise ValueError("No valid feature columns found in training data")
+
+            assembler = VectorAssembler(inputCols=feature_cols, outputCol="features", handleInvalid="skip")
+
+            from xgboost.spark import SparkXGBClassifier
+
+            xgb = SparkXGBClassifier(
+                featuresCol="features", labelCol="label", max_depth=6, n_estimators=100, learning_rate=0.1
             )
-            self._log_audit_event("MODEL", version_id, "PROMOTE", approved_by, previous_state, new_state)
-            append_change_audit_event(
-                {
-                    "event_type": "MODEL_PROMOTION",
-                    "actor": approved_by,
-                    "approved_by": approved_by,
-                    "entity_type": "MODEL",
-                    "entity_id": version_id,
-                    "action": "PROMOTE",
-                    "previous_state": champion_entry,
-                    "new_state": {
+
+            pipeline = Pipeline(stages=[assembler, xgb])
+            challenger_model = pipeline.fit(train_data)
+
+            challenger_metrics = self.evaluate_model(challenger_model, test_data)
+            feature_scores = self.get_feature_scores(challenger_model)
+            feature_importance = json.dumps([{"feature": name, "score": float(score)} for name, score in feature_scores])
+            print(f"Challenger model metrics: {challenger_metrics}")
+
+            champion_entry = self._get_current_champion()
+            champion_metrics = None
+            if champion_entry:
+                print("Evaluating champion model...")
+                try:
+                    champion_model = PipelineModel.load(champion_entry["model_path"])
+                    champion_metrics = self.evaluate_model(champion_model, test_data)
+                    print(f"Champion model metrics: {champion_metrics}")
+                except Exception as e:
+                    print(f"Error evaluating champion model: {e}")
+
+            promotion_threshold = self._parse_float_env("CHAMPION_PROMOTION_THRESHOLD", 0.02)
+            approved_by = self._get_model_promotion_approver()
+            decision = self._promotion_decision(
+                challenger_metrics,
+                champion_metrics,
+                promotion_threshold,
+                approved_by,
+            )
+            promotion_candidate = decision["metric_eligible"]
+            promote = decision["promote"]
+
+            model_path = str(Path("models") / "registry" / f"fraud_xgb_{version_id}")
+            Path(model_path).parent.mkdir(parents=True, exist_ok=True)
+            challenger_model.write().overwrite().save(model_path)
+            self.save_shap_artifacts(challenger_model, model_path)
+
+            promoted_at = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S") if promote else None
+            self._record_model_registry_entry(
+                version_id=version_id,
+                model_path=model_path,
+                f1_score=challenger_metrics["f1_score"],
+                auc=challenger_metrics["auc"],
+                is_champion=promote,
+                promoted_at=promoted_at,
+                training_samples_count=training_samples_count,
+                feature_importance=feature_importance,
+                last_training_success_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+
+            if promote:
+                print("Challenger model promoted to champion.")
+                previous_state = json.dumps(champion_entry) if champion_entry else None
+                new_state = json.dumps(
+                    {
                         "version_id": version_id,
                         "model_path": model_path,
                         "f1_score": challenger_metrics["f1_score"],
                         "auc": challenger_metrics["auc"],
-                        "training_samples_count": training_samples_count,
-                    },
-                    "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
-                    "performance_delta": {
-                        "f1_score": (None if decision["f1_improvement"] is None else decision["f1_improvement"]),
-                        "auc": (None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]),
-                    },
-                    "justification": "Human-approved champion promotion after champion-challenger evaluation.",
-                }
-            )
+                        "approved_by": approved_by,
+                        "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                        "promotion_threshold": promotion_threshold,
+                    }
+                )
+                self._log_audit_event("MODEL", version_id, "PROMOTE", approved_by, previous_state, new_state)
+                append_change_audit_event(
+                    {
+                        "event_type": "MODEL_PROMOTION",
+                        "actor": approved_by,
+                        "approved_by": approved_by,
+                        "entity_type": "MODEL",
+                        "entity_id": version_id,
+                        "action": "PROMOTE",
+                        "previous_state": champion_entry,
+                        "new_state": {
+                            "version_id": version_id,
+                            "model_path": model_path,
+                            "f1_score": challenger_metrics["f1_score"],
+                            "auc": challenger_metrics["auc"],
+                            "training_samples_count": training_samples_count,
+                        },
+                        "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                        "performance_delta": {
+                            "f1_score": (None if decision["f1_improvement"] is None else decision["f1_improvement"]),
+                            "auc": (None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]),
+                        },
+                        "justification": "Human-approved champion promotion after champion-challenger evaluation.",
+                    }
+                )
+                return True
+
+            if promotion_candidate and approved_by is None:
+                print("Champion promotion blocked: MODEL_PROMOTION_APPROVED_BY must identify a human approver.")
+                append_change_audit_event(
+                    {
+                        "event_type": "MODEL_PROMOTION_BLOCKED",
+                        "actor": os.getenv("MODEL_PROMOTION_USER", "system"),
+                        "approved_by": None,
+                        "entity_type": "MODEL",
+                        "entity_id": version_id,
+                        "action": "BLOCK_PROMOTION",
+                        "previous_state": champion_entry,
+                        "new_state": {
+                            "version_id": version_id,
+                            "model_path": model_path,
+                            "f1_score": challenger_metrics["f1_score"],
+                            "auc": challenger_metrics["auc"],
+                            "training_samples_count": training_samples_count,
+                        },
+                        "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                        "performance_delta": {
+                            "f1_score": (None if decision["f1_improvement"] is None else decision["f1_improvement"]),
+                            "auc": (None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]),
+                        },
+                        "justification": "Promotion candidate met metric gate but no human approver was provided.",
+                    }
+                )
+
+            print("Champion model retained. Challenger registered for audit.")
             return True
 
-        if promotion_candidate and approved_by is None:
-            print("Champion promotion blocked: MODEL_PROMOTION_APPROVED_BY must identify a human approver.")
-            append_change_audit_event(
-                {
-                    "event_type": "MODEL_PROMOTION_BLOCKED",
-                    "actor": os.getenv("MODEL_PROMOTION_USER", "system"),
-                    "approved_by": None,
-                    "entity_type": "MODEL",
-                    "entity_id": version_id,
-                    "action": "BLOCK_PROMOTION",
-                    "previous_state": champion_entry,
-                    "new_state": {
-                        "version_id": version_id,
-                        "model_path": model_path,
-                        "f1_score": challenger_metrics["f1_score"],
-                        "auc": challenger_metrics["auc"],
-                        "training_samples_count": training_samples_count,
-                    },
-                    "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
-                    "performance_delta": {
-                        "f1_score": (None if decision["f1_improvement"] is None else decision["f1_improvement"]),
-                        "auc": (None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]),
-                    },
-                    "justification": "Promotion candidate met metric gate but no human approver was provided.",
-                }
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Training failed: {error_msg}")
+            self.repository.log_audit_event(
+                entity_type="MODEL",
+                entity_id=version_id,
+                action="TRAINING_FAILURE",
+                user_id="system",
+                previous_state=None,
+                new_state=json.dumps({"error": error_msg}),
             )
-
-        print("Champion model retained. Challenger registered for audit.")
-        return False
+            self.repository.record_training_outcome(
+                version_id=version_id,
+                success=False,
+                error_message=error_msg,
+            )
+            return False
 
     def schedule_retraining(self, interval_minutes=60):
         """Schedule periodic retraining of the model"""

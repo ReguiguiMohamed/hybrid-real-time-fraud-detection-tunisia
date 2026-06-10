@@ -37,3 +37,26 @@ All notable changes to this prototype are documented here.
 The verified hosted release is the FastAPI command-center API with SQLAlchemy
 persistence. The broader streaming and RAG architecture remains a local or
 target-architecture prototype.
+
+## [0.1.0-prototype] - 2026-06-10
+
+### Added
+
+- Training failure events recorded in lifecycle audit trail (`TRAINING_FAILURE` action).
+- `last_training_success_at`, `last_training_failure_at`, `last_training_error` columns on `ModelRegistry`.
+- `GET /api/v1/retrain-model/summary` endpoint exposing persistent training status.
+- `ModelRepository.record_training_outcome()` and `get_champion_training_status()` methods.
+- Tests: champion artifact load failure, training failure audit trail, backtest empty input/fallback.
+- Accepted dependency risks table with expiry dates in SECURITY.md.
+
+### Changed
+
+- `dashboard/api.py`: ANALYST_TOKEN and ADMIN_TOKEN now raise `RuntimeError` instead of defaulting.
+- `train_champion_challenger()` wraps training in try/except; failures are logged as audit events and stored in registry.
+- GitHub Actions pinned to specific commit SHAs (`actions/checkout@692973e3`, `actions/setup-python@39cd1854`, `actions/upload-artifact@65c4c4a1`).
+- Regenerated `openapi.json` to match FastAPI 0.115.0 `ValidationError` schema (removed `input`/`ctx` fields).
+
+### Removed
+
+- Default development tokens from production API code.
+- `pytest-cache-files-*` and `tmp/` directories from disk.

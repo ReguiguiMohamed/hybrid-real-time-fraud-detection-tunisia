@@ -83,6 +83,9 @@ class ModelRegistry(Base):
     promoted_at = Column(DateTime)
     training_samples_count = Column(Integer)
     feature_importance = Column(Text)
+    last_training_success_at = Column(DateTime)
+    last_training_failure_at = Column(DateTime)
+    last_training_error = Column(Text)
 
 
 class AuditLog(Base):

@@ -52,3 +52,19 @@ safety check -r requirements.txt
 - Monthly review of `pip-audit` and `safety` scan results
 - Critical CVEs (CVSS ≥ 9.0) must be patched within 24 hours
 - High CVEs (CVSS ≥ 7.0) must be patched within 7 days
+
+### Accepted Dependency Risks (with Expiry Dates)
+
+The following risks have been reviewed, documented, and accepted for the v0.1.0 prototype:
+
+| Dependency | Issue | Risk | Review Date | Expiry | Notes |
+|---|---|---|---|---|---|
+| `google.protobuf` (≥4.25.8) | Deprecated `PyType_Spec` API | Low — runtime behavior unaffected; cosmetic deprecation warning only | 2026-06-10 | 2026-09-01 | Upstream ChromaDB dependency; warning appears in ChromaDB test paths only, not in verified API slice |
+| `pyspark==4.1.1` | Large dependency surface (Java JRE required at runtime) | Medium — only loaded on-demand by optional ML pipeline | 2026-06-10 | 2026-09-01 | Not installed in verified-slice CI; local/Spark workflows only |
+| `chromadb==0.5.0` | Pulls unzipped models on first use; no network isolation | Medium — RAG engine is optional, not deployed on HF Space | 2026-06-10 | 2026-09-01 | Only loaded on-demand via optional import in `rag_engine/` |
+| `torch==2.4.0` | Large binary (~2GB); CVE surface varies by platform | Medium — only loaded by optional `sentence-transformers` for RAG | 2026-06-10 | 2026-09-01 | Not in verified-slice CI; excluded from CI dependency set |
+| `ollama==0.3.3` | Runs unsigned LLM binary; no authentication in dev mode | High on prod — not deployed on HF Space; local development only | 2026-06-10 | 2026-09-01 | `OLLAMA_HOST` must be restricted to localhost in production |
+| `sentence-transformers==3.0.1` | Pulls model weights from HuggingFace at first import | Low for verified slice — never imported by API code | 2026-06-10 | 2026-09-01 | Only imported by `rag_engine/` optional module |
+
+All accepted risks will be re-evaluated no later than the expiry date. If a fix or mitigation
+becomes available sooner, the risk entry will be resolved ahead of schedule.
