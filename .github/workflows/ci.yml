@@ -78,26 +78,7 @@ jobs:
           path: coverage.xml
 
       - name: Generate deterministic backtest artifact
-        run: |
-          python -c "
-import pandas as pd
-from scripts.backtest import BacktestEngine
-engine = BacktestEngine()
-history = pd.DataFrame([
-    {'amount_tnd': 16000.0, 'payment_method': 'card', 'v_count': 1, 'g_dist': 1, 'label': 1},
-    {'amount_tnd': 100.0, 'payment_method': 'card', 'v_count': 1, 'g_dist': 1, 'label': 0},
-])
-import tempfile, json, pathlib
-tmp = pathlib.Path(tempfile.mkdtemp())
-result = engine.run(data=history)
-pathlib.Path('backtest-report.json').write_text(json.dumps({
-    'total_transactions': result.total_transactions,
-    'label_source': result.label_source,
-    'recommendation': result.recommendation,
-}, indent=2))
-print(f'Backtest artifact: {result.total_transactions} txns, label={result.label_source}')
-"
-          git diff --exit-code -- backtest-report.json 2>/dev/null || true
+        run: python scripts/generate_backtest_artifact.py && git diff --exit-code -- backtest-report.json 2>/dev/null || true
 
       - name: Upload backtest artifact
         if: always()
