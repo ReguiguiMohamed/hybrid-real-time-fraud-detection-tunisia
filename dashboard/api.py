@@ -31,7 +31,7 @@ setup_logging(service_name="fraud-api")
 logger = logging.getLogger(__name__)
 
 # Authentication setup
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 # Load API tokens from environment variables
 ANALYST_TOKEN = os.getenv("ANALYST_TOKEN")
@@ -53,7 +53,13 @@ ADMIN_TOKEN_HASH = hashlib.sha256(ADMIN_TOKEN.encode()).hexdigest()
 def require_scopes(scopes):
     """Verify the API token against required scopes."""
 
-    def verifier(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    def verifier(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+        if credentials is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Unauthorized",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         token_hash = hashlib.sha256(credentials.credentials.encode()).hexdigest()
         if token_hash == ADMIN_TOKEN_HASH:
             role = "admin"

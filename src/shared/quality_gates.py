@@ -5,11 +5,19 @@ Includes channel-specific rules for TuniChèque (Feb 2025) and TTN e-invoicing (
 
 import os
 
-from pyspark.sql.functions import col, current_date, datediff, isnan, isnull, lit, lower, to_date, when
+try:
+    from pyspark.sql.functions import col, current_date, datediff, isnan, isnull, lit, lower, to_date, when
+except ModuleNotFoundError:
+    col = current_date = datediff = isnan = isnull = lit = lower = to_date = when = None
 
 DEFAULT_FCY_LARGE_CREDIT_TND = 5000.0
 DEFAULT_DEVICE_HIGH_AMOUNT_TND = 1000.0
 DEFAULT_SHARED_DEVICE_ACCOUNT_THRESHOLD = 3.0
+
+
+def _require_spark():
+    if col is None:
+        raise RuntimeError("Spark quality gates require the optional pyspark runtime.")
 
 
 def _float_env(name, default):
@@ -66,6 +74,7 @@ def validate_transaction_quality(df):
     Apply data quality checks to transaction DataFrame
     This function adds quality validation columns but doesn't perform counts on streaming data
     """
+    _require_spark()
     # Add quality validation columns to the streaming dataframe
     df_validated = (
         df.withColumn("negative_amount_flag", when(col("amount_tnd") < 0, lit(True)).otherwise(lit(False)))
@@ -125,6 +134,7 @@ def apply_tunicheque_rules(df):
     depletion. Detected here as: provision_locked=True but clearing_deadline already
     passed (issuer failed to present, possible float abuse).
     """
+    _require_spark()
     df = df.withColumn(
         "tunicheque_missing_token_flag",
         when(
@@ -161,6 +171,7 @@ def apply_ttn_rules(df):
     (Note: deduplication requires stateful tracking; this gate flags null/empty tokens
     only — dedup is handled in the stateful streaming layer.)
     """
+    _require_spark()
     df = df.withColumn(
         "ttn_missing_token_flag",
         when(
@@ -195,6 +206,7 @@ def apply_fcy_rules(df):
     Rule 3 — New FCY account + large immediate credit: account flagged as FCY type
               with amount above FCY_LARGE_CREDIT_THRESHOLD_TND in a single transaction.
     """
+    _require_spark()
     # Rule 1: Round-number TND→FCY conversion (amount divisible by 1000 exactly)
     df = df.withColumn(
         "fcy_round_amount_flag",
@@ -238,6 +250,7 @@ def apply_device_behavior_rules(df):
     Rule 3 — Shared device velocity: one device used by many accounts in 7 days is
     a synthetic-identity / mule-network signal.
     """
+    _require_spark()
     high_amount_threshold = _float_env(
         "DEVICE_HIGH_AMOUNT_THRESHOLD_TND",
         DEFAULT_DEVICE_HIGH_AMOUNT_TND,
@@ -281,6 +294,7 @@ def apply_d17_rule(df):
     Apply D17-specific rule: If payment_method is 'Flouci' and amount_tnd > 2000,
     boost risk score by 0.2
     """
+    _require_spark()
     df_with_d17_flag = df.withColumn(
         "d17_risk_boost",
         when((col("payment_method") == "Flouci") & (col("amount_tnd") > 2000), lit(0.2)).otherwise(lit(0.0)),

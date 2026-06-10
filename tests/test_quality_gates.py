@@ -4,6 +4,9 @@ import os
 import sys
 
 import pytest
+
+pytest.importorskip("pyspark", reason="Spark integration tests require the optional pyspark runtime.")
+
 from pyspark.sql import SparkSession
 from pyspark.sql.types import BooleanType, DoubleType, StringType, StructField, StructType
 

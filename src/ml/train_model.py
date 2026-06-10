@@ -6,13 +6,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from pyspark.ml import Pipeline, PipelineModel
-from pyspark.ml.evaluation import BinaryClassificationEvaluator
-from pyspark.ml.feature import VectorAssembler
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, current_timestamp, expr, lit, mean, stddev, to_timestamp, when
-from pyspark.sql.types import DoubleType, FloatType, IntegerType
-from xgboost.spark import SparkXGBClassifier
+
+try:
+    from pyspark.ml import Pipeline, PipelineModel
+    from pyspark.ml.evaluation import BinaryClassificationEvaluator
+    from pyspark.ml.feature import VectorAssembler
+    from pyspark.sql import SparkSession
+    from pyspark.sql.functions import col, count, current_timestamp, expr, lit, mean, stddev, to_timestamp, when
+    from pyspark.sql.types import DoubleType, FloatType, IntegerType
+except ModuleNotFoundError:
+    Pipeline = PipelineModel = BinaryClassificationEvaluator = VectorAssembler = SparkSession = None
+    col = count = current_timestamp = expr = lit = mean = stddev = to_timestamp = when = None
+    DoubleType = FloatType = IntegerType = None
 
 from compliance.change_audit import append_change_audit_event
 from ml.model_repository import ModelRepository
@@ -22,6 +27,11 @@ from shared.risk_config import (
     STRUCTURING_AMOUNT_MAX_TND,
     STRUCTURING_AMOUNT_MIN_TND,
 )
+
+
+def _require_spark():
+    if SparkSession is None:
+        raise RuntimeError("Spark model training requires the optional pyspark runtime.")
 
 
 class DriftDetector:
@@ -37,6 +47,7 @@ class DriftDetector:
         """Collect samples for statistical testing"""
         import random
 
+        _require_spark()
         samples = {}
         numeric_cols = [
             field.name for field in df.schema.fields if isinstance(field.dataType, (DoubleType, IntegerType, FloatType))
@@ -55,6 +66,7 @@ class DriftDetector:
 
     def calculate_statistics(self, df):
         """Calculate statistical measures for a dataframe"""
+        _require_spark()
         stats = {}
         numeric_cols = [
             field.name for field in df.schema.fields if isinstance(field.dataType, (DoubleType, IntegerType, FloatType))
@@ -193,6 +205,7 @@ class FraudModelTrainer:
 
     @property
     def spark(self):
+        _require_spark()
         if self._spark is None:
             self._spark = SparkSession.builder.appName("TunisianFraud-ModelTrainer").getOrCreate()
         return self._spark
@@ -575,6 +588,8 @@ class FraudModelTrainer:
             raise ValueError("No valid feature columns found in training data")
 
         assembler = VectorAssembler(inputCols=feature_cols, outputCol="features", handleInvalid="skip")
+
+        from xgboost.spark import SparkXGBClassifier
 
         xgb = SparkXGBClassifier(
             featuresCol="features", labelCol="label", max_depth=6, n_estimators=100, learning_rate=0.1

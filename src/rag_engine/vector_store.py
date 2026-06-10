@@ -1,10 +1,6 @@
 # src/rag_engine/vector_store.py
 import logging
-import os
 from pathlib import Path
-
-import chromadb
-from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +66,9 @@ CTAF_REGULATIONS = [
 class CTAFVectorStore:
     def __init__(self, persist_directory="./data/vector_db"):
         try:
+            import chromadb
+            from sentence_transformers import SentenceTransformer
+
             self.client = chromadb.PersistentClient(path=persist_directory)
             self.collection = self.client.get_or_create_collection(
                 name="ctaf_regulations", metadata={"hnsw:space": "cosine"}

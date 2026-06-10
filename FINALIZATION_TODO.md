@@ -35,6 +35,7 @@ target-architecture components until separately deployed and verified.
 - [x] Make static correctness checks fail on syntax and undefined-name errors.
 - [x] Make the configured coverage threshold actually fail below 70%.
 - [x] Install all test dependencies used by collected tests.
+- [x] Keep optional Spark/RAG runtimes out of the verified-slice CI install.
 - [x] Separate required CI gates from advisory security reports.
 - [ ] Pin GitHub Actions and development tool versions.
 - [x] Add OpenAPI snapshot validation to CI.

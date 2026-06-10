@@ -2,7 +2,7 @@
 # Usage: make <target>
 # All targets are idempotent and safe to re-run.
 
-.PHONY: help setup setup-dev dev prod test test-unit lint format clean build monitor monitor-down bootstrap deploy k8s-apply k8s-dry-run migrate migrate-status cost-estimate audit-deps chaos-test backtest shadow-register shadow-status security-scan circuit-status openapi
+.PHONY: help setup setup-dev setup-ci dev prod test test-unit lint format clean build monitor monitor-down bootstrap deploy k8s-apply k8s-dry-run migrate migrate-status cost-estimate audit-deps chaos-test backtest shadow-register shadow-status security-scan circuit-status openapi
 
 # Default target
 help:
@@ -13,6 +13,7 @@ help:
 	@echo "  SETUP & BOOTSTRAP"
 	@echo "  make setup              Initialize environment, install deps"
 	@echo "  make setup-dev          Install runtime + development dependencies"
+	@echo "  make setup-ci           Install the verified-slice CI dependencies"
 	@echo "  make bootstrap          Seed database + train initial model"
 	@echo "  make bootstrap-imbalanced  Realistic 0.01% fraud rate data"
 	@echo "  make migrate            Run database schema migrations"
@@ -72,6 +73,13 @@ setup-dev:
 	pip install -r requirements-dev.txt
 	pip install -e . --no-deps
 	@echo "==> Development environment ready."
+
+setup-ci:
+	@echo "==> Installing verified-slice CI dependencies..."
+	pip install --upgrade pip
+	pip install -r requirements-ci.txt
+	pip install -e . --no-deps
+	@echo "==> CI environment ready."
 
 bootstrap:
 	@echo "==> Bootstrapping fraud detection system..."

@@ -4,12 +4,9 @@ Tests the pipeline's behavior when Kafka becomes unavailable and recovers.
 Uses Testcontainers for realistic integration testing.
 """
 
-import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-from testcontainers.kafka import KafkaContainer
 
 
 @pytest.mark.integration

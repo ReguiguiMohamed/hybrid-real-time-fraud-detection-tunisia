@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field
-from pyspark.sql.types import BooleanType, DoubleType, StringType, StructField, StructType
 
 
 class Transaction(BaseModel):
@@ -89,7 +88,7 @@ class Transaction(BaseModel):
     )
 
 
-def pydantic_to_spark_schema(model_class) -> StructType:
+def pydantic_to_spark_schema(model_class):
     """
     Convert a Pydantic model to a Spark StructType schema.
     This ensures Single Source of Truth and prevents schema duplication issues.
@@ -138,5 +137,9 @@ def pydantic_to_spark_schema(model_class) -> StructType:
     return StructType(fields)
 
 
-# Pre-defined schema for Transaction model
-TRANSACTION_SPARK_SCHEMA = pydantic_to_spark_schema(Transaction)
+def __getattr__(name):
+    if name == "TRANSACTION_SPARK_SCHEMA":
+        schema = pydantic_to_spark_schema(Transaction)
+        globals()[name] = schema
+        return schema
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -2,7 +2,17 @@
 
 import pytest
 
-from shared.schemas import TRANSACTION_SPARK_SCHEMA, Transaction, pydantic_to_spark_schema
+from shared.schemas import Transaction, pydantic_to_spark_schema
+
+try:
+    import pyspark  # noqa: F401
+
+    from shared.schemas import TRANSACTION_SPARK_SCHEMA
+
+    SPARK_AVAILABLE = True
+except ModuleNotFoundError:
+    TRANSACTION_SPARK_SCHEMA = None
+    SPARK_AVAILABLE = False
 
 
 class TestTransactionSchema:
@@ -44,6 +54,7 @@ class TestTransactionSchema:
         assert tx.fraud_seed is False
 
 
+@pytest.mark.skipif(not SPARK_AVAILABLE, reason="Spark schema tests require the optional pyspark runtime.")
 class TestSparkSchemaConversion:
     # Core fields that must always be present (subset check, not exact equality,
     # so adding new Optional fields to Transaction doesn't break this test).
