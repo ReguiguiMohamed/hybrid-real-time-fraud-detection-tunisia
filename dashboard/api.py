@@ -503,7 +503,10 @@ app = FastAPI(
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8501").split(","),
+    allow_origins=os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:8501,https://mohamedreg-amastan-fraud-shield-api.hf.space",
+    ).split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

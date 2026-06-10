@@ -115,6 +115,19 @@ model_version = Gauge(
     registry=registry,
 )
 
+# Shadow model metrics
+shadow_comparisons_total = Counter(
+    "shadow_comparisons_total",
+    "Total number of shadow model comparisons recorded",
+    registry=registry,
+)
+
+shadow_model_active = Gauge(
+    "shadow_model_active",
+    "Whether a shadow model is currently registered (1=active, 0=inactive)",
+    registry=registry,
+)
+
 # Feedback metrics
 feedback_confirmed_fraud_total = Counter(
     "feedback_confirmed_fraud_total",

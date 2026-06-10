@@ -68,3 +68,24 @@ The following risks have been reviewed, documented, and accepted for the v0.1.0 
 
 All accepted risks will be re-evaluated no later than the expiry date. If a fix or mitigation
 becomes available sooner, the risk entry will be resolved ahead of schedule.
+
+### Token Rotation Procedure
+
+Before any public demonstration or production deployment, rotate all authentication tokens:
+
+| Token | Location | Rotation Command / Procedure |
+|---|---|---|
+| `ADMIN_TOKEN` | HF Space Secrets → `ANALYST_TOKEN` env var | Generate new UUID; update in HF Space settings; update `.env.example` placeholder |
+| `ANALYST_TOKEN` | HF Space Secrets → `ANALYST_TOKEN` env var | Generate new UUID; update in HF Space settings; update `.env.example` placeholder |
+| `METRICS_TOKEN` | HF Space Secrets + Grafana Cloud | Generate new token; update both HF Space and Grafana Cloud integration simultaneously |
+| `HF_TOKEN` | GitHub Secrets → `HF_TOKEN` | Generate HF User Access Token; update GitHub repo secret |
+| `PII_SALT_KEY` | HF Space Secrets → `PII_SALT_KEY` env var | Generate 32-char random hex string; existing hashes will mismatch after rotation (plan for migration window) |
+
+**Minimum rotation cadence**: every 90 days for production deployments.
+
+**Rotation steps for HF Space**:
+1. Generate new token value (use `python -c "import uuid; print(uuid.uuid4().hex)"`)
+2. Update the environment variable in Hugging Face Space Settings → Repository Secrets
+3. If `METRICS_TOKEN`, update Grafana Cloud integration simultaneously
+4. Verify: `curl -I -H "Authorization: Bearer <new-token>" https://mohamedreg-amastan-fraud-shield-api.hf.space/api/v1/auth/whoami`
+5. Revoke the old token after 24-hour cooldown period
