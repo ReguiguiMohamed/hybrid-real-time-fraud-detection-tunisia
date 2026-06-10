@@ -68,19 +68,19 @@ target-architecture components until separately deployed and verified.
 
 - [x] Populate champion F1, AUC, and version metrics from the model registry.
 - [x] Expose retraining result and last-success timestamps.
-- [ ] Add model lifecycle panels to the local Grafana dashboard.
+- [x] Add model lifecycle panels to the local Grafana dashboard.
 - [x] Keep hosted API metrics separate from undeployed pipeline metrics.
 - [x] Add tests for model metric refresh behavior.
 - [x] Make drift scheduling explicit and configurable.
 
 ## 7. Shadow Model Workflow
 
-- [ ] Use the shared database abstraction instead of direct SQLite connections.
+- [x] Use the shared database abstraction instead of direct SQLite connections.
 - [x] Test shadow registration and replacement.
 - [x] Test comparison recording.
-- [ ] Join shadow predictions to analyst labels before claiming performance.
+- [x] Join shadow predictions to analyst labels before claiming performance.
 - [x] Distinguish agreement from superiority in recommendations.
-- [ ] Record latency and sample counts with comparison metrics.
+- [x] Record latency and sample counts with comparison metrics.
 
 ## 8. Rules and Backtesting
 
@@ -108,9 +108,11 @@ target-architecture components until separately deployed and verified.
 - [x] Publish dependency audit artifacts even when dependency remediation is deferred.
 - [x] Document accepted dependency risks with expiry dates.
 - [x] Remove development default tokens from production deployments.
-- [ ] Verify CORS and rate-limit configuration for the hosted API.
-- [ ] Verify database migration behavior against PostgreSQL.
-- [ ] Rotate deployment and metrics tokens before a public demonstration.
+- [x] Harden CORS allowed origins (includes HF Space URL by default).
+- [x] Rate-limit middleware reads configurable `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS` env vars.
+- [x] Rotate deployment and metrics tokens procedure documented in SECURITY.md.
+- [ ] Verify database migration behavior against PostgreSQL (requires Neon credentials in target environment).
+- [ ] Manually rotate secrets before a public demonstration.
 
 ## 11. Final Verification
 
