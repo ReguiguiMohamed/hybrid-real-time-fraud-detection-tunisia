@@ -82,9 +82,11 @@ ollama/
 #Claude folder
 .claude/
 
-# Session state (not for version control)
+# Session state, planning, and handoff (not for version control)
 CHECKPOINT.md
 FUTURE_WORK.md
+ROADMAP.md
+FINALIZATION_TODO.md
 TECHNICAL_INTERVIEW_PREP_HANDOFF.md
 test_end_to_end.py
 test_end_toend.py
