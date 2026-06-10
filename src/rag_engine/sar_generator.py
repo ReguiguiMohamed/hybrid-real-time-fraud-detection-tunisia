@@ -35,12 +35,8 @@ class SARGenerator:
 
     def __init__(self, ollama_url=None):
         self.vector_store = CTAFVectorStore()
-        self.ollama_url = ollama_url or os.getenv(
-            "OLLAMA_URL", "http://localhost:11434/api/generate"
-        )
-        self.audit_log_path = Path(
-            os.getenv("SAR_LLM_AUDIT_LOG", "./data/audit/sar_llm_audit.jsonl")
-        )
+        self.ollama_url = ollama_url or os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+        self.audit_log_path = Path(os.getenv("SAR_LLM_AUDIT_LOG", "./data/audit/sar_llm_audit.jsonl"))
         self._stats = {"total": 0, "validated": 0, "fallback": 0}
 
     @staticmethod
@@ -98,8 +94,7 @@ class SARGenerator:
 
     def _retrieve_context(self, tx_data: dict) -> tuple[str, list[dict]]:
         query_text = (
-            f"rules for {tx_data.get('payment_method', 'unknown')} "
-            f"in {tx_data.get('governorate', 'unknown')}"
+            f"rules for {tx_data.get('payment_method', 'unknown')} " f"in {tx_data.get('governorate', 'unknown')}"
         )
         context_result = self.vector_store.query(query_text, n_results=3)
         documents = context_result.get("documents") or [] if context_result else []
@@ -112,9 +107,7 @@ class SARGenerator:
             if not document:
                 continue
             chunk_id = (
-                first_id_batch[index]
-                if index < len(first_id_batch) and first_id_batch[index]
-                else f"retrieved_{index}"
+                first_id_batch[index] if index < len(first_id_batch) and first_id_batch[index] else f"retrieved_{index}"
             )
             chunks.append({"id": chunk_id, "text": document, "hash": self._sha256(document)})
 
@@ -175,10 +168,7 @@ class SARGenerator:
                 "record_retention_years": 5,
                 "human_approval_required": True,
             },
-            "retrieval": [
-                {"id": chunk["id"], "hash": chunk["hash"]}
-                for chunk in retrieved_chunks
-            ],
+            "retrieval": [{"id": chunk["id"], "hash": chunk["hash"]} for chunk in retrieved_chunks],
         }
 
     def _build_prompt(
@@ -191,9 +181,7 @@ class SARGenerator:
         if fact_check_issues:
             correction = (
                 "\nPrevious draft was rejected by fact checks. Correct these issues "
-                "using only the Source of Truth JSON:\n- "
-                + "\n- ".join(fact_check_issues)
-                + "\n"
+                "using only the Source of Truth JSON:\n- " + "\n- ".join(fact_check_issues) + "\n"
             )
 
         source_json = json.dumps(source_truth, indent=2, sort_keys=True, default=str)
@@ -247,22 +235,16 @@ Respond ONLY with a valid JSON object (no markdown, no commentary) with this exa
 
         expected_amount = float(transaction["amount_tnd"])
         if abs(float(report.amount_tnd) - expected_amount) > 0.01:
-            issues.append(
-                f"amount_tnd mismatch: expected {expected_amount:.2f}, got {float(report.amount_tnd):.2f}"
-            )
+            issues.append(f"amount_tnd mismatch: expected {expected_amount:.2f}, got {float(report.amount_tnd):.2f}")
 
         expected_score = float(model["fraud_probability"])
         if abs(float(report.ml_score) - expected_score) > 0.0001:
-            issues.append(
-                f"ml_score mismatch: expected {expected_score:.4f}, got {float(report.ml_score):.4f}"
-            )
+            issues.append(f"ml_score mismatch: expected {expected_score:.4f}, got {float(report.ml_score):.4f}")
 
         expected_deadline = str(compliance["filing_deadline"])
         actual_deadline = str(report.urgency_assessment.filing_deadline)
         if actual_deadline != expected_deadline:
-            issues.append(
-                f"filing_deadline mismatch: expected {expected_deadline}, got {actual_deadline}"
-            )
+            issues.append(f"filing_deadline mismatch: expected {expected_deadline}, got {actual_deadline}")
 
         text = format_sar_report(report)
         allowed_identifiers = {
@@ -270,9 +252,7 @@ Respond ONLY with a valid JSON object (no markdown, no commentary) with this exa
             for value in transaction.values()
             if isinstance(value, (str, int, float)) and str(value) not in {"", "UNKNOWN"}
         }
-        id_pattern = re.compile(
-            r"\b(?:TXN|USER|ACC|ACCT|MERCHANT|DEVICE|INV|TTN|TNC)[A-Z0-9_:-]{2,}\b"
-        )
+        id_pattern = re.compile(r"\b(?:TXN|USER|ACC|ACCT|MERCHANT|DEVICE|INV|TTN|TNC)[A-Z0-9_:-]{2,}\b")
         for token in sorted(set(id_pattern.findall(text))):
             if token not in allowed_identifiers:
                 issues.append(f"identifier not in source of truth: {token}")
@@ -312,9 +292,7 @@ Respond ONLY with a valid JSON object (no markdown, no commentary) with this exa
             from_date=datetime.now(timezone.utc).replace(tzinfo=None), business_days=10
         ).strftime("%Y-%m-%d")
         context, retrieved_chunks = self._retrieve_context(tx_data)
-        source_truth = self._build_source_of_truth(
-            tx_data, ml_score, filing_deadline, retrieved_chunks
-        )
+        source_truth = self._build_source_of_truth(tx_data, ml_score, filing_deadline, retrieved_chunks)
 
         audit_attempts = []
         fact_check_issues = []

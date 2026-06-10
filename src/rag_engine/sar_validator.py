@@ -5,11 +5,13 @@ Falls back to a deterministic template if the LLM output is malformed or halluci
 
 This ensures CTAF compliance even when the LLM produces gibberish, empty, or malicious output.
 """
+
 import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
 from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,7 @@ _FIXED_TN_HOLIDAYS = {
 def _load_islamic_holidays() -> set:
     """Load Islamic holiday dates from environment variable (ISO format, comma-separated)."""
     import os
+
     raw = os.getenv("TUNISIA_ISLAMIC_HOLIDAYS", "")
     dates = set()
     for part in raw.split(","):
@@ -61,9 +64,7 @@ def ctaf_filing_deadline(from_date: datetime = None, business_days: int = 10) ->
     days_counted = 0
 
     while days_counted < business_days:
-        current = current.replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        current = current.replace(hour=0, minute=0, second=0, microsecond=0)
         current = current + timedelta(days=1)
 
         # Skip weekends (Saturday=5, Sunday=6)
@@ -86,6 +87,7 @@ def ctaf_filing_deadline(from_date: datetime = None, business_days: int = 10) ->
 
 class SARUrgencyAssessment(BaseModel):
     """Urgency level and filing deadline for the SAR."""
+
     urgency_level: str = Field(..., description="IMMEDIATE, HIGH, STANDARD, or LOW")
     filing_deadline: str = Field(..., description="ISO-formatted deadline date")
     reason: str = Field(..., min_length=10)
@@ -102,6 +104,7 @@ class SARUrgencyAssessment(BaseModel):
 
 class SARRiskFactor(BaseModel):
     """A single risk factor observed in the transaction."""
+
     factor: str = Field(..., min_length=5, max_length=200)
     severity: str = Field(..., description="HIGH, MEDIUM, or LOW")
     evidence: str = Field(..., min_length=10)
@@ -118,6 +121,7 @@ class SARRiskFactor(BaseModel):
 
 class SARRegulatoryViolation(BaseModel):
     """A regulatory violation cited in the SAR."""
+
     regulation: str = Field(..., min_length=5, description="Applicable law, control, or verified regulatory source")
     description: str = Field(..., min_length=10)
     article: Optional[str] = Field(None, description="Specific article or section reference")
@@ -128,10 +132,13 @@ class SARReport(BaseModel):
     Validated SAR report structure.
     All fields are required for CTAF compliance.
     """
+
     transaction_id: str = Field(..., min_length=1)
     user_id: str = Field(..., min_length=1)
     generated_at: str = Field(..., description="ISO-formatted generation timestamp")
-    executive_summary: str = Field(..., min_length=30, max_length=2000, description="Concise summary of suspicious activity")
+    executive_summary: str = Field(
+        ..., min_length=30, max_length=2000, description="Concise summary of suspicious activity"
+    )
     risk_factors: list[SARRiskFactor] = Field(..., min_length=1, description="At least 1 risk factor must be cited")
     regulatory_violations: list[SARRegulatoryViolation] = Field(..., min_length=1)
     recommended_next_steps: list[str] = Field(..., min_length=1)
@@ -205,7 +212,9 @@ def validate_sar_output(raw_llm_output: str, tx_data: dict, ml_score: float) -> 
         # Add required metadata if not in LLM output
         parsed_data["transaction_id"] = parsed_data.get("transaction_id", tx_data.get("transaction_id", "unknown"))
         parsed_data["user_id"] = parsed_data.get("user_id", tx_data.get("user_id", "unknown"))
-        parsed_data["generated_at"] = parsed_data.get("generated_at", datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
+        parsed_data["generated_at"] = parsed_data.get(
+            "generated_at", datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        )
         parsed_data["ml_score"] = parsed_data.get("ml_score", ml_score)
         parsed_data["amount_tnd"] = parsed_data.get("amount_tnd", tx_data.get("amount_tnd", 0.0))
         parsed_data["governorate"] = parsed_data.get("governorate", tx_data.get("governorate", "unknown"))
@@ -220,10 +229,14 @@ def validate_sar_output(raw_llm_output: str, tx_data: dict, ml_score: float) -> 
 
     except Exception as e:
         logger.warning(f"SAR validation: LLM output failed schema validation: {e}")
-        return generate_deterministic_fallback(tx_data, ml_score, raw_llm_output, reason=f"Schema validation failed: {e}")
+        return generate_deterministic_fallback(
+            tx_data, ml_score, raw_llm_output, reason=f"Schema validation failed: {e}"
+        )
 
 
-def generate_deterministic_fallback(tx_data: dict, ml_score: float, raw_llm_output: str = None, reason: str = "LLM failure") -> SARReport:
+def generate_deterministic_fallback(
+    tx_data: dict, ml_score: float, raw_llm_output: str = None, reason: str = "LLM failure"
+) -> SARReport:
     """
     Generate a deterministic, CTAF-compliant SAR report template.
     This is the safety net when the LLM fails to produce valid output.
@@ -270,33 +283,41 @@ def generate_deterministic_fallback(tx_data: dict, ml_score: float, raw_llm_outp
     risk_factors = []
 
     if amount > 15000:
-        risk_factors.append(SARRiskFactor(
-            factor="Large transaction — enhanced AML monitoring threshold exceeded",
-            severity="HIGH",
-            evidence=f"Transaction amount {amount:.2f} TND exceeds the 15,000 TND enhanced-monitoring threshold.",
-        ))
+        risk_factors.append(
+            SARRiskFactor(
+                factor="Large transaction — enhanced AML monitoring threshold exceeded",
+                severity="HIGH",
+                evidence=f"Transaction amount {amount:.2f} TND exceeds the 15,000 TND enhanced-monitoring threshold.",
+            )
+        )
 
     if amount >= 1400 and amount <= 1500 and payment_method.lower() == "flouci":
-        risk_factors.append(SARRiskFactor(
-            factor="Potential smurfing/structuring pattern detected",
-            severity="HIGH",
-            evidence=f"Flouci payment of {amount:.2f} TND falls within smurfing range (1400-1500 TND)",
-        ))
+        risk_factors.append(
+            SARRiskFactor(
+                factor="Potential smurfing/structuring pattern detected",
+                severity="HIGH",
+                evidence=f"Flouci payment of {amount:.2f} TND falls within smurfing range (1400-1500 TND)",
+            )
+        )
 
     if payment_method.lower() == "flouci" and amount > 2000:
-        risk_factors.append(SARRiskFactor(
-            factor="D17 e-wallet threshold exceeded",
-            severity="MEDIUM",
-            evidence=f"Flouci payment of {amount:.2f} TND exceeds D17 soft limit of 2000 TND",
-        ))
+        risk_factors.append(
+            SARRiskFactor(
+                factor="D17 e-wallet threshold exceeded",
+                severity="MEDIUM",
+                evidence=f"Flouci payment of {amount:.2f} TND exceeds D17 soft limit of 2000 TND",
+            )
+        )
 
     # Always include at least one risk factor
     if not risk_factors:
-        risk_factors.append(SARRiskFactor(
-            factor="Transaction flagged by ML fraud detection model",
-            severity="MEDIUM",
-            evidence=f"ML model probability: {ml_score:.2f}. Transaction requires analyst review.",
-        ))
+        risk_factors.append(
+            SARRiskFactor(
+                factor="Transaction flagged by ML fraud detection model",
+                severity="MEDIUM",
+                evidence=f"ML model probability: {ml_score:.2f}. Transaction requires analyst review.",
+            )
+        )
 
     # Default regulatory violations
     regulatory_violations = [
@@ -392,7 +413,9 @@ def format_sar_report(report: SARReport) -> str:
     lines.append("URGENCY ASSESSMENT")
     lines.append("-" * 70)
     lines.append(f"  Level:    {report.urgency_assessment.urgency_level}")
-    lines.append(f"  Deadline: {report.urgency_assessment.filing_deadline}  (10 business days / jours ouvrables — CTAF requirement)")
+    lines.append(
+        f"  Deadline: {report.urgency_assessment.filing_deadline}  (10 business days / jours ouvrables — CTAF requirement)"
+    )
     lines.append(f"  Penalty:  Non-compliance: up to TND 50,000 fine or license revocation")
     lines.append(f"  Reason:   {report.urgency_assessment.reason}")
     lines.append("")

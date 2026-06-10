@@ -8,7 +8,9 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from confluent_kafka import Consumer, KafkaError
+
 from shared.schemas import Transaction
+
 
 def demo_consumer():
     """
@@ -21,13 +23,13 @@ def demo_consumer():
     try:
         # Create Kafka consumer
         conf = {
-            'bootstrap.servers': 'localhost:9092',
-            'group.id': 'tunisia-demo-consumer',
-            'auto.offset.reset': 'latest',
-            'enable.auto.commit': True
+            "bootstrap.servers": "localhost:9092",
+            "group.id": "tunisia-demo-consumer",
+            "auto.offset.reset": "latest",
+            "enable.auto.commit": True,
         }
         consumer = Consumer(conf)
-        consumer.subscribe(['tunisian_transactions'])
+        consumer.subscribe(["tunisian_transactions"])
 
         print("Connected! Listening for transactions...")
         print("Press Ctrl+C to stop\n")
@@ -47,7 +49,7 @@ def demo_consumer():
 
             try:
                 # Parse the transaction
-                tx_data = json.loads(msg.value().decode('utf-8'))
+                tx_data = json.loads(msg.value().decode("utf-8"))
 
                 # Validate against Pydantic schema (simulating what Spark would do)
                 transaction = Transaction(**tx_data)
@@ -76,8 +78,9 @@ def demo_consumer():
         print("2. Topic 'tunisian_transactions' exists")
         print("3. Producer is sending data")
     finally:
-        if 'consumer' in locals():
+        if "consumer" in locals():
             consumer.close()
+
 
 if __name__ == "__main__":
     demo_consumer()

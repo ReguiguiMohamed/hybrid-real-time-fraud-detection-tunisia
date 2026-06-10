@@ -122,7 +122,14 @@ Submit multiple feedback entries at once.
 
 #### `POST /api/v1/retrain-model/` [Admin]
 
-Trigger champion/challenger retraining in the background using accumulated feedback.
+Queue champion/challenger retraining using accumulated feedback. Returns `202`
+with a job ID. PostgreSQL deployments disable this endpoint by default because
+the hosted API image is not a Spark training runtime.
+
+#### `GET /api/v1/retrain-model/status/{job_id}` [Admin]
+
+Return the observable state of a queued job: `queued`, `running`, `no_change`,
+`promoted`, or `failed`.
 
 ### Legacy Endpoints (Deprecated)
 

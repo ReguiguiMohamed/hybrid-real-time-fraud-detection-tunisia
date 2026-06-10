@@ -1,34 +1,30 @@
 # dashboard/api.py
-from contextlib import asynccontextmanager, contextmanager
-from collections import defaultdict
+import hashlib
+import json
+import logging
+import os
+import threading
 import time as _time
+import uuid
+from collections import defaultdict
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Depends, Header, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel, field_validator
-from typing import Optional, List, Dict, Any
-import os
-import sys
-from datetime import datetime, timezone, timedelta
-import threading
-import hashlib
-import logging
-import json
-
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-from shared.database import SessionLocal, engine, Base, DATABASE_URL
-from shared.utils import retry_failed_alerts
-
-from shared.logging_config import setup_logging
-from rag_engine.sar_validator import ctaf_filing_deadline
-
-sys.path.append(os.path.dirname(__file__))
-from monitoring import ForensicAnalyticEngine
 from sqlalchemy import text
+
+from dashboard.monitoring import ForensicAnalyticEngine
+from rag_engine.sar_validator import ctaf_filing_deadline
+from shared.database import DATABASE_URL, Base, SessionLocal, engine
+from shared.logging_config import setup_logging
+from shared.utils import retry_failed_alerts
+from shared.version import RELEASE_CHANNEL, __version__
 
 # Initialize structured logging
 setup_logging(service_name="fraud-api")
@@ -53,8 +49,10 @@ if not ADMIN_TOKEN:
 ANALYST_TOKEN_HASH = hashlib.sha256(ANALYST_TOKEN.encode()).hexdigest()
 ADMIN_TOKEN_HASH = hashlib.sha256(ADMIN_TOKEN.encode()).hexdigest()
 
+
 def require_scopes(scopes):
     """Verify the API token against required scopes."""
+
     def verifier(credentials: HTTPAuthorizationCredentials = Depends(security)):
         token_hash = hashlib.sha256(credentials.credentials.encode()).hexdigest()
         if token_hash == ADMIN_TOKEN_HASH:
@@ -66,13 +64,16 @@ def require_scopes(scopes):
         if role not in scopes:
             raise HTTPException(status_code=403, detail="Forbidden")
         return {"role": role}
+
     return verifier
+
 
 # Database setup
 # The app uses shared.database.SessionLocal for all DB operations
 # which connects to either local SQLite or a remote Postgres URL.
 # Initialisation is now handled by Base.metadata.create_all(engine)
 # to ensure schema exists, though Alembic migrations are preferred for prod.
+
 
 @contextmanager
 def get_db_session():
@@ -90,11 +91,13 @@ def parse_float_env(name: str, default: float) -> float:
     except ValueError:
         return default
 
+
 def parse_int_env(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
     except ValueError:
         return default
+
 
 def parse_datetime_value(value: Optional[str]) -> Optional[datetime]:
     if not value:
@@ -120,10 +123,12 @@ def parse_datetime_value(value: Optional[str]) -> Optional[datetime]:
             continue
     return None
 
+
 def format_percent(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
     return round((numerator / denominator) * 100.0, 2)
+
 
 def metrics_path_label(request: Request) -> str:
     route = request.scope.get("route")
@@ -136,12 +141,14 @@ def metrics_path_label(request: Request) -> str:
         return path
     return "unmatched"
 
+
 def require_metrics_token(request: Request):
     if not METRICS_TOKEN and (DATABASE_BACKEND == "sqlite" or METRICS_ALLOW_PUBLIC):
         return
     expected = f"Bearer {METRICS_TOKEN}"
     if request.headers.get("authorization") != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 def refresh_database_metrics():
     try:
@@ -156,13 +163,30 @@ def refresh_database_metrics():
 
             feedback_count = db.execute(text("SELECT COUNT(*) FROM feedback_labels")).scalar() or 0
             review_queue_count = db.execute(text("SELECT COUNT(*) FROM high_risk_alerts")).scalar() or 0
+            champion = db.execute(text("""
+                SELECT version_id, f1_score, auc
+                FROM model_registry
+                WHERE is_champion = 1
+                ORDER BY promoted_at DESC
+                LIMIT 1
+            """)).fetchone()
 
         db_feedback_total.set(feedback_count)
         db_review_queue_total.set(review_queue_count)
+        model_champion_info.clear()
+        if champion:
+            version_id, f1_score, auc = champion
+            model_champion_f1.set(f1_score or 0.0)
+            model_champion_auc.set(auc or 0.0)
+            model_champion_info.labels(version_id=version_id).set(1)
+        else:
+            model_champion_f1.set(0.0)
+            model_champion_auc.set(0.0)
         db_metrics_scrape_success.set(1)
     except Exception:
         db_metrics_scrape_success.set(0)
         logger.exception("Unable to refresh database metrics")
+
 
 RANDOM_SAMPLE_RATE = max(0.0, min(parse_float_env("RANDOM_SAMPLE_RATE", 0.01), 1.0))
 ENVIRONMENT = os.getenv("DEPLOYMENT_ENVIRONMENT", "production")
@@ -221,6 +245,22 @@ db_metrics_scrape_success = Gauge(
     "Whether the latest metrics scrape could read the SQLAlchemy database.",
     registry=prometheus_registry,
 )
+model_champion_f1 = Gauge(
+    "amastan_model_champion_f1_score",
+    "Registered F1 score for the current champion model.",
+    registry=prometheus_registry,
+)
+model_champion_auc = Gauge(
+    "amastan_model_champion_auc",
+    "Registered AUC score for the current champion model.",
+    registry=prometheus_registry,
+)
+model_champion_info = Gauge(
+    "amastan_model_champion_info",
+    "Current champion model identity.",
+    ["version_id"],
+    registry=prometheus_registry,
+)
 
 api_info.labels(
     service="fraud-detection-command-center-api",
@@ -239,8 +279,9 @@ FEATURE_LABELS = {
     "travel_risk": "Travel risk flag",
     "high_value_risk": "High value risk flag",
     "d17_risk": "D17 Flouci risk flag",
-    "risk_score": "Composite risk score"
+    "risk_score": "Composite risk score",
 }
+
 
 def get_champion_model_path():
     with get_db_session() as db:
@@ -252,6 +293,7 @@ def get_champion_model_path():
         LIMIT 1
         """)).fetchone()
         return row[0] if row else None
+
 
 class FeedbackRequest(BaseModel):
     transaction_id: str
@@ -278,21 +320,26 @@ class FeedbackRequest(BaseModel):
 class BatchFeedbackRequest(BaseModel):
     feedback_items: List[FeedbackRequest]
 
+
 def log_audit_event(entity_type, entity_id, action, user_id, previous_state, new_state):
     with get_db_session() as db:
-        db.execute(text("""
+        db.execute(
+            text("""
             INSERT INTO audit_logs
             (entity_type, entity_id, action, user_id, previous_state, new_state)
             VALUES (:entity_type, :entity_id, :action, :user_id, :previous_state, :new_state)
-        """), {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "action": action,
-            "user_id": user_id,
-            "previous_state": previous_state,
-            "new_state": new_state,
-        })
+        """),
+            {
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "action": action,
+                "user_id": user_id,
+                "previous_state": previous_state,
+                "new_state": new_state,
+            },
+        )
         db.commit()
+
 
 class TransactionAlert(BaseModel):
     transaction_id: str
@@ -309,6 +356,7 @@ class TransactionAlert(BaseModel):
     anomaly_score: Optional[float] = None
     anomaly_model_version: Optional[str] = None
     ingestion_latency: Optional[float] = None
+
 
 def parse_feature_importance(feature_payload, limit=3):
     if not feature_payload:
@@ -341,10 +389,11 @@ def parse_feature_importance(feature_payload, limit=3):
         {
             "feature": feature_name,
             "description": FEATURE_LABELS.get(feature_name, feature_name),
-            "score": round(score, 4) if score is not None else None
+            "score": round(score, 4) if score is not None else None,
         }
         for feature_name, score in top_features
     ]
+
 
 def parse_shap_top5(shap_payload):
     if not shap_payload:
@@ -370,24 +419,26 @@ def parse_shap_top5(shap_payload):
             abs_impact = float(item.get("abs_impact", abs(impact)))
         except (TypeError, ValueError):
             continue
-        normalized.append({
-            "feature": feature_name,
-            "description": FEATURE_LABELS.get(feature_name, feature_name),
-            "value": value,
-            "impact": impact,
-            "abs_impact": abs_impact,
-            "direction": item.get("direction", "increases_risk" if impact >= 0 else "decreases_risk"),
-            "confidence": item.get("confidence"),
-        })
+        normalized.append(
+            {
+                "feature": feature_name,
+                "description": FEATURE_LABELS.get(feature_name, feature_name),
+                "value": value,
+                "impact": impact,
+                "abs_impact": abs_impact,
+                "direction": item.get("direction", "increases_risk" if impact >= 0 else "decreases_risk"),
+                "confidence": item.get("confidence"),
+            }
+        )
 
     normalized.sort(key=lambda item: item["abs_impact"], reverse=True)
     return normalized[:5]
+
 
 # Initialize monitoring with the database path
 # If using SQLite, we pass the local path; otherwise, a placeholder.
 db_path_for_monitoring = DATABASE_URL if DATABASE_URL.startswith("sqlite") else "./data/feedback.db"
 monitoring_engine = ForensicAnalyticEngine(db_path_for_monitoring)
-
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +452,7 @@ RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 # --- Database initialisation ---
 # The database schema is managed via Base.metadata.create_all(engine)
 # triggered in the lifespan context manager.
+
 
 # ---------------------------------------------------------------------------
 # Lifespan (modern startup/shutdown)
@@ -426,7 +478,7 @@ async def lifespan(application: FastAPI):
 app = FastAPI(
     title="Tunisian Fraud Detection - Command Center API",
     description="Real-time fraud detection and CTAF-compliant reporting for Tunisian digital payments",
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -448,9 +500,7 @@ async def rate_limit_middleware(request: Request, call_next):
     start_time = _time.perf_counter()
 
     # Clean old entries
-    _rate_limit_store[client_ip] = [
-        t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW
-    ]
+    _rate_limit_store[client_ip] = [t for t in _rate_limit_store[client_ip] if now - t < RATE_LIMIT_WINDOW]
 
     path_label = metrics_path_label(request)
     if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
@@ -496,6 +546,8 @@ async def rate_limit_middleware(request: Request, call_next):
 # API Router (all business endpoints under /api/v1/)
 # ---------------------------------------------------------------------------
 router = APIRouter(prefix="/api/v1", tags=["v1"])
+_retraining_jobs = {}
+_retraining_jobs_lock = threading.Lock()
 
 
 @router.get("/auth/whoami")
@@ -512,11 +564,18 @@ async def whoami(user_id: Optional[str] = Header(None), auth=Depends(require_sco
             "review_queue": "/api/v1/alerts/review-queue/",
             "branches": "/api/v1/branches/",
             "compliance_kpis": "/api/v1/compliance/kpis/",
-            "model_performance": "/api/v1/monitoring/model-performance/"
-        }
+            "model_performance": "/api/v1/monitoring/model-performance/",
+        },
     }
 
+
 def start_dlq_retry_worker():
+    default_enabled = DATABASE_BACKEND == "sqlite"
+    enabled = os.getenv("DLQ_RETRY_ENABLED", str(default_enabled)).lower() in {"1", "true", "yes"}
+    if not enabled:
+        logger.info("DLQ retry worker disabled")
+        return
+
     if getattr(app.state, "dlq_retry_thread", None) and app.state.dlq_retry_thread.is_alive():
         return
 
@@ -537,8 +596,11 @@ def start_dlq_retry_worker():
     app.state.dlq_retry_thread = thread
     thread.start()
 
+
 @router.post("/feedback/")
-async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
+async def submit_feedback(
+    feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))
+):
     """Endpoint to receive analyst feedback on fraud predictions"""
     try:
         with get_db_session() as db:
@@ -550,54 +612,66 @@ async def submit_feedback(feedback: FeedbackRequest, user_id: Optional[str] = He
                 ).fetchone()
                 branch_id = alert[0] if alert else None
 
-            previous_feedback = db.execute(text("""
+            previous_feedback = db.execute(
+                text("""
                 SELECT analyst_label, analyst_comment
                 FROM feedback_labels
                 WHERE transaction_id = :transaction_id
                 ORDER BY timestamp DESC
                 LIMIT 1
-            """), {"transaction_id": feedback.transaction_id}).fetchone()
+            """),
+                {"transaction_id": feedback.transaction_id},
+            ).fetchone()
 
-            db.execute(text("""
+            db.execute(
+                text("""
                 INSERT INTO feedback_labels
                 (transaction_id, analyst_label, analyst_comment, analyst_id, branch_id)
                 VALUES (:transaction_id, :analyst_label, :analyst_comment, :analyst_id, :branch_id)
-            """), {
-                "transaction_id": feedback.transaction_id,
-                "analyst_label": feedback.analyst_label,
-                "analyst_comment": feedback.analyst_comment,
-                "analyst_id": user_id or auth["role"],
-                "branch_id": branch_id,
-            })
+            """),
+                {
+                    "transaction_id": feedback.transaction_id,
+                    "analyst_label": feedback.analyst_label,
+                    "analyst_comment": feedback.analyst_comment,
+                    "analyst_id": user_id or auth["role"],
+                    "branch_id": branch_id,
+                },
+            )
             db.commit()
 
         previous_state = None
         if previous_feedback:
-            previous_state = json.dumps({
-                "analyst_label": previous_feedback[0],
-                "analyst_comment": previous_feedback[1]
-            })
-        new_state = json.dumps({
-            "analyst_label": feedback.analyst_label,
-            "analyst_comment": feedback.analyst_comment,
-            "branch_id": branch_id
-        })
-        log_audit_event(
-            "ALERT",
-            feedback.transaction_id,
-            "CLASSIFY",
-            user_id or "unknown",
-            previous_state,
-            new_state
+            previous_state = json.dumps(
+                {"analyst_label": previous_feedback[0], "analyst_comment": previous_feedback[1]}
+            )
+        new_state = json.dumps(
+            {
+                "analyst_label": feedback.analyst_label,
+                "analyst_comment": feedback.analyst_comment,
+                "branch_id": branch_id,
+            }
         )
+        log_audit_event("ALERT", feedback.transaction_id, "CLASSIFY", user_id or "unknown", previous_state, new_state)
 
-        return {"status": "success", "message": "Feedback recorded successfully", "_links": {"feedback": "/api/v1/feedback/", "alert": f"/api/v1/alerts/{feedback.transaction_id}/explain", "stats": "/api/v1/stats/"}}
+        return {
+            "status": "success",
+            "message": "Feedback recorded successfully",
+            "_links": {
+                "feedback": "/api/v1/feedback/",
+                "alert": f"/api/v1/alerts/{feedback.transaction_id}/explain",
+                "stats": "/api/v1/stats/",
+            },
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/feedback/batch/")
-async def submit_batch_feedback(batch: BatchFeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))):
+async def submit_batch_feedback(
+    batch: BatchFeedbackRequest,
+    user_id: Optional[str] = Header(None),
+    auth=Depends(require_scopes({"analyst", "admin"})),
+):
     """Submit multiple feedback entries at once."""
     results = []
     for item in batch.feedback_items:
@@ -611,46 +685,42 @@ async def submit_batch_feedback(batch: BatchFeedbackRequest, user_id: Optional[s
                     ).fetchone()
                     branch_id = alert[0] if alert else None
 
-                previous_feedback = db.execute(text("""
+                previous_feedback = db.execute(
+                    text("""
                     SELECT analyst_label, analyst_comment
                     FROM feedback_labels
                     WHERE transaction_id = :transaction_id
                     ORDER BY timestamp DESC
                     LIMIT 1
-                """), {"transaction_id": item.transaction_id}).fetchone()
+                """),
+                    {"transaction_id": item.transaction_id},
+                ).fetchone()
 
-                db.execute(text("""
+                db.execute(
+                    text("""
                     INSERT INTO feedback_labels
                     (transaction_id, analyst_label, analyst_comment, analyst_id, branch_id)
                     VALUES (:transaction_id, :analyst_label, :analyst_comment, :analyst_id, :branch_id)
-                """), {
-                    "transaction_id": item.transaction_id,
-                    "analyst_label": item.analyst_label,
-                    "analyst_comment": item.analyst_comment,
-                    "analyst_id": user_id or auth["role"],
-                    "branch_id": branch_id,
-                })
+                """),
+                    {
+                        "transaction_id": item.transaction_id,
+                        "analyst_label": item.analyst_label,
+                        "analyst_comment": item.analyst_comment,
+                        "analyst_id": user_id or auth["role"],
+                        "branch_id": branch_id,
+                    },
+                )
                 db.commit()
 
             previous_state = None
             if previous_feedback:
-                previous_state = json.dumps({
-                    "analyst_label": previous_feedback[0],
-                    "analyst_comment": previous_feedback[1]
-                })
-            new_state = json.dumps({
-                "analyst_label": item.analyst_label,
-                "analyst_comment": item.analyst_comment,
-                "branch_id": branch_id
-            })
-            log_audit_event(
-                "ALERT",
-                item.transaction_id,
-                "CLASSIFY",
-                user_id or "unknown",
-                previous_state,
-                new_state
+                previous_state = json.dumps(
+                    {"analyst_label": previous_feedback[0], "analyst_comment": previous_feedback[1]}
+                )
+            new_state = json.dumps(
+                {"analyst_label": item.analyst_label, "analyst_comment": item.analyst_comment, "branch_id": branch_id}
             )
+            log_audit_event("ALERT", item.transaction_id, "CLASSIFY", user_id or "unknown", previous_state, new_state)
             results.append({"transaction_id": item.transaction_id, "status": "success"})
         except Exception as e:
             results.append({"transaction_id": item.transaction_id, "status": "error", "detail": str(e)})
@@ -663,11 +733,18 @@ async def submit_batch_feedback(batch: BatchFeedbackRequest, user_id: Optional[s
         "success_count": success_count,
         "error_count": error_count,
         "results": results,
-        "_links": {"feedback": "/api/v1/feedback/", "feedback_batch": "/api/v1/feedback/batch/", "stats": "/api/v1/stats/"}
+        "_links": {
+            "feedback": "/api/v1/feedback/",
+            "feedback_batch": "/api/v1/feedback/batch/",
+            "stats": "/api/v1/stats/",
+        },
     }
 
+
 @router.get("/alerts/high-risk/")
-async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
+async def get_high_risk_alerts(
+    limit: int = 50, branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))
+):
     """Endpoint to fetch high-risk alerts for the dashboard"""
     try:
         query = "SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk') AS alert_type, shap_top5 FROM high_risk_alerts WHERE COALESCE(alert_type, 'high_risk') = 'high_risk' AND ml_probability > 0.85"
@@ -682,20 +759,35 @@ async def get_high_risk_alerts(limit: int = 50, branch_id: Optional[str] = None,
 
         alerts = []
         for row in rows:
-            alerts.append({
-                "transaction_id": row[0], "user_id": row[1], "amount_tnd": row[2], "governorate": row[3],
-                "payment_method": row[4], "branch_id": row[5], "timestamp": row[6], "ml_probability": row[7],
-                "sar_report": row[8], "alert_type": row[9], "shap_top5": parse_shap_top5(row[10])
-            })
+            alerts.append(
+                {
+                    "transaction_id": row[0],
+                    "user_id": row[1],
+                    "amount_tnd": row[2],
+                    "governorate": row[3],
+                    "payment_method": row[4],
+                    "branch_id": row[5],
+                    "timestamp": row[6],
+                    "ml_probability": row[7],
+                    "sar_report": row[8],
+                    "alert_type": row[9],
+                    "shap_top5": parse_shap_top5(row[10]),
+                }
+            )
         db_readback_total.labels(endpoint="alerts_high_risk", result="success").inc()
         return alerts
     except Exception as e:
         db_readback_total.labels(endpoint="alerts_high_risk", result="error").inc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/alerts/review-queue/")
-async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, branch_id: Optional[str] = None,
-                           auth=Depends(require_scopes({"analyst", "admin"}))):
+async def get_review_queue(
+    limit: int = 100,
+    alert_type: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    auth=Depends(require_scopes({"analyst", "admin"})),
+):
     """Endpoint to fetch review queue alerts, including random samples"""
     try:
         query = "SELECT transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk') AS alert_type, shap_top5 FROM high_risk_alerts"
@@ -715,24 +807,40 @@ async def get_review_queue(limit: int = 100, alert_type: Optional[str] = None, b
             rows = db.execute(text(query), params).fetchall()
         alerts = []
         for row in rows:
-            alerts.append({
-                "transaction_id": row[0], "user_id": row[1], "amount_tnd": row[2], "governorate": row[3],
-                "payment_method": row[4], "branch_id": row[5], "timestamp": row[6], "ml_probability": row[7],
-                "sar_report": row[8], "alert_type": row[9], "shap_top5": parse_shap_top5(row[10])
-            })
+            alerts.append(
+                {
+                    "transaction_id": row[0],
+                    "user_id": row[1],
+                    "amount_tnd": row[2],
+                    "governorate": row[3],
+                    "payment_method": row[4],
+                    "branch_id": row[5],
+                    "timestamp": row[6],
+                    "ml_probability": row[7],
+                    "sar_report": row[8],
+                    "alert_type": row[9],
+                    "shap_top5": parse_shap_top5(row[10]),
+                }
+            )
         return alerts
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/branches/")
 async def list_branches(auth=Depends(require_scopes({"analyst", "admin"}))):
     """List all distinct branch IDs that have triggered alerts."""
     try:
         with get_db_session() as db:
-            rows = db.execute(text("SELECT DISTINCT branch_id FROM high_risk_alerts WHERE branch_id IS NOT NULL AND branch_id != '' ORDER BY branch_id")).fetchall()
+            rows = db.execute(
+                text(
+                    "SELECT DISTINCT branch_id FROM high_risk_alerts WHERE branch_id IS NOT NULL AND branch_id != '' ORDER BY branch_id"
+                )
+            ).fetchall()
         return [row[0] for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/stats/")
 async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
@@ -741,18 +849,24 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
         with get_db_session() as db:
             params = {"branch_id": branch_id} if branch_id else {}
             branch_where = "WHERE branch_id = :branch_id" if branch_id else ""
-            total_feedback = db.execute(
-                text(f"SELECT COUNT(*) FROM feedback_labels {branch_where}"),
-                params,
-            ).scalar() or 0
+            total_feedback = (
+                db.execute(
+                    text(f"SELECT COUNT(*) FROM feedback_labels {branch_where}"),
+                    params,
+                ).scalar()
+                or 0
+            )
 
-            label_counts = dict(db.execute(
-                text(f"SELECT analyst_label, COUNT(*) FROM feedback_labels {branch_where} GROUP BY analyst_label"),
-                params,
-            ).fetchall())
+            label_counts = dict(
+                db.execute(
+                    text(f"SELECT analyst_label, COUNT(*) FROM feedback_labels {branch_where} GROUP BY analyst_label"),
+                    params,
+                ).fetchall()
+            )
 
             if branch_id:
-                label_rows = db.execute(text("""
+                label_rows = db.execute(
+                    text("""
                 SELECT COALESCE(hra.alert_type, 'unknown') AS alert_type,
                        fl.analyst_label,
                        COUNT(*)
@@ -761,7 +875,9 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
                 WHERE fl.analyst_label IS NOT NULL
                   AND fl.branch_id = :branch_id
                 GROUP BY alert_type, fl.analyst_label
-                """), params).fetchall()
+                """),
+                    params,
+                ).fetchall()
             else:
                 label_rows = db.execute(text("""
                 SELECT COALESCE(hra.alert_type, 'unknown') AS alert_type,
@@ -777,40 +893,64 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
                 label_counts_by_type.setdefault(alert_type_value, {})[analyst_label] = count
 
             branch_alert_clause = "AND branch_id = :branch_id" if branch_id else ""
-            high_risk_count = db.execute(text(f"""
+            high_risk_count = (
+                db.execute(
+                    text(f"""
                 SELECT COUNT(*) FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = 'high_risk'
                   AND ml_probability > 0.85
                   {branch_alert_clause}
-            """), params).scalar() or 0
-            random_sample_count = db.execute(text(f"""
+            """),
+                    params,
+                ).scalar()
+                or 0
+            )
+            random_sample_count = (
+                db.execute(
+                    text(f"""
                 SELECT COUNT(*) FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = 'random_sample'
                   {branch_alert_clause}
-            """), params).scalar() or 0
-            uncertainty_sample_count = db.execute(text(f"""
+            """),
+                    params,
+                ).scalar()
+                or 0
+            )
+            uncertainty_sample_count = (
+                db.execute(
+                    text(f"""
                 SELECT COUNT(*) FROM high_risk_alerts
                 WHERE COALESCE(alert_type, 'high_risk') = 'uncertainty_sample'
                   {branch_alert_clause}
-            """), params).scalar() or 0
+            """),
+                    params,
+                ).scalar()
+                or 0
+            )
             review_where = "WHERE branch_id = :branch_id" if branch_id else ""
-            review_queue_total = db.execute(
-                text(f"SELECT COUNT(*) FROM high_risk_alerts {review_where}"),
-                params,
-            ).scalar() or 0
+            review_queue_total = (
+                db.execute(
+                    text(f"SELECT COUNT(*) FROM high_risk_alerts {review_where}"),
+                    params,
+                ).scalar()
+                or 0
+            )
 
         # Calculate precision based on high-risk alerts only
         high_risk_counts = label_counts_by_type.get("high_risk", {})
         confirmed_fraud = high_risk_counts.get("Confirmed Fraud", 0)
         false_positive = high_risk_counts.get("False Positive", 0)
-        high_risk_precision = confirmed_fraud / (confirmed_fraud + false_positive) if (confirmed_fraud + false_positive) > 0 else 0
+        high_risk_precision = (
+            confirmed_fraud / (confirmed_fraud + false_positive) if (confirmed_fraud + false_positive) > 0 else 0
+        )
 
         random_sample_counts = label_counts_by_type.get("random_sample", {})
         random_sample_fraud = random_sample_counts.get("Confirmed Fraud", 0)
         random_sample_non_fraud = random_sample_counts.get("False Positive", 0)
         random_sample_fraud_rate = (
             random_sample_fraud / (random_sample_fraud + random_sample_non_fraud)
-            if (random_sample_fraud + random_sample_non_fraud) > 0 else 0
+            if (random_sample_fraud + random_sample_non_fraud) > 0
+            else 0
         )
 
         return {
@@ -832,11 +972,12 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
                 "compliance_kpis": "/api/v1/compliance/kpis/",
                 "model_performance": "/api/v1/monitoring/model-performance/",
                 "ctaf_export": "/api/v1/alerts/ctaf-export",
-                "branches": "/api/v1/branches/"
-            }
+                "branches": "/api/v1/branches/",
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/compliance/kpis/")
 async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
@@ -849,22 +990,31 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
         params = {"branch_id": branch_id, "since_30d": since_30d} if branch_id else {"since_30d": since_30d}
 
         with get_db_session() as db:
-            sar_reports_30d = db.execute(text(f"""
+            sar_reports_30d = (
+                db.execute(
+                    text(f"""
             SELECT COUNT(*)
             FROM high_risk_alerts
             WHERE sar_report IS NOT NULL
               AND TRIM(sar_report) != ''
               AND created_at >= :since_30d
               {branch_clause}
-            """), params).scalar() or 0
+            """),
+                    params,
+                ).scalar()
+                or 0
+            )
 
-            filed_rows = db.execute(text(f"""
+            filed_rows = db.execute(
+                text(f"""
             SELECT transaction_id, timestamp, created_at
             FROM high_risk_alerts
             WHERE sar_report IS NOT NULL
               AND TRIM(sar_report) != ''
               {branch_clause}
-            """), params).fetchall()
+            """),
+                params,
+            ).fetchall()
 
             on_time = 0
             evaluated_sars = 0
@@ -877,13 +1027,16 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
                 if filed_at <= ctaf_filing_deadline(from_date=detected_at, business_days=10):
                     on_time += 1
 
-            pending_rows = db.execute(text(f"""
+            pending_rows = db.execute(
+                text(f"""
             SELECT transaction_id, timestamp
             FROM high_risk_alerts
             WHERE COALESCE(alert_type, 'high_risk') IN ('high_risk', 'SANCTIONS_HIT')
               AND (sar_report IS NULL OR TRIM(sar_report) = '')
               {branch_clause}
-            """), params).fetchall()
+            """),
+                params,
+            ).fetchall()
 
             overdue_sars = []
             for transaction_id, detection_timestamp in pending_rows:
@@ -892,29 +1045,40 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
                     continue
                 deadline = ctaf_filing_deadline(from_date=detected_at, business_days=10)
                 if now > deadline:
-                    overdue_sars.append({
-                        "transaction_id": transaction_id,
-                        "detected_at": detected_at.isoformat(),
-                        "deadline": deadline.isoformat(),
-                    })
+                    overdue_sars.append(
+                        {
+                            "transaction_id": transaction_id,
+                            "detected_at": detected_at.isoformat(),
+                            "deadline": deadline.isoformat(),
+                        }
+                    )
 
-            sanctions_hits_30d = db.execute(text(f"""
+            sanctions_hits_30d = (
+                db.execute(
+                    text(f"""
             SELECT COUNT(*)
             FROM high_risk_alerts
             WHERE COALESCE(alert_type, 'high_risk') = 'SANCTIONS_HIT'
               AND created_at >= :since_30d
               {branch_clause}
-            """), params).scalar() or 0
+            """),
+                    params,
+                ).scalar()
+                or 0
+            )
 
             if branch_id:
-                feedback_rows = db.execute(text("""
+                feedback_rows = db.execute(
+                    text("""
                 SELECT fl.analyst_label, COUNT(*)
                 FROM feedback_labels fl
                 JOIN high_risk_alerts hra ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IN ('Confirmed Fraud', 'False Positive')
                   AND fl.branch_id = :branch_id
                 GROUP BY fl.analyst_label
-                """), params).fetchall()
+                """),
+                    params,
+                ).fetchall()
             else:
                 feedback_rows = db.execute(text("""
                 SELECT analyst_label, COUNT(*)
@@ -927,7 +1091,8 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
             false_positives = feedback_counts.get("False Positive", 0)
 
             if branch_id:
-                pkyc_rows = db.execute(text("""
+                pkyc_rows = db.execute(
+                    text("""
                 SELECT pt.trigger_reason, COUNT(*)
                 FROM pkyc_triggers pt
                 JOIN high_risk_alerts hra ON hra.transaction_id = pt.transaction_id
@@ -935,18 +1100,25 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
                   AND hra.branch_id = :branch_id
                 GROUP BY pt.trigger_reason
                 ORDER BY COUNT(*) DESC, pt.trigger_reason
-                """), {**params, "since_30d_text": since_30d.isoformat()}).fetchall()
+                """),
+                    {**params, "since_30d_text": since_30d.isoformat()},
+                ).fetchall()
             else:
-                pkyc_rows = db.execute(text("""
+                pkyc_rows = db.execute(
+                    text("""
                 SELECT trigger_reason, COUNT(*)
                 FROM pkyc_triggers
                 WHERE timestamp >= :since_30d_text
                 GROUP BY trigger_reason
                 ORDER BY COUNT(*) DESC, trigger_reason
-                """), {"since_30d_text": since_30d.isoformat()}).fetchall()
+                """),
+                    {"since_30d_text": since_30d.isoformat()},
+                ).fetchall()
             pkyc_by_reason = dict(pkyc_rows)
 
-            accounts_by_tier = dict(db.execute(text(f"""
+            accounts_by_tier = dict(
+                db.execute(
+                    text(f"""
             SELECT
                 CASE
                     WHEN ml_probability >= 0.85 THEN 'CRITICAL'
@@ -962,7 +1134,10 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
               AND created_at >= :since_30d
               {branch_clause}
             GROUP BY risk_tier
-            """), params).fetchall())
+            """),
+                    params,
+                ).fetchall()
+            )
 
         return {
             "window_days": 30,
@@ -983,6 +1158,7 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/alerts/add/")
 async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scopes({"admin"}))):
     """Endpoint to add high-risk alerts from the streaming pipeline"""
@@ -999,7 +1175,8 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
                 alerts_ingested_total.labels(alert_type=alert_type, result="duplicate").inc()
                 return {"status": "success", "message": "Alert already exists"}
 
-            db.execute(text("""
+            db.execute(
+                text("""
                 INSERT INTO high_risk_alerts
                 (transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id,
                  timestamp, ml_probability, sar_report, alert_type, shap_top5,
@@ -1007,22 +1184,24 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
                 VALUES (:transaction_id, :user_id, :amount_tnd, :governorate, :payment_method,
                         :branch_id, :timestamp, :ml_probability, :sar_report, :alert_type,
                         :shap_top5, :anomaly_score, :anomaly_model_version, :ingestion_latency)
-            """), {
-                "transaction_id": alert.transaction_id,
-                "user_id": alert.user_id,
-                "amount_tnd": alert.amount_tnd,
-                "governorate": alert.governorate,
-                "payment_method": alert.payment_method,
-                "branch_id": alert.branch_id,
-                "timestamp": alert.timestamp,
-                "ml_probability": alert.ml_probability,
-                "sar_report": alert.sar_report,
-                "alert_type": alert_type,
-                "shap_top5": shap_payload,
-                "anomaly_score": alert.anomaly_score,
-                "anomaly_model_version": alert.anomaly_model_version,
-                "ingestion_latency": alert.ingestion_latency,
-            })
+            """),
+                {
+                    "transaction_id": alert.transaction_id,
+                    "user_id": alert.user_id,
+                    "amount_tnd": alert.amount_tnd,
+                    "governorate": alert.governorate,
+                    "payment_method": alert.payment_method,
+                    "branch_id": alert.branch_id,
+                    "timestamp": alert.timestamp,
+                    "ml_probability": alert.ml_probability,
+                    "sar_report": alert.sar_report,
+                    "alert_type": alert_type,
+                    "shap_top5": shap_payload,
+                    "anomaly_score": alert.anomaly_score,
+                    "anomaly_model_version": alert.anomaly_model_version,
+                    "ingestion_latency": alert.ingestion_latency,
+                },
+            )
             db.commit()
 
         alerts_ingested_total.labels(alert_type=alert_type, result="success").inc()
@@ -1031,20 +1210,24 @@ async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scop
         alerts_ingested_total.labels(alert_type=alert.alert_type or "high_risk", result="error").inc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/monitoring/model-performance/")
 async def get_model_performance(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Get model performance metrics based on human feedback"""
     try:
         with get_db_session() as db:
             if branch_id:
-                prob_label_pairs = db.execute(text("""
+                prob_label_pairs = db.execute(
+                    text("""
                 SELECT hra.ml_probability, COALESCE(hra.alert_type, 'high_risk'), fl.analyst_label
                 FROM high_risk_alerts hra
                 JOIN feedback_labels fl ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IS NOT NULL
                   AND COALESCE(hra.alert_type, 'high_risk') IN ('high_risk', 'random_sample')
                   AND fl.branch_id = :branch_id
-                """), {"branch_id": branch_id}).fetchall()
+                """),
+                    {"branch_id": branch_id},
+                ).fetchall()
             else:
                 prob_label_pairs = db.execute(text("""
                 SELECT hra.ml_probability, COALESCE(hra.alert_type, 'high_risk'), fl.analyst_label
@@ -1061,19 +1244,27 @@ async def get_model_performance(branch_id: Optional[str] = None, auth=Depends(re
                 "f1_score": 0,
                 "total_evaluated": 0,
                 "note": "Metrics calculated only on reviewed alerts, not overall model performance",
-                "warning": "Cannot calculate true model performance without sampling negative cases"
+                "warning": "Cannot calculate true model performance without sampling negative cases",
             }
 
         # Calculate performance metrics properly for the reviewed subset
         # High-risk alerts are model-flagged fraud; random samples are low-risk reviews
-        tp = sum(1 for _, alert_type, label in prob_label_pairs
-                 if alert_type == "high_risk" and label == "Confirmed Fraud")
-        fp = sum(1 for _, alert_type, label in prob_label_pairs
-                 if alert_type == "high_risk" and label == "False Positive")
-        tn = sum(1 for _, alert_type, label in prob_label_pairs
-                 if alert_type == "random_sample" and label == "False Positive")
-        fn_sampled = sum(1 for _, alert_type, label in prob_label_pairs
-                         if alert_type == "random_sample" and label == "Confirmed Fraud")
+        tp = sum(
+            1 for _, alert_type, label in prob_label_pairs if alert_type == "high_risk" and label == "Confirmed Fraud"
+        )
+        fp = sum(
+            1 for _, alert_type, label in prob_label_pairs if alert_type == "high_risk" and label == "False Positive"
+        )
+        tn = sum(
+            1
+            for _, alert_type, label in prob_label_pairs
+            if alert_type == "random_sample" and label == "False Positive"
+        )
+        fn_sampled = sum(
+            1
+            for _, alert_type, label in prob_label_pairs
+            if alert_type == "random_sample" and label == "Confirmed Fraud"
+        )
 
         # Calculate precision based only on reviewed alerts where model predicted fraud
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
@@ -1089,7 +1280,11 @@ async def get_model_performance(branch_id: Optional[str] = None, auth=Depends(re
             estimated_fn = fn_sampled / RANDOM_SAMPLE_RATE if RANDOM_SAMPLE_RATE > 0 else 0
             estimated_recall = tp / (tp + estimated_fn) if (tp + estimated_fn) > 0 else 0
 
-        f1_score = 2 * (precision * estimated_recall) / (precision + estimated_recall) if (precision + estimated_recall) > 0 else 0
+        f1_score = (
+            2 * (precision * estimated_recall) / (precision + estimated_recall)
+            if (precision + estimated_recall) > 0
+            else 0
+        )
 
         return {
             "precision": round(precision, 3),
@@ -1106,21 +1301,25 @@ async def get_model_performance(branch_id: Optional[str] = None, auth=Depends(re
             "total_evaluated": len(prob_label_pairs),
             "note": "Metrics combine high-risk reviews with random-sample reviews to estimate recall.",
             "warning": "Estimated recall assumes random samples represent low-risk traffic.",
-            "interpretation": "Precision reflects alert performance; recall is sampling-adjusted."
+            "interpretation": "Precision reflects alert performance; recall is sampling-adjusted.",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/alerts/{transaction_id}/explain")
 async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Explain the top risk factors for a transaction using model feature importance."""
     try:
         with get_db_session() as db:
-            row = db.execute(text("""
+            row = db.execute(
+                text("""
             SELECT transaction_id, COALESCE(alert_type, 'high_risk'), shap_top5
             FROM high_risk_alerts
             WHERE transaction_id = :transaction_id
-            """), {"transaction_id": transaction_id}).fetchone()
+            """),
+                {"transaction_id": transaction_id},
+            ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Transaction not found")
 
@@ -1138,7 +1337,7 @@ async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analy
                 "transaction_id": transaction_id,
                 "alert_type": row[1],
                 "shap_top5": shap_top5,
-                "top_risk_factors": shap_top5
+                "top_risk_factors": shap_top5,
             }
 
         if not registry_row or not registry_row[0]:
@@ -1147,43 +1346,45 @@ async def explain_alert(transaction_id: str, auth=Depends(require_scopes({"analy
                 "alert_type": row[1],
                 "shap_top5": [],
                 "top_risk_factors": [],
-                "note": "No champion feature importance registered yet."
+                "note": "No champion feature importance registered yet.",
             }
 
         factors = parse_feature_importance(registry_row[0], limit=3)
 
-        return {
-            "transaction_id": transaction_id,
-            "alert_type": row[1],
-            "shap_top5": [],
-            "top_risk_factors": factors
-        }
+        return {"transaction_id": transaction_id, "alert_type": row[1], "shap_top5": [], "top_risk_factors": factors}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/alerts/{transaction_id}/export")
 async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analyst", "admin"}))):
     """Export a single alert for compliance filing."""
     try:
         with get_db_session() as db:
-            alert_row = db.execute(text("""
+            alert_row = db.execute(
+                text("""
             SELECT transaction_id, user_id, amount_tnd, governorate, payment_method,
                    branch_id, timestamp, ml_probability, sar_report, COALESCE(alert_type, 'high_risk'), shap_top5
             FROM high_risk_alerts
             WHERE transaction_id = :transaction_id
-            """), {"transaction_id": transaction_id}).fetchone()
+            """),
+                {"transaction_id": transaction_id},
+            ).fetchone()
             if not alert_row:
                 raise HTTPException(status_code=404, detail="Transaction not found")
 
-            feedback_row = db.execute(text("""
+            feedback_row = db.execute(
+                text("""
             SELECT analyst_label, analyst_comment, timestamp
             FROM feedback_labels
             WHERE transaction_id = :transaction_id
             ORDER BY timestamp DESC
             LIMIT 1
-            """), {"transaction_id": transaction_id}).fetchone()
+            """),
+                {"transaction_id": transaction_id},
+            ).fetchone()
 
             registry_row = db.execute(text("""
             SELECT feature_importance
@@ -1198,11 +1399,7 @@ async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analys
 
         analyst_payload = None
         if feedback_row:
-            analyst_payload = {
-                "label": feedback_row[0],
-                "comment": feedback_row[1],
-                "timestamp": feedback_row[2]
-            }
+            analyst_payload = {"label": feedback_row[0], "comment": feedback_row[1], "timestamp": feedback_row[2]}
 
         return {
             "transaction_id": alert_row[0],
@@ -1218,12 +1415,13 @@ async def export_alert(transaction_id: str, auth=Depends(require_scopes({"analys
             "shap_top5": shap_top5,
             "top_risk_factors": factors,
             "analyst_review": analyst_payload,
-            "exported_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+            "exported_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/alerts/ctaf-export")
 async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depends(require_scopes({"admin"}))):
@@ -1232,7 +1430,8 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
         with get_db_session() as db:
             if branch_id:
-                rows = db.execute(text("""
+                rows = db.execute(
+                    text("""
                 SELECT hra.transaction_id, hra.user_id, hra.amount_tnd, hra.governorate, hra.payment_method,
                        hra.branch_id, hra.timestamp, hra.ml_probability, hra.sar_report, hra.shap_top5,
                        fl.analyst_label, fl.analyst_comment, fl.timestamp
@@ -1242,9 +1441,12 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
                   AND fl.timestamp >= :cutoff
                   AND fl.branch_id = :branch_id
                 ORDER BY fl.timestamp DESC
-                """), {"cutoff": cutoff, "branch_id": branch_id}).fetchall()
+                """),
+                    {"cutoff": cutoff, "branch_id": branch_id},
+                ).fetchall()
             else:
-                rows = db.execute(text("""
+                rows = db.execute(
+                    text("""
                 SELECT hra.transaction_id, hra.user_id, hra.amount_tnd, hra.governorate, hra.payment_method,
                        hra.branch_id, hra.timestamp, hra.ml_probability, hra.sar_report, hra.shap_top5,
                        fl.analyst_label, fl.analyst_comment, fl.timestamp
@@ -1253,7 +1455,9 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
                 WHERE fl.analyst_label = 'Confirmed Fraud'
                   AND fl.timestamp >= :cutoff
                 ORDER BY fl.timestamp DESC
-                """), {"cutoff": cutoff}).fetchall()
+                """),
+                    {"cutoff": cutoff},
+                ).fetchall()
 
             registry_row = db.execute(text("""
             SELECT feature_importance
@@ -1267,22 +1471,24 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
 
         cases = []
         for row in rows:
-            cases.append({
-                "transaction_id": row[0],
-                "user_id": row[1],
-                "amount_tnd": row[2],
-                "governorate": row[3],
-                "payment_method": row[4],
-                "branch_id": row[5],
-                "timestamp": row[6],
-                "ml_probability": row[7],
-                "sar_report": row[8],
-                "shap_top5": parse_shap_top5(row[9]),
-                "analyst_label": row[10],
-                "analyst_comment": row[11],
-                "analyst_timestamp": row[12],
-                "top_risk_factors": parse_shap_top5(row[9]) or factors
-            })
+            cases.append(
+                {
+                    "transaction_id": row[0],
+                    "user_id": row[1],
+                    "amount_tnd": row[2],
+                    "governorate": row[3],
+                    "payment_method": row[4],
+                    "branch_id": row[5],
+                    "timestamp": row[6],
+                    "ml_probability": row[7],
+                    "sar_report": row[8],
+                    "shap_top5": parse_shap_top5(row[9]),
+                    "analyst_label": row[10],
+                    "analyst_comment": row[11],
+                    "analyst_timestamp": row[12],
+                    "top_risk_factors": parse_shap_top5(row[9]) or factors,
+                }
+            )
 
         return {
             "generated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
@@ -1293,31 +1499,36 @@ async def export_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depen
             "_links": {
                 "self": "/api/v1/alerts/ctaf-export",
                 "stats": "/api/v1/stats/",
-                "review_queue": "/api/v1/alerts/review-queue/"
-            }
+                "review_queue": "/api/v1/alerts/review-queue/",
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/metrics/performance")
 async def get_performance_metrics(auth=Depends(require_scopes({"analyst", "admin"}))):
     """Get model performance metrics including precision, recall, and drift indicators."""
     return monitoring_engine.get_performance_metrics()
 
+
 @router.get("/metrics/feedback")
 async def get_feedback_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
     """Return analyst feedback breakdown and label distribution metrics."""
     return monitoring_engine.get_feedback_analysis()
+
 
 @router.get("/metrics/threshold-analysis")
 async def get_threshold_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
     """Analyze ML probability threshold trade-offs and recommend optimal cutoffs."""
     return monitoring_engine.get_ml_threshold_analysis()
 
+
 @router.get("/metrics/drift")
 async def get_drift_analysis(auth=Depends(require_scopes({"analyst", "admin"}))):
     """Assess model drift and recommend retraining based on feature distribution shifts."""
     return monitoring_engine.get_drift_retraining_assessment()
+
 
 @router.get("/metrics/system-overview")
 async def get_system_overview(auth=Depends(require_scopes({"analyst", "admin"}))):
@@ -1329,30 +1540,67 @@ async def get_system_overview(auth=Depends(require_scopes({"analyst", "admin"}))
         "drift": monitoring_engine.get_drift_retraining_assessment(),
     }
 
-@router.post("/retrain-model/")
+
+@router.post("/retrain-model/", status_code=202)
 async def trigger_model_retraining(background_tasks: BackgroundTasks, auth=Depends(require_scopes({"admin"}))):
-    """Trigger model retraining based on accumulated feedback"""
+    """Queue local Spark model retraining when explicitly enabled."""
+    default_enabled = DATABASE_BACKEND == "sqlite"
+    enabled = os.getenv("MODEL_RETRAINING_ENABLED", str(default_enabled)).lower() in {"1", "true", "yes"}
+    if not enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Model retraining is disabled for this deployment.",
+        )
+
     try:
-        # Import here to avoid circular dependencies
         from src.ml.train_model import FraudModelTrainer
 
+        job_id = uuid.uuid4().hex
+        with _retraining_jobs_lock:
+            _retraining_jobs[job_id] = {
+                "job_id": job_id,
+                "status": "queued",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+
         def run_retraining():
+            status = "failed"
+            with _retraining_jobs_lock:
+                _retraining_jobs[job_id]["status"] = "running"
             try:
                 trainer = FraudModelTrainer()
                 success = trainer.train_champion_challenger()
-                if success:
-                    print("✅ Model retrained successfully from API trigger")
-                else:
-                    print("ℹ️  No retraining needed based on current feedback")
+                status = "promoted" if success else "no_change"
+                logger.info("Model retraining job %s completed with status %s", job_id, status)
             except Exception as e:
-                print(f"Error during model retraining: {e}")
+                logger.exception("Model retraining job %s failed", job_id)
+                with _retraining_jobs_lock:
+                    _retraining_jobs[job_id]["error"] = str(e)
+            finally:
+                with _retraining_jobs_lock:
+                    _retraining_jobs[job_id]["status"] = status
+                    _retraining_jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Run retraining in background to avoid blocking the API
         background_tasks.add_task(run_retraining)
 
-        return {"status": "success", "message": "Model retraining triggered in background"}
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "status_url": f"/api/v1/retrain-model/status/{job_id}",
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/retrain-model/status/{job_id}")
+async def get_retraining_status(job_id: str, auth=Depends(require_scopes({"admin"}))):
+    """Return the observable state of a queued retraining job."""
+    with _retraining_jobs_lock:
+        job = _retraining_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Retraining job not found")
+        return dict(job)
+
 
 # ---------------------------------------------------------------------------
 # Register the versioned router and add backward-compatible root aliases
@@ -1374,21 +1622,28 @@ async def _legacy_whoami(
 
 
 @_legacy_router.post("/feedback/")
-async def _legacy_feedback(feedback: FeedbackRequest, user_id: Optional[str] = Header(None),
-                           auth=Depends(require_scopes({"analyst", "admin"}))):
+async def _legacy_feedback(
+    feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))
+):
     return await submit_feedback(feedback, user_id, auth)
 
 
 @_legacy_router.post("/feedback/batch/")
-async def _legacy_batch_feedback(batch: BatchFeedbackRequest, user_id: Optional[str] = Header(None),
-                                 auth=Depends(require_scopes({"analyst", "admin"}))):
+async def _legacy_batch_feedback(
+    batch: BatchFeedbackRequest,
+    user_id: Optional[str] = Header(None),
+    auth=Depends(require_scopes({"analyst", "admin"})),
+):
     return await submit_batch_feedback(batch, user_id, auth)
 
 
 @_legacy_router.get("/alerts/review-queue/")
-async def _legacy_review_queue(limit: int = 100, alert_type: Optional[str] = None,
-                                branch_id: Optional[str] = None,
-                                auth=Depends(require_scopes({"analyst", "admin"}))):
+async def _legacy_review_queue(
+    limit: int = 100,
+    alert_type: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    auth=Depends(require_scopes({"analyst", "admin"})),
+):
     return await get_review_queue(limit, alert_type, branch_id, auth)
 
 
@@ -1403,8 +1658,7 @@ async def _legacy_stats(branch_id: Optional[str] = None, auth=Depends(require_sc
 
 
 @_legacy_router.get("/compliance/kpis/")
-async def _legacy_compliance_kpis(branch_id: Optional[str] = None,
-                                  auth=Depends(require_scopes({"analyst", "admin"}))):
+async def _legacy_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
     return await get_compliance_kpis(branch_id, auth)
 
 
@@ -1433,7 +1687,7 @@ async def _legacy_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depe
     return await export_ctaf(days, branch_id, auth)
 
 
-@_legacy_router.post("/retrain-model/")
+@_legacy_router.post("/retrain-model/", status_code=202)
 async def _legacy_retrain(background_tasks: BackgroundTasks, auth=Depends(require_scopes({"admin"}))):
     return await trigger_model_retraining(background_tasks, auth)
 
@@ -1447,7 +1701,8 @@ async def root_status():
     return {
         "status": "healthy",
         "service": "fraud-detection-command-center-api",
-        "version": "1.0.0",
+        "version": __version__,
+        "release_channel": RELEASE_CHANNEL,
         "routes": {
             "health": "/health/",
             "docs": "/docs",
@@ -1467,8 +1722,15 @@ async def prometheus_metrics(request: Request):
 @app.get("/health/")
 async def health_check():
     """Health check endpoint for the API (always at root, not versioned)"""
-    return {"status": "healthy", "service": "fraud-detection-command-center-api", "version": "1.0.0"}
+    return {
+        "status": "healthy",
+        "service": "fraud-detection-command-center-api",
+        "version": __version__,
+        "release_channel": RELEASE_CHANNEL,
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8001)

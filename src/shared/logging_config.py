@@ -2,8 +2,9 @@
 Structured JSON logging configuration for the fraud detection system.
 Provides consistent log format across all services (producer, consumer, API, dashboard).
 """
-import logging
+
 import json
+import logging
 import sys
 from datetime import datetime, timezone
 
@@ -45,7 +46,9 @@ def setup_logging(service_name: str = "fraud-detection", level: str = "INFO") ->
     root_logger = logging.getLogger()
 
     # Avoid adding duplicate handlers if called more than once
-    if any(isinstance(h, logging.StreamHandler) and isinstance(h.formatter, JSONFormatter) for h in root_logger.handlers):
+    if any(
+        isinstance(h, logging.StreamHandler) and isinstance(h.formatter, JSONFormatter) for h in root_logger.handlers
+    ):
         return
 
     handler = logging.StreamHandler(sys.stdout)

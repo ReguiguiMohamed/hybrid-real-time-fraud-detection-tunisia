@@ -3,9 +3,15 @@ title: Amastan Fraud Shield Guard
 sdk: docker
 app_port: 7860
 ---
-# Amastan Fraud Shield Guard - Hybrid Streaming & RAG Architecture
+# Amastan Fraud Shield Guard
 
-A production-oriented real-time fraud mitigation prototype for Tunisian digital payments. Uses **Kafka + Spark Structured Streaming** for stateful detection, **XGBoost** for ML scoring, and **RAG (Ollama/ChromaDB)** for analyst-reviewed SAR drafting with deterministic compliance fallback.
+**Version `0.1.0` - prototype**
+
+A fraud-detection command center and target streaming architecture for Tunisian digital payments. The verified hosted slice is **FastAPI + SQLAlchemy + Neon PostgreSQL**. Kafka, Spark Structured Streaming, XGBoost, Ollama, ChromaDB, Streamlit, and the local monitoring stack remain development or target-architecture components until separately deployed and verified.
+
+The design stance is simple: a claim earns its place by surviving contact with a test, a failure, or a deployed endpoint. Everything else remains a possibility, not an achievement.
+
+Project documents: [API reference](docs/API_REFERENCE.md) · [deployment](docs/DEPLOYMENT.md) · [operational runbook](docs/OPERATIONAL_RUNBOOK.md) · [roadmap](ROADMAP.md) · [finalization TODO](FINALIZATION_TODO.md) · [changelog](CHANGELOG.md)
 
 Built for the 2026 Tunisian digital-payments landscape: digital usage is growing, but cash still matters and adoption is uneven outside major urban areas. The 2026 Finance Law repealed the TND 5,000 cash-payment cap, so this project avoids treating that old cap as a structuring rule and uses velocity, account, rail, sanctions/PEP, and analyst-review signals instead.
 
@@ -301,7 +307,7 @@ graph TB
 └── tests/                        # Public automated test suite
 ```
 
-Files marked ★ are professional-grade additions that address the "amateur" markers.
+Files marked ★ are the principal reliability and governance modules.
 
 Runtime outputs are intentionally not tracked. Spark parquet output, SQLite
 databases, pytest caches, coverage reports, notebook HTML exports, model
@@ -376,7 +382,7 @@ make lint          # Flake8 + black + isort
 make dev           # Local dev stack (no Docker)
 ```
 
-### 5. Production Commands
+### 5. Target-Architecture Commands
 
 ```bash
 make prod-monitor     # Full stack + Prometheus/Grafana
@@ -445,7 +451,12 @@ flowchart TD
     style F fill:#e8f5e9
 ```
 
-See `src/ml/train_pipeline.py` for the full implementation.
+`src/ml/train_pipeline.py` is the offline sklearn training workflow. The Spark
+champion/challenger workflow in `src/ml/train_model.py` is local
+target-architecture code and produces Spark artifacts for the streaming
+consumers. The hosted Hugging Face API does not retrain models unless
+`MODEL_RETRAINING_ENABLED=true` is set and a compatible Spark runtime and model
+artifact store are provided.
 
 ### Evaluation Metrics (Proper for Imbalanced Data)
 
@@ -592,9 +603,10 @@ See [LICENSE](LICENSE) for details.
 
 ---
 
-## Professional Notes
+## Design Stance
 
-This system was built with production requirements in mind:
+This prototype is organized around production constraints without claiming that
+every target component is deployed:
 
 1. **Every component handles failure**: Kafka disconnects, API downtime, LLM hallucination, Spark checkpoint corruption
 2. **Data leakage is prevented**: The ML pipeline uses proper Scikit-Learn Pipelines with train/test isolation

@@ -1,6 +1,2 @@
-from compliance.pkyc import (
-    PKYCTriggerEvent,
-    PKYCTriggerEvaluator,
-    PKYCPublisher,
-)
+from compliance.pkyc import PKYCPublisher, PKYCTriggerEvaluator, PKYCTriggerEvent
 from compliance.sanctions import SanctionsScreener, SanctionsScreeningResult

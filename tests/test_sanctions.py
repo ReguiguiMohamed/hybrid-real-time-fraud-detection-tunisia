@@ -20,11 +20,13 @@ def test_sanctions_screener_matches_sender_account(tmp_path):
     )
     screener = SanctionsScreener(str(csv_path))
 
-    result = screener.screen({
-        "transaction_id": "TXN_SANCTIONS_001",
-        "sender_account": "ACC-SANCTIONED-1",
-        "receiver_account": "ACC-CLEAR-1",
-    })
+    result = screener.screen(
+        {
+            "transaction_id": "TXN_SANCTIONS_001",
+            "sender_account": "ACC-SANCTIONED-1",
+            "receiver_account": "ACC-CLEAR-1",
+        }
+    )
 
     assert result.is_hit is True
     assert result.matched_account == "ACC-SANCTIONED-1"
@@ -40,10 +42,12 @@ def test_sanctions_screener_matches_receiver_account(tmp_path):
     )
     screener = SanctionsScreener(str(csv_path))
 
-    result = screener.screen({
-        "sender_account": "ACC-CLEAR-2",
-        "receiver_account": "ACC-SANCTIONED-2",
-    })
+    result = screener.screen(
+        {
+            "sender_account": "ACC-CLEAR-2",
+            "receiver_account": "ACC-SANCTIONED-2",
+        }
+    )
 
     assert result.is_hit is True
     assert result.matched_field == "receiver_account"

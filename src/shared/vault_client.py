@@ -16,12 +16,13 @@ In production, configure Vault with:
     VAULT_TOKEN=<app-role-token>
     Or use Kubernetes service account auth (approle)
 """
-import os
-import logging
+
 import json
-from typing import Optional
-from functools import lru_cache
+import logging
+import os
 from datetime import datetime, timedelta
+from functools import lru_cache
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ class VaultClient:
         if self._hvac_client is None:
             try:
                 import hvac
+
                 self._hvac_client = hvac.Client(
                     url=self.vault_addr,
                     token=self.vault_token,
@@ -218,7 +220,8 @@ def get_kafka_credentials() -> dict:
     """Get Kafka credentials from Vault."""
     return {
         "bootstrap_servers": get_secret("kafka-bootstrap", fallback_env="KAFKA_BOOTSTRAP_SERVERS") or "localhost:9092",
-        "security_protocol": get_secret("kafka-security-protocol", fallback_env="KAFKA_SECURITY_PROTOCOL") or "PLAINTEXT",
+        "security_protocol": get_secret("kafka-security-protocol", fallback_env="KAFKA_SECURITY_PROTOCOL")
+        or "PLAINTEXT",
         "sasl_mechanism": get_secret("kafka-sasl-mechanism", fallback_env="KAFKA_SASL_MECHANISM"),
         "sasl_username": get_secret("kafka-sasl-username", fallback_env="KAFKA_SASL_USERNAME"),
         "sasl_password": get_secret("kafka-sasl-password", fallback_env="KAFKA_SASL_PASSWORD"),

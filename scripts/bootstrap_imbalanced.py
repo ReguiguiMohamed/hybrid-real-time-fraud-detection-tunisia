@@ -13,28 +13,28 @@ Replaces the naive 50/50 bootstrap with production-realistic distributions:
 Usage:
     python scripts/bootstrap_imbalanced.py --n-samples 100000 --fraud-rate 0.0001
 """
+
 import argparse
-import sqlite3
 import json
 import os
 import pickle
-from pathlib import Path
+import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     classification_report,
-    precision_recall_curve,
-    roc_auc_score,
     f1_score,
+    precision_recall_curve,
     precision_score,
     recall_score,
+    roc_auc_score,
 )
-
+from sklearn.model_selection import train_test_split
 
 # Tunisian governorate weights (based on commercial activity)
 GOVERNORATE_WEIGHTS = {
@@ -111,16 +111,18 @@ class ImbalancedTransactionGenerator:
             hours_ago = self.rng.exponential(scale=48)  # Most transactions within 48h
             timestamp = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=float(hours_ago))
 
-            transactions.append({
-                "transaction_id": f"TX-{i:08d}",
-                "user_id": user_id,
-                "amount_tnd": amount,
-                "governorate": governorate,
-                "payment_method": payment_method,
-                "branch_id": branch_id,
-                "timestamp": timestamp.isoformat(),
-                "label": 0,  # Legitimate
-            })
+            transactions.append(
+                {
+                    "transaction_id": f"TX-{i:08d}",
+                    "user_id": user_id,
+                    "amount_tnd": amount,
+                    "governorate": governorate,
+                    "payment_method": payment_method,
+                    "branch_id": branch_id,
+                    "timestamp": timestamp.isoformat(),
+                    "label": 0,  # Legitimate
+                }
+            )
 
         return pd.DataFrame(transactions)
 
@@ -153,7 +155,9 @@ class ImbalancedTransactionGenerator:
             payment_method = self.rng.choice(PAYMENT_METHODS, p=PAYMENT_METHODS)
             branch_id = self.rng.choice(BRANCHES)
 
-            timestamp = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=float(self.rng.exponential(scale=24)))
+            timestamp = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+                hours=float(self.rng.exponential(scale=24))
+            )
 
             if pattern == "smurfing":
                 # Smurfing: amounts just below D17 reporting threshold
@@ -163,7 +167,9 @@ class ImbalancedTransactionGenerator:
                 # High velocity: large amounts, rapid succession
                 amount = round(self.rng.lognormal(mean=7, sigma=1), 2)
                 # Timestamps clustered (within hours)
-                timestamp = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=float(self.rng.uniform(5, 120)))
+                timestamp = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+                    minutes=float(self.rng.uniform(5, 120))
+                )
             elif pattern == "geo_anomaly":
                 # Geographic anomaly: unusual locations
                 # Use less common governorates more often
@@ -179,16 +185,18 @@ class ImbalancedTransactionGenerator:
                 amount = round(self.rng.lognormal(mean=6.5, sigma=1.5), 2)
                 payment_method = self.rng.choice(["card", "bank_transfer"])  # Not typical for user
 
-            transactions.append({
-                "transaction_id": f"TX-F{i:08d}",
-                "user_id": user_id,
-                "amount_tnd": amount,
-                "governorate": governorate,
-                "payment_method": payment_method,
-                "branch_id": branch_id,
-                "timestamp": timestamp.isoformat(),
-                "label": 1,  # Fraud
-            })
+            transactions.append(
+                {
+                    "transaction_id": f"TX-F{i:08d}",
+                    "user_id": user_id,
+                    "amount_tnd": amount,
+                    "governorate": governorate,
+                    "payment_method": payment_method,
+                    "branch_id": branch_id,
+                    "timestamp": timestamp.isoformat(),
+                    "label": 1,  # Fraud
+                }
+            )
 
         return pd.DataFrame(transactions)
 
@@ -219,12 +227,16 @@ class ImbalancedTransactionGenerator:
 
         # Add windowed features (simulating what Spark would produce)
         # Per-user aggregation
-        user_stats = df.groupby("user_id").agg(
-            v_count=("transaction_id", "count"),
-            avg_amount=("amount_tnd", "mean"),
-            g_dist=("governorate", "nunique"),
-            max_amount=("amount_tnd", "max"),
-        ).reset_index()
+        user_stats = (
+            df.groupby("user_id")
+            .agg(
+                v_count=("transaction_id", "count"),
+                avg_amount=("amount_tnd", "mean"),
+                g_dist=("governorate", "nunique"),
+                max_amount=("amount_tnd", "max"),
+            )
+            .reset_index()
+        )
 
         user_stats.columns = ["user_id", "v_count", "avg_amount", "g_dist", "max_amount"]
 
@@ -232,7 +244,9 @@ class ImbalancedTransactionGenerator:
         df = df.merge(user_stats, on="user_id", how="left")
 
         # Derived features
-        df["is_smurfing"] = ((df["amount_tnd"] >= 1400) & (df["amount_tnd"] <= 1500) & (df["payment_method"] == "Flouci")).astype(int)
+        df["is_smurfing"] = (
+            (df["amount_tnd"] >= 1400) & (df["amount_tnd"] <= 1500) & (df["payment_method"] == "Flouci")
+        ).astype(int)
         df["high_velocity_flag"] = (df["v_count"] > 5).astype(int)
         df["amount_stddev"] = df.groupby("user_id")["amount_tnd"].transform("std").fillna(0)
 
@@ -256,9 +270,7 @@ def train_on_imbalanced_data(df: pd.DataFrame, output_path: str = "./models/v1_i
     y = df["label"]
 
     # Train/test split with stratification
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
     print(f"\nTrain: {len(X_train):,} ({y_train.sum()} fraud, {y_train.mean()*100:.4f}%)")
     print(f"Test:  {len(X_test):,} ({y_test.sum()} fraud, {y_test.mean()*100:.4f}%)")

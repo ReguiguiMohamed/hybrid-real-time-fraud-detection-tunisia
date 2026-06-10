@@ -1,36 +1,28 @@
 # dashboard/dashboard.py
-import streamlit as st
-import pandas as pd
-import requests
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime
 import json
 import os
 import time
+from datetime import datetime
 
-# Add the src directory to the path to import shared utilities
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import requests
+import streamlit as st
 
 from shared.utils import get_api_headers, get_api_url
 
 # Set page config
-st.set_page_config(
-    page_title="Tunisian Fraud Detection - Command Center",
-    page_icon="🚨",
-    layout="wide"
-)
+st.set_page_config(page_title="Tunisian Fraud Detection - Command Center", page_icon="🚨", layout="wide")
 
 # Title
 st.title("🚨 Tunisian Fraud Detection - Operational Command Center")
 st.markdown("---")
 
 # Initialize session state
-if 'selected_transaction' not in st.session_state:
+if "selected_transaction" not in st.session_state:
     st.session_state.selected_transaction = None
-if 'refresh_counter' not in st.session_state:
+if "refresh_counter" not in st.session_state:
     st.session_state.refresh_counter = 0
 
 # Sidebar for navigation and filters
@@ -38,16 +30,12 @@ with st.sidebar:
     st.header("📊 Dashboard Controls")
 
     # Refresh interval selection
-    refresh_interval = st.selectbox(
-        "Refresh Interval (seconds)",
-        options=[5, 10, 30, 60],
-        index=1
-    )
+    refresh_interval = st.selectbox("Refresh Interval (seconds)", options=[5, 10, 30, 60], index=1)
 
     # Determine role from API (RBAC - no user selection)
     token = os.getenv("COMMAND_CENTER_API_TOKEN", "default_dev_token")
     headers = get_api_headers()
-    
+
     # Try to get user info from API
     try:
         whoami_response = requests.get(get_api_url("auth/whoami/"), headers=headers)
@@ -70,7 +58,7 @@ with st.sidebar:
             role = "Admin"
         else:
             role = "Analyst"  # Default to analyst
-    
+
     st.write(f"**Role:** {role}")
 
     user_id = st.text_input("User ID", value=os.getenv("DASHBOARD_USER_ID", ""))
@@ -104,9 +92,7 @@ with st.sidebar:
     min_prob = st.slider("Minimum ML Probability (High Risk)", 0.0, 1.0, 0.85)
     show_sar = st.checkbox("Show SAR Reports", value=True)
     alert_type_filter = st.selectbox(
-        "Alert Type",
-        options=["All", "High Risk", "Random Sample", "Uncertainty Sample"],
-        index=0
+        "Alert Type", options=["All", "High Risk", "Random Sample", "Uncertainty Sample"], index=0
     )
 
     # Stats refresh button
@@ -147,34 +133,45 @@ with col1:
                 # Convert to DataFrame for easier manipulation
                 df = pd.DataFrame(alerts)
 
-                if 'alert_type' not in df.columns:
-                    df['alert_type'] = "high_risk"
-                df['alert_type'] = df['alert_type'].fillna("high_risk")
+                if "alert_type" not in df.columns:
+                    df["alert_type"] = "high_risk"
+                df["alert_type"] = df["alert_type"].fillna("high_risk")
 
                 # Filter by minimum probability for high-risk alerts only
-                keep_mask = (df['alert_type'] != "high_risk") | (df['ml_probability'] >= min_prob)
+                keep_mask = (df["alert_type"] != "high_risk") | (df["ml_probability"] >= min_prob)
                 df_filtered = df[keep_mask]
 
                 if not df_filtered.empty:
                     df_display = df_filtered.copy()
-                    df_display['alert_type_display'] = df_display['alert_type'].map({
-                        "high_risk": "High Risk",
-                        "random_sample": "Random Sample",
-                        "uncertainty_sample": "Uncertainty Sample"
-                    }).fillna("High Risk")
+                    df_display["alert_type_display"] = (
+                        df_display["alert_type"]
+                        .map(
+                            {
+                                "high_risk": "High Risk",
+                                "random_sample": "Random Sample",
+                                "uncertainty_sample": "Uncertainty Sample",
+                            }
+                        )
+                        .fillna("High Risk")
+                    )
 
                     # Display alerts in a table
-                    df_table = df_display[['transaction_id', 'user_id', 'amount_tnd', 'governorate',
-                                           'payment_method', 'branch_id', 'ml_probability', 'alert_type_display']].rename(
-                        columns={"alert_type_display": "alert_type"}
-                    )
+                    df_table = df_display[
+                        [
+                            "transaction_id",
+                            "user_id",
+                            "amount_tnd",
+                            "governorate",
+                            "payment_method",
+                            "branch_id",
+                            "ml_probability",
+                            "alert_type_display",
+                        ]
+                    ].rename(columns={"alert_type_display": "alert_type"})
                     st.dataframe(
-                        df_table.style.format({
-                            'amount_tnd': '{:.2f}',
-                            'ml_probability': '{:.3f}'
-                        }),
+                        df_table.style.format({"amount_tnd": "{:.2f}", "ml_probability": "{:.3f}"}),
                         use_container_width=True,
-                        height=400
+                        height=400,
                     )
 
                     # Show transaction details when selected
@@ -186,7 +183,7 @@ with col1:
                                 f"{df_display.iloc[x]['transaction_id']} - "
                                 f"{df_display.iloc[x]['amount_tnd']:.2f} TND "
                                 f"({df_display.iloc[x]['alert_type_display']})"
-                            )
+                            ),
                         )
 
                         if selected_idx is not None:
@@ -222,7 +219,7 @@ with col2:
             # Display key metrics
             col2_1, col2_2 = st.columns(2)
             with col2_1:
-                st.metric("Total Feedback", stats.get('total_feedback', 0))
+                st.metric("Total Feedback", stats.get("total_feedback", 0))
             with col2_2:
                 st.metric("Alert Precision", f"{stats.get('precision', 0):.3f}")
 
@@ -230,11 +227,11 @@ with col2:
             if random_sample_fraud_rate is not None:
                 st.metric("Random Sample Fraud Rate", f"{random_sample_fraud_rate:.3f}")
 
-            st.metric("High-Risk Alerts", stats.get('high_risk_alerts', 0))
-            st.metric("Random Samples", stats.get('random_sample_alerts', 0))
-            st.metric("Uncertainty Samples", stats.get('uncertainty_sample_alerts', 0))
-            st.metric("Review Queue Total", stats.get('review_queue_total', 0))
-            if stats.get('random_sample_rate') is not None:
+            st.metric("High-Risk Alerts", stats.get("high_risk_alerts", 0))
+            st.metric("Random Samples", stats.get("random_sample_alerts", 0))
+            st.metric("Uncertainty Samples", stats.get("uncertainty_sample_alerts", 0))
+            st.metric("Review Queue Total", stats.get("review_queue_total", 0))
+            if stats.get("random_sample_rate") is not None:
                 st.caption(f"Random sample rate: {stats.get('random_sample_rate'):.3f}")
 
             compliance_url = get_api_url("compliance/kpis/")
@@ -272,13 +269,12 @@ with col2:
                 st.warning("Compliance KPIs unavailable.")
 
             # Feedback breakdown chart
-            if stats.get('feedback_breakdown'):
-                breakdown = stats['feedback_breakdown']
-                breakdown_df = pd.DataFrame(list(breakdown.items()), columns=['Label', 'Count'])
+            if stats.get("feedback_breakdown"):
+                breakdown = stats["feedback_breakdown"]
+                breakdown_df = pd.DataFrame(list(breakdown.items()), columns=["Label", "Count"])
 
-                fig = px.pie(breakdown_df, values='Count', names='Label', title='Feedback Distribution')
+                fig = px.pie(breakdown_df, values="Count", names="Label", title="Feedback Distribution")
                 st.plotly_chart(fig, use_container_width=True)
-
 
             if role == "Admin":
                 st.subheader("CTAF Export")
@@ -293,7 +289,7 @@ with col2:
                             "Download JSON",
                             data=json.dumps(export_payload, indent=2),
                             file_name="ctaf_report.json",
-                            mime="application/json"
+                            mime="application/json",
                         )
                     else:
                         st.error("Failed to export CTAF report")
@@ -307,7 +303,7 @@ with col2:
                 st.subheader("Model Performance (Sampling-Aware)")
                 st.metric("Estimated Recall", f"{perf.get('recall', 0):.3f}")
                 st.metric("Reviewed Recall", f"{perf.get('reviewed_recall', 0):.3f}")
-                st.metric("Estimated False Negatives", perf.get('estimated_false_negatives', 0))
+                st.metric("Estimated False Negatives", perf.get("estimated_false_negatives", 0))
         else:
             st.error(f"Failed to fetch stats: {stats_response.status_code}")
     except requests.exceptions.ConnectionError:
@@ -322,7 +318,7 @@ if st.session_state.selected_transaction:
     st.subheader("🔍 Transaction Details")
 
     trans = st.session_state.selected_transaction
-    alert_type = trans.get('alert_type', 'high_risk')
+    alert_type = trans.get("alert_type", "high_risk")
     if alert_type == "random_sample":
         alert_type_display = "Random Sample"
     elif alert_type == "uncertainty_sample":
@@ -352,8 +348,11 @@ if st.session_state.selected_transaction:
         st.write(f"**ML Probability:** {trans['ml_probability']:.3f}")
 
         # Color-coded probability indicator
-        prob_color = "red" if trans['ml_probability'] > 0.9 else "orange" if trans['ml_probability'] > 0.8 else "yellow"
-        st.markdown(f"<span style='color:{prob_color}; font-weight:bold;'>Risk Level: {'HIGH' if trans['ml_probability'] > 0.9 else 'MODERATE' if trans['ml_probability'] > 0.8 else 'LOW'}</span>", unsafe_allow_html=True)
+        prob_color = "red" if trans["ml_probability"] > 0.9 else "orange" if trans["ml_probability"] > 0.8 else "yellow"
+        st.markdown(
+            f"<span style='color:{prob_color}; font-weight:bold;'>Risk Level: {'HIGH' if trans['ml_probability'] > 0.9 else 'MODERATE' if trans['ml_probability'] > 0.8 else 'LOW'}</span>",
+            unsafe_allow_html=True,
+        )
 
     # Explainability: top risk factors
     try:
@@ -369,16 +368,18 @@ if st.session_state.selected_transaction:
                 if shap_top5:
                     shap_df = pd.DataFrame(shap_top5)
                     chart_df = shap_df.sort_values("abs_impact", ascending=True)
-                    fig = go.Figure(go.Waterfall(
-                        orientation="h",
-                        measure=["relative"] * len(chart_df),
-                        y=chart_df["description"] if "description" in chart_df else chart_df["feature"],
-                        x=chart_df["impact"],
-                        text=[f"value={value:.3f}" for value in chart_df["value"]],
-                        connector={"line": {"color": "rgba(80,80,80,0.35)"}},
-                        increasing={"marker": {"color": "#c2410c"}},
-                        decreasing={"marker": {"color": "#0f766e"}},
-                    ))
+                    fig = go.Figure(
+                        go.Waterfall(
+                            orientation="h",
+                            measure=["relative"] * len(chart_df),
+                            y=chart_df["description"] if "description" in chart_df else chart_df["feature"],
+                            x=chart_df["impact"],
+                            text=[f"value={value:.3f}" for value in chart_df["value"]],
+                            connector={"line": {"color": "rgba(80,80,80,0.35)"}},
+                            increasing={"marker": {"color": "#c2410c"}},
+                            decreasing={"marker": {"color": "#0f766e"}},
+                        )
+                    )
                     fig.update_layout(
                         title="Top 5 SHAP Feature Contributions",
                         xaxis_title="SHAP impact on fraud score",
@@ -392,10 +393,7 @@ if st.session_state.selected_transaction:
                     description = factor.get("description", factor.get("feature", ""))
                     impact = factor.get("impact")
                     if impact is not None:
-                        st.write(
-                            f"- {description}: value={factor.get('value')}, "
-                            f"SHAP impact={impact:.4f}"
-                        )
+                        st.write(f"- {description}: value={factor.get('value')}, " f"SHAP impact={impact:.4f}")
                     elif factor.get("score") is not None:
                         st.write(f"- {description} (score: {factor.get('score')})")
                     else:
@@ -408,21 +406,17 @@ if st.session_state.selected_transaction:
         st.caption("Explainability unavailable.")
 
     # Show SAR report if available
-    if trans.get('sar_report') and show_sar:
+    if trans.get("sar_report") and show_sar:
         st.markdown("---")
         st.subheader("📋 Generated SAR Report")
-        st.text_area("SAR Report", value=trans['sar_report'], height=200, disabled=True)
+        st.text_area("SAR Report", value=trans["sar_report"], height=200, disabled=True)
 
     # Feedback form
     st.markdown("---")
     st.subheader("✅ Analyst Feedback")
 
-    with st.form(key='feedback_form'):
-        analyst_label = st.radio(
-            "Classification:",
-            options=["Confirmed Fraud", "False Positive"],
-            horizontal=True
-        )
+    with st.form(key="feedback_form"):
+        analyst_label = st.radio("Classification:", options=["Confirmed Fraud", "False Positive"], horizontal=True)
 
         analyst_comment = st.text_area("Additional Comments (Optional)")
 
@@ -431,10 +425,10 @@ if st.session_state.selected_transaction:
         if submitted:
             try:
                 feedback_payload = {
-                    "transaction_id": trans['transaction_id'],
+                    "transaction_id": trans["transaction_id"],
                     "analyst_label": analyst_label,
                     "analyst_comment": analyst_comment,
-                    "branch_id": trans.get('branch_id')
+                    "branch_id": trans.get("branch_id"),
                 }
 
                 # Use the shared utility functions
@@ -454,7 +448,9 @@ if st.session_state.selected_transaction:
                     st.error(f"Failed to submit feedback: {response.status_code}")
             except requests.exceptions.ConnectionError:
                 api_url_display = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
-                st.error(f"Could not connect to the API. Please ensure the FastAPI server is running on {api_url_display}.")
+                st.error(
+                    f"Could not connect to the API. Please ensure the FastAPI server is running on {api_url_display}."
+                )
             except Exception as e:
                 st.error(f"Error submitting feedback: {str(e)}")
 

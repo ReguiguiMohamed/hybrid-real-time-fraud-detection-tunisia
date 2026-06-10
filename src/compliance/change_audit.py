@@ -1,4 +1,5 @@
 """Tamper-evident audit logging for rule and model governance changes."""
+
 from __future__ import annotations
 
 import hashlib

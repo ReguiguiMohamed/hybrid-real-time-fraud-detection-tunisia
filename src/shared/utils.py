@@ -2,11 +2,12 @@
 Shared utilities for the fraud detection system
 """
 
-import os
 import logging
-import requests
+import os
 import sqlite3
 from datetime import datetime
+
+import requests
 
 DLQ_DB_PATH = "./data/dead_letter_queue.db"
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ def get_api_url(endpoint=""):
     """
     base_url = os.getenv("COMMAND_CENTER_API_URL", "http://localhost:8001")
     api_prefix = os.getenv("COMMAND_CENTER_API_VERSION", "api/v1")
-    if endpoint.startswith('/'):
+    if endpoint.startswith("/"):
         endpoint = endpoint[1:]
     if api_prefix:
         return f"{base_url}/{api_prefix}/{endpoint}"
@@ -49,7 +50,7 @@ def make_authenticated_request(method, endpoint, payload=None, timeout=10):
     """Make an authenticated request to the API"""
     url = get_api_url(endpoint)
     headers = get_api_headers()
-    
+
     try:
         if method.upper() == "GET":
             response = requests.get(url, headers=headers, timeout=timeout)
@@ -61,7 +62,7 @@ def make_authenticated_request(method, endpoint, payload=None, timeout=10):
             response = requests.delete(url, headers=headers, timeout=timeout)
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
-        
+
         return response
     except requests.exceptions.RequestException as e:
         print(f"Error making request to {url}: {e}")
@@ -124,24 +125,27 @@ def log_failed_alert(transaction_data, alert_payload, error_code, error_message)
         cursor = conn.cursor()
 
         # Insert failed alert
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO failed_alerts
             (transaction_id, user_id, amount_tnd, governorate, payment_method,
              timestamp, ml_probability, error_code, error_message, last_attempt, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            transaction_data.get('transaction_id'),
-            transaction_data.get('user_id'),
-            transaction_data.get('amount_tnd'),
-            transaction_data.get('governorate'),
-            transaction_data.get('payment_method'),
-            transaction_data.get('timestamp'),
-            transaction_data.get('ml_probability', 0.0),
-            error_code,
-            error_message,
-            datetime.now().isoformat(),
-            'PENDING'
-        ))
+        """,
+            (
+                transaction_data.get("transaction_id"),
+                transaction_data.get("user_id"),
+                transaction_data.get("amount_tnd"),
+                transaction_data.get("governorate"),
+                transaction_data.get("payment_method"),
+                transaction_data.get("timestamp"),
+                transaction_data.get("ml_probability", 0.0),
+                error_code,
+                error_message,
+                datetime.now().isoformat(),
+                "PENDING",
+            ),
+        )
 
         conn.commit()
         conn.close()
@@ -163,26 +167,40 @@ def retry_failed_alerts(max_attempts=3):
         ensure_dlq_table(conn)
 
         # Get failed alerts that haven't exceeded max attempts
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT id, transaction_id, user_id, amount_tnd, governorate, payment_method,
                    timestamp, ml_probability, error_code, error_message, attempts
             FROM failed_alerts
             WHERE status IN ('PENDING', 'RETRYING') AND attempts < ?
             ORDER BY created_at ASC
-        """, (max_attempts,))
+        """,
+            (max_attempts,),
+        )
 
         failed_records = cursor.fetchall()
         conn.close()
 
         if not failed_records:
-            print("No failed alerts to retry.")
+            logger.debug("No failed alerts to retry.")
             return
 
         print(f"Retrying {len(failed_records)} failed alerts...")
 
         for record in failed_records:
-            record_id, transaction_id, user_id, amount_tnd, governorate, payment_method, \
-            timestamp, ml_probability, error_code, error_message, attempts = record
+            (
+                record_id,
+                transaction_id,
+                user_id,
+                amount_tnd,
+                governorate,
+                payment_method,
+                timestamp,
+                ml_probability,
+                error_code,
+                error_message,
+                attempts,
+            ) = record
             attempt_number = attempts + 1
             last_attempt_time = datetime.now().isoformat()
             increment_dlq_attempts(record_id, last_attempt_time, status="RETRYING")
@@ -201,12 +219,7 @@ def retry_failed_alerts(max_attempts=3):
 
             # Attempt to resend the alert
             try:
-                api_response = make_authenticated_request(
-                    "POST",
-                    "/alerts/add/",
-                    payload=alert_payload,
-                    timeout=10
-                )
+                api_response = make_authenticated_request("POST", "/alerts/add/", payload=alert_payload, timeout=10)
 
                 if api_response and api_response.status_code == 200:
                     # Update status to SUCCESS
@@ -240,11 +253,14 @@ def update_dlq_status(record_id, status):
         conn = get_sqlite_connection(DLQ_DB_PATH)
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             UPDATE failed_alerts
             SET status = ?, last_attempt = ?
             WHERE id = ?
-        """, (status, datetime.now().isoformat(), record_id))
+        """,
+            (status, datetime.now().isoformat(), record_id),
+        )
 
         conn.commit()
         conn.close()
@@ -259,17 +275,23 @@ def increment_dlq_attempts(record_id, last_attempt_time, status=None):
         cursor = conn.cursor()
 
         if status is None:
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE failed_alerts
                 SET attempts = attempts + 1, last_attempt = ?
                 WHERE id = ?
-            """, (last_attempt_time, record_id))
+            """,
+                (last_attempt_time, record_id),
+            )
         else:
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE failed_alerts
                 SET attempts = attempts + 1, last_attempt = ?, status = ?
                 WHERE id = ?
-            """, (last_attempt_time, status, record_id))
+            """,
+                (last_attempt_time, status, record_id),
+            )
 
         conn.commit()
         conn.close()

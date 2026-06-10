@@ -1,6 +1,9 @@
 """Tests for transaction producer."""
+
 import json
+
 import pytest
+
 from producer.producer import generate_tx
 
 
@@ -11,8 +14,16 @@ class TestProducer:
 
     def test_generate_tx_has_required_fields(self):
         tx = generate_tx()
-        required = {"transaction_id", "timestamp", "user_id", "amount_tnd",
-                     "governorate", "payment_method", "branch_id", "fraud_seed"}
+        required = {
+            "transaction_id",
+            "timestamp",
+            "user_id",
+            "amount_tnd",
+            "governorate",
+            "payment_method",
+            "branch_id",
+            "fraud_seed",
+        }
         assert required.issubset(tx.keys())
 
     def test_generate_tx_amount_range(self):

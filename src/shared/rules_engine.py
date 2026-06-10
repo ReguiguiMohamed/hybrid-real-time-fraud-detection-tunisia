@@ -8,12 +8,14 @@ Features:
 - Audit trail for every rule change
 - Fallback to compiled defaults if database is unavailable
 """
+
+import logging
 import sqlite3
 import time
-import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
-from functools import lru_cache
+
 from compliance.change_audit import append_change_audit_event
 
 logger = logging.getLogger(__name__)
@@ -37,9 +39,9 @@ DEFAULT_D17_VELOCITY_CAP = 5
 # large-transaction AML monitoring trigger, not a structuring-cap signal.
 DEFAULT_HIGH_VALUE_THRESHOLD = 15000.0
 # Velocity-based smurfing defaults (independent of any hard cash cap)
-DEFAULT_SMURFING_UNIT_CAP = 3000.0    # per-tx amount ceiling to qualify as smurfing unit
-DEFAULT_SMURFING_AGG_MIN = 9000.0     # window aggregate must exceed this to fire
-DEFAULT_SMURFING_MIN_COUNT = 3        # minimum qualifying tx count in window
+DEFAULT_SMURFING_UNIT_CAP = 3000.0  # per-tx amount ceiling to qualify as smurfing unit
+DEFAULT_SMURFING_AGG_MIN = 9000.0  # window aggregate must exceed this to fire
+DEFAULT_SMURFING_MIN_COUNT = 3  # minimum qualifying tx count in window
 
 
 class RulesEngine:
@@ -214,16 +216,10 @@ class RulesEngine:
         self._ensure_cache()
         risk_rules = self._cache.get("risk_rules", {})
         return {
-            "unit_cap": risk_rules.get("smurfing_velocity_unit_cap", {}).get(
-                "threshold", DEFAULT_SMURFING_UNIT_CAP
-            ),
-            "agg_min": risk_rules.get("smurfing_velocity_agg_min", {}).get(
-                "threshold", DEFAULT_SMURFING_AGG_MIN
-            ),
+            "unit_cap": risk_rules.get("smurfing_velocity_unit_cap", {}).get("threshold", DEFAULT_SMURFING_UNIT_CAP),
+            "agg_min": risk_rules.get("smurfing_velocity_agg_min", {}).get("threshold", DEFAULT_SMURFING_AGG_MIN),
             "min_count": int(
-                risk_rules.get("smurfing_velocity_min_count", {}).get(
-                    "threshold", DEFAULT_SMURFING_MIN_COUNT
-                )
+                risk_rules.get("smurfing_velocity_min_count", {}).get("threshold", DEFAULT_SMURFING_MIN_COUNT)
             ),
         }
 
@@ -326,27 +322,29 @@ class RulesEngine:
 
             conn.commit()
 
-            append_change_audit_event({
-                "event_type": "RULE_CHANGE",
-                "actor": changed_by,
-                "approved_by": changed_by,
-                "entity_type": "RULE",
-                "entity_id": rule_name,
-                "action": "UPDATE",
-                "ruleset_id": RULESET_ID,
-                "ruleset_version": RULESET_VERSION,
-                "git_tag": RULESET_GIT_TAG,
-                "previous_state": {
-                    "weight": old_weight,
-                    "threshold": old_threshold,
-                },
-                "new_state": {
-                    "weight": weight if weight is not None else old_weight,
-                    "threshold": threshold if threshold is not None else old_threshold,
-                },
-                "justification": change_reason,
-                "related_regulatory_reference": regulatory_reference,
-            })
+            append_change_audit_event(
+                {
+                    "event_type": "RULE_CHANGE",
+                    "actor": changed_by,
+                    "approved_by": changed_by,
+                    "entity_type": "RULE",
+                    "entity_id": rule_name,
+                    "action": "UPDATE",
+                    "ruleset_id": RULESET_ID,
+                    "ruleset_version": RULESET_VERSION,
+                    "git_tag": RULESET_GIT_TAG,
+                    "previous_state": {
+                        "weight": old_weight,
+                        "threshold": old_threshold,
+                    },
+                    "new_state": {
+                        "weight": weight if weight is not None else old_weight,
+                        "threshold": threshold if threshold is not None else old_threshold,
+                    },
+                    "justification": change_reason,
+                    "related_regulatory_reference": regulatory_reference,
+                }
+            )
 
             # Force cache refresh
             self.force_refresh()

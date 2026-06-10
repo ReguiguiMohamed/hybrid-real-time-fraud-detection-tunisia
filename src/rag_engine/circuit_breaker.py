@@ -25,29 +25,31 @@ Usage:
     # The circuit automatically falls back to deterministic SAR
     # when tripped, and probes for recovery after cooldown.
 """
+
 import logging
-import time
 import threading
+import time
 from enum import Enum
-from typing import Optional, Callable, Any
 from functools import wraps
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class CircuitState(Enum):
-    CLOSED = "closed"         # Normal operation, LLM is healthy
-    OPEN = "open"             # Tripped, using fallback
-    HALF_OPEN = "half_open"   # Testing if LLM recovered
+    CLOSED = "closed"  # Normal operation, LLM is healthy
+    OPEN = "open"  # Tripped, using fallback
+    HALF_OPEN = "half_open"  # Testing if LLM recovered
 
 
 class CircuitBreakerConfig:
     """Configuration for the circuit breaker."""
+
     def __init__(
         self,
-        failure_threshold: int = 5,         # Consecutive failures to trip
+        failure_threshold: int = 5,  # Consecutive failures to trip
         latency_threshold_ms: float = 2000,  # Max acceptable latency (2s default)
-        recovery_timeout_s: float = 60,      # Time before probing recovery
+        recovery_timeout_s: float = 60,  # Time before probing recovery
         name: str = "rag_circuit",
     ):
         self.failure_threshold = failure_threshold
@@ -58,6 +60,7 @@ class CircuitBreakerConfig:
 
 class CircuitBreakerError(Exception):
     """Raised when the circuit is OPEN and fallback is not available."""
+
     pass
 
 
@@ -110,7 +113,9 @@ class CircuitBreaker:
                 if self._consecutive_failures >= self.config.failure_threshold:
                     self._state = CircuitState.OPEN
                     self._last_failure_time = time.time()
-                    logger.error(f"[{self.config.name}] Circuit TRIPPED: LLM latency exceeded {self.config.failure_threshold} consecutive times")
+                    logger.error(
+                        f"[{self.config.name}] Circuit TRIPPED: LLM latency exceeded {self.config.failure_threshold} consecutive times"
+                    )
             else:
                 # True success resets the counter
                 if self._state == CircuitState.HALF_OPEN:
@@ -124,12 +129,16 @@ class CircuitBreaker:
             self._total_calls += 1
             self._consecutive_failures += 1
             self._last_failure_time = time.time()
-            logger.error(f"[{self.config.name}] Call failed: {error} (consecutive: {self._consecutive_failures}/{self.config.failure_threshold})")
+            logger.error(
+                f"[{self.config.name}] Call failed: {error} (consecutive: {self._consecutive_failures}/{self.config.failure_threshold})"
+            )
 
             if self._consecutive_failures >= self.config.failure_threshold:
                 if self._state != CircuitState.OPEN:
                     self._state = CircuitState.OPEN
-                    logger.error(f"[{self.config.name}] Circuit TRIPPED: {self.config.failure_threshold} consecutive failures")
+                    logger.error(
+                        f"[{self.config.name}] Circuit TRIPPED: {self.config.failure_threshold} consecutive failures"
+                    )
 
     def allow_request(self) -> bool:
         """
@@ -181,6 +190,7 @@ class CircuitBreaker:
 
 # ==================== Decorator for Wrapping LLM Calls ====================
 
+
 class RagCircuitDecorator:
     """
     Decorator that wraps LLM generation calls with circuit breaker logic.
@@ -223,12 +233,14 @@ def get_rag_circuit() -> CircuitBreaker:
     """Get the RAG circuit breaker singleton."""
     global _rag_circuit
     if _rag_circuit is None:
-        _rag_circuit = CircuitBreaker(CircuitBreakerConfig(
-            failure_threshold=5,
-            latency_threshold_ms=2000,  # 2 seconds
-            recovery_timeout_s=60,      # 1 minute cooldown
-            name="rag_llm",
-        ))
+        _rag_circuit = CircuitBreaker(
+            CircuitBreakerConfig(
+                failure_threshold=5,
+                latency_threshold_ms=2000,  # 2 seconds
+                recovery_timeout_s=60,  # 1 minute cooldown
+                name="rag_llm",
+            )
+        )
     return _rag_circuit
 
 

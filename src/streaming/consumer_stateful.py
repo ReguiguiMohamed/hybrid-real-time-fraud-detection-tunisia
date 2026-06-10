@@ -15,31 +15,33 @@ Architecture:
 4. ML inference on enriched features
 5. Alert dispatch with SAR generation
 """
-import os
+
 import logging
+import os
 import threading
-import json
-from datetime import datetime, timedelta
+from datetime import datetime
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-hadoop_home = os.getenv('HADOOP_HOME')
+hadoop_home = os.getenv("HADOOP_HOME")
 if hadoop_home:
-    os.environ['HADOOP_HOME'] = hadoop_home
+    os.environ["HADOOP_HOME"] = hadoop_home
+
+import time
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    from_json, col, window, count, approx_count_distinct, when, lit,
-    to_timestamp, expr, avg, max as spark_max, min as spark_min,
-    stddev, collect_list, struct, map_in_pandas
-)
-from pyspark.sql.types import DoubleType, StringType, IntegerType, FloatType, ArrayType
-from shared.schemas import Transaction, TRANSACTION_SPARK_SCHEMA
-from shared.quality_gates import validate_transaction_quality, apply_d17_rule
-from shared.utils import make_authenticated_request, log_failed_alert, retry_failed_alerts, get_sqlite_connection
+from pyspark.sql.functions import approx_count_distinct, avg, col, count, expr, from_json, lit
+from pyspark.sql.functions import max as spark_max
+from pyspark.sql.functions import min as spark_min
+from pyspark.sql.functions import stddev, to_timestamp, when, window
+from pyspark.sql.types import DoubleType, IntegerType
+
 from shared.pii_masking import hash_pii
-import time
+from shared.quality_gates import apply_d17_rule, validate_transaction_quality
+from shared.schemas import TRANSACTION_SPARK_SCHEMA
+from shared.utils import get_sqlite_connection, log_failed_alert, make_authenticated_request, retry_failed_alerts
 
 schema = TRANSACTION_SPARK_SCHEMA
 
@@ -60,12 +62,13 @@ class StatefulFraudProcessor:
     """
 
     def __init__(self, kafka_bootstrap=None):
-        self.spark = SparkSession.builder \
-            .appName("Tunisia-Fraud-Stateful-Silver") \
-            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1") \
-            .config("spark.sql.streaming.checkpointLocation", "./tmp/checkpoint_stateful") \
-            .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true") \
+        self.spark = (
+            SparkSession.builder.appName("Tunisia-Fraud-Stateful-Silver")
+            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1")
+            .config("spark.sql.streaming.checkpointLocation", "./tmp/checkpoint_stateful")
+            .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
             .getOrCreate()
+        )
 
         self.spark.sparkContext.setLogLevel("WARN")
 
@@ -77,6 +80,7 @@ class StatefulFraudProcessor:
         # Load XGBoost model for inference
         try:
             from xgboost.spark import SparkXGBClassifierModel
+
             model_path = self._get_champion_model_path()
             if model_path:
                 self.ml_model = SparkXGBClassifierModel.load(model_path)
@@ -114,9 +118,7 @@ class StatefulFraudProcessor:
                     logging.exception("DLQ retry worker error")
                 self._dlq_retry_stop.wait(interval)
 
-        self._dlq_retry_thread = threading.Thread(
-            target=retry_loop, name="dlq-retry-worker", daemon=True
-        )
+        self._dlq_retry_thread = threading.Thread(target=retry_loop, name="dlq-retry-worker", daemon=True)
         self._dlq_retry_thread.start()
 
     @staticmethod
@@ -206,8 +208,9 @@ class StatefulFraudProcessor:
         - is_repeat_governorate: Whether user is in same location as before
         """
         # Add event time and watermark
-        enriched = validated_df.withColumn("event_time", to_timestamp(col("timestamp"))) \
-                               .withWatermark("event_time", "10 minutes")
+        enriched = validated_df.withColumn("event_time", to_timestamp(col("timestamp"))).withWatermark(
+            "event_time", "10 minutes"
+        )
 
         # Apply D17 rule
         enriched_with_d17 = apply_d17_rule(enriched)
@@ -215,8 +218,7 @@ class StatefulFraudProcessor:
         # Stateful windowed aggregation (5-min window, 1-min slide)
         # This creates per-user state that persists across micro-batches
         windowed_state = enriched_with_d17.groupBy(
-            window(col("event_time"), "5 minutes", "1 minute"),
-            col("user_id")
+            window(col("event_time"), "5 minutes", "1 minute"), col("user_id")
         ).agg(
             count("transaction_id").alias("v_count"),
             approx_count_distinct("governorate").alias("g_dist"),
@@ -227,37 +229,33 @@ class StatefulFraudProcessor:
             approx_count_distinct("payment_method").alias("payment_method_diversity"),
             expr("sum(case when payment_method = 'Flouci' then 1 else 0 end)").alias("flouci_count"),
             expr("sum(case when amount_tnd between 1400 and 1500 then 1 else 0 end)").alias("smurfing_count"),
-            expr("sum(case when payment_method = 'Flouci' and amount_tnd > 2000 then 1 else 0 end)").alias("d17_trigger_count"),
+            expr("sum(case when payment_method = 'Flouci' and amount_tnd > 2000 then 1 else 0 end)").alias(
+                "d17_trigger_count"
+            ),
         )
 
         # Join window state back to individual transactions
         # This gives each transaction the context of its user's window state
-        stateful_enriched = enriched_with_d17.join(
-            windowed_state,
-            on=["user_id"],
-            how="left"
-        )
+        stateful_enriched = enriched_with_d17.join(windowed_state, on=["user_id"], how="left")
 
         # Calculate temporal features
-        stateful_enriched = stateful_enriched.withColumn(
-            "amount_in_smurfing_range",
-            when(col("amount_tnd").between(1400, 1500), 1).otherwise(0)
-        ).withColumn(
-            "is_high_velocity",
-            when(col("v_count") > 5, 1).otherwise(0)
-        ).withColumn(
-            "amount_coefficient_of_variation",
-            when(col("amount_stddev").isNotNull() & (col("avg_amount") > 0),
-                 col("amount_stddev") / col("avg_amount")).otherwise(0.0)
-        ).withColumn(
-            "is_multi_location",
-            when(col("g_dist") > 1, 1).otherwise(0)
+        stateful_enriched = (
+            stateful_enriched.withColumn(
+                "amount_in_smurfing_range", when(col("amount_tnd").between(1400, 1500), 1).otherwise(0)
+            )
+            .withColumn("is_high_velocity", when(col("v_count") > 5, 1).otherwise(0))
+            .withColumn(
+                "amount_coefficient_of_variation",
+                when(
+                    col("amount_stddev").isNotNull() & (col("avg_amount") > 0), col("amount_stddev") / col("avg_amount")
+                ).otherwise(0.0),
+            )
+            .withColumn("is_multi_location", when(col("g_dist") > 1, 1).otherwise(0))
         )
 
         # PII hashing for compliance
         stateful_enriched = stateful_enriched.withColumn(
-            "user_id_hashed",
-            expr("sha2(user_id, 256)")  # SHA-256 hash of user_id
+            "user_id_hashed", expr("sha2(user_id, 256)")  # SHA-256 hash of user_id
         )
 
         return stateful_enriched
@@ -277,31 +275,26 @@ class StatefulFraudProcessor:
             # Fallback to compiled defaults
             from shared.risk_config import RISK_WEIGHTS
             from shared.rules_engine import DEFAULT_HIGH_VALUE_THRESHOLD
+
             weights = RISK_WEIGHTS
             high_value_threshold = DEFAULT_HIGH_VALUE_THRESHOLD
 
-        scored = stateful_df.withColumn(
-            "velocity_risk",
-            when(col("v_count") > 3, lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            "travel_risk",
-            when(col("g_dist") > 1, lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            "high_value_risk",
-            when(col("avg_amount") > lit(high_value_threshold), lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            "d17_risk",
-            when(col("d17_trigger_count") > 0, lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            "smurfing_risk",
-            when(col("smurfing_count") > 2, lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            "risk_score",
-            (col("velocity_risk") * lit(weights["velocity"])) +
-            (col("travel_risk") * lit(weights["travel"])) +
-            (col("high_value_risk") * lit(weights["high_value"])) +
-            (col("d17_risk") * lit(weights["d17_limit"])) +
-            (col("smurfing_risk") * 0.15)  # Additional smurfing weight
+        scored = (
+            stateful_df.withColumn("velocity_risk", when(col("v_count") > 3, lit(1.0)).otherwise(lit(0.0)))
+            .withColumn("travel_risk", when(col("g_dist") > 1, lit(1.0)).otherwise(lit(0.0)))
+            .withColumn(
+                "high_value_risk", when(col("avg_amount") > lit(high_value_threshold), lit(1.0)).otherwise(lit(0.0))
+            )
+            .withColumn("d17_risk", when(col("d17_trigger_count") > 0, lit(1.0)).otherwise(lit(0.0)))
+            .withColumn("smurfing_risk", when(col("smurfing_count") > 2, lit(1.0)).otherwise(lit(0.0)))
+            .withColumn(
+                "risk_score",
+                (col("velocity_risk") * lit(weights["velocity"]))
+                + (col("travel_risk") * lit(weights["travel"]))
+                + (col("high_value_risk") * lit(weights["high_value"]))
+                + (col("d17_risk") * lit(weights["d17_limit"]))
+                + (col("smurfing_risk") * 0.15),  # Additional smurfing weight
+            )
         )
 
         return scored
@@ -315,10 +308,17 @@ class StatefulFraudProcessor:
 
         assembler = VectorAssembler(
             inputCols=[
-                "v_count", "g_dist", "avg_amount",
-                "is_smurfing", "high_velocity_flag",
-                "velocity_risk", "travel_risk", "high_value_risk",
-                "d17_risk", "risk_score", "smurfing_risk",
+                "v_count",
+                "g_dist",
+                "avg_amount",
+                "is_smurfing",
+                "high_velocity_flag",
+                "velocity_risk",
+                "travel_risk",
+                "high_value_risk",
+                "d17_risk",
+                "risk_score",
+                "smurfing_risk",
                 "amount_coefficient_of_variation",
             ],
             outputCol="features",
@@ -328,8 +328,9 @@ class StatefulFraudProcessor:
         assembled = assembler.transform(features_df)
         predictions = self.ml_model.transform(assembled)
 
-        return predictions.withColumnRenamed("prediction", "ml_prediction") \
-                          .withColumnRenamed("probability", "ml_probability")
+        return predictions.withColumnRenamed("prediction", "ml_prediction").withColumnRenamed(
+            "probability", "ml_probability"
+        )
 
     def _count_new_feedback_since_promotion(self):
         try:
@@ -364,7 +365,7 @@ class StatefulFraudProcessor:
             ingestion_latency = 0.0
             if event_timestamp_str:
                 try:
-                    event_time = datetime.fromisoformat(event_timestamp_str.replace('Z', '+00:00'))
+                    event_time = datetime.fromisoformat(event_timestamp_str.replace("Z", "+00:00"))
                     processing_time = datetime.now()
                     ingestion_latency = (processing_time - event_time).total_seconds()
                 except Exception:
@@ -400,9 +401,7 @@ class StatefulFraudProcessor:
 
             try:
                 start_time = time.time()
-                api_response = make_authenticated_request(
-                    "POST", "/alerts/add/", payload=alert_payload, timeout=5
-                )
+                api_response = make_authenticated_request("POST", "/alerts/add/", payload=alert_payload, timeout=5)
                 api_call_duration = time.time() - start_time
 
                 if api_response and api_response.status_code == 200:
@@ -449,8 +448,9 @@ class StatefulFraudProcessor:
         if not high_risk_rows and not sampled_low_risk_rows and not uncertainty_rows:
             return
 
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+
         from rag_engine.sar_generator import SARGenerator
-        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
         sar_gen = SARGenerator() if high_risk_rows else None
         max_workers, async_timeout = self._load_alerting_config()
@@ -546,9 +546,10 @@ class StatefulFraudProcessor:
             return
 
         # Process alerts (with shadow model comparison if active)
-        from rag_engine.sar_generator import SARGenerator
-        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+
         from ml.shadow_model import ShadowModelManager
+        from rag_engine.sar_generator import SARGenerator
 
         # Shadow model scoring
         shadow = ShadowModelManager()
@@ -629,16 +630,20 @@ class StatefulFraudProcessor:
         7. Parquet persistence (Silver)
         """
         # 1. Bronze: Ingest from Kafka
-        raw_stream = self.spark.readStream.format("kafka") \
-            .option("kafka.bootstrap.servers", self.kafka_bootstrap) \
-            .option("subscribe", "tunisian_transactions") \
-            .option("failOnDataLoss", "false") \
+        raw_stream = (
+            self.spark.readStream.format("kafka")
+            .option("kafka.bootstrap.servers", self.kafka_bootstrap)
+            .option("subscribe", "tunisian_transactions")
+            .option("failOnDataLoss", "false")
             .load()
+        )
 
         # Deserialize JSON
-        json_df = raw_stream.selectExpr("CAST(value AS STRING)") \
-            .select(from_json(col("value"), schema).alias("data")) \
+        json_df = (
+            raw_stream.selectExpr("CAST(value AS STRING)")
+            .select(from_json(col("value"), schema).alias("data"))
             .select("data.*")
+        )
 
         # 2. Quality gates
         validated_df = validate_transaction_quality(json_df)
@@ -651,10 +656,17 @@ class StatefulFraudProcessor:
 
         # Ensure consistent feature columns for ML
         feature_cols = [
-            "v_count", "g_dist", "avg_amount",
-            "is_smurfing", "high_velocity_flag",
-            "velocity_risk", "travel_risk", "high_value_risk",
-            "d17_risk", "risk_score", "smurfing_risk",
+            "v_count",
+            "g_dist",
+            "avg_amount",
+            "is_smurfing",
+            "high_velocity_flag",
+            "velocity_risk",
+            "travel_risk",
+            "high_value_risk",
+            "d17_risk",
+            "risk_score",
+            "smurfing_risk",
             "amount_coefficient_of_variation",
         ]
 
@@ -669,13 +681,14 @@ class StatefulFraudProcessor:
         final_df = self._apply_ml_inference(scored_df)
 
         # 6 & 7. Idempotent alert dispatch + persistence
-        query = final_df.writeStream \
-            .format("parquet") \
-            .outputMode("append") \
-            .option("path", "./data/parquet/silver_fraud_alerts") \
-            .option("checkpointLocation", "./tmp/checkpoint_stateful/silver_fraud") \
-            .foreachBatch(self._check_and_trigger_retraining) \
+        query = (
+            final_df.writeStream.format("parquet")
+            .outputMode("append")
+            .option("path", "./data/parquet/silver_fraud_alerts")
+            .option("checkpointLocation", "./tmp/checkpoint_stateful/silver_fraud")
+            .foreachBatch(self._check_and_trigger_retraining)
             .start()
+        )
 
         self.start_dlq_retry_worker()
         return query

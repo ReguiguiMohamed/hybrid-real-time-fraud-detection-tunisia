@@ -22,10 +22,11 @@ Usage:
             span.set_attribute("alert_id", id)
             # ... logic
 """
-import os
+
 import logging
+import os
 from contextlib import contextmanager
-from typing import Optional, Generator
+from typing import Generator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +76,9 @@ class AmastanTracer:
 
         try:
             from opentelemetry import trace
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
             # Create provider
             provider = TracerProvider()
@@ -121,9 +122,11 @@ class AmastanTracer:
 
                 # Patch set_attribute to also set on OTel span
                 original_set_attr = span.set_attribute
+
                 def patched_set_attr(key, value):
                     original_set_attr(key, value)
                     otel_span.set_attribute(key, value)
+
                 span.set_attribute = patched_set_attr
 
                 yield span
@@ -150,6 +153,7 @@ class AmastanTracer:
             try:
                 from opentelemetry.metrics import set_meter_provider
                 from opentelemetry.sdk.metrics import MeterProvider
+
                 # Metric recording would go here
                 pass
             except Exception:

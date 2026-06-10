@@ -1,11 +1,11 @@
 """Local Kubernetes manifest checks that do not require a cluster."""
+
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import yaml
-
 
 K8S_DIR = Path(__file__).resolve().parents[1] / "k8s"
 APPLIED_MANIFESTS = sorted(K8S_DIR.glob("*.yml"))
@@ -25,8 +25,7 @@ def find_one(documents, kind, name):
     matches = [
         document
         for _, document in documents
-        if document.get("kind") == kind
-        and document.get("metadata", {}).get("name") == name
+        if document.get("kind") == kind and document.get("metadata", {}).get("name") == name
     ]
     if len(matches) != 1:
         raise AssertionError(f"Expected exactly one {kind}/{name}, found {len(matches)}")
@@ -44,10 +43,7 @@ def container_env(container):
 
 
 def container_mounts(container):
-    return {
-        item["name"]: item["mountPath"]
-        for item in container.get("volumeMounts", [])
-    }
+    return {item["name"]: item["mountPath"] for item in container.get("volumeMounts", [])}
 
 
 def validate():
@@ -56,15 +52,10 @@ def validate():
         raise AssertionError("No Kubernetes manifests found")
 
     applied_secrets = [
-        document.get("metadata", {}).get("name")
-        for _, document in documents
-        if document.get("kind") == "Secret"
+        document.get("metadata", {}).get("name") for _, document in documents if document.get("kind") == "Secret"
     ]
     if applied_secrets:
-        raise AssertionError(
-            "Applied manifests must not include static Secrets; found "
-            + ", ".join(applied_secrets)
-        )
+        raise AssertionError("Applied manifests must not include static Secrets; found " + ", ".join(applied_secrets))
 
     api = find_one(documents, "Deployment", "fraud-api")
     if api["spec"].get("replicas") != 1:

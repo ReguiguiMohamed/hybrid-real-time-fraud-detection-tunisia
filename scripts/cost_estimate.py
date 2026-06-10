@@ -8,9 +8,10 @@ Usage:
     python scripts/cost_estimate.py
     python scripts/cost_estimate.py --cloud aws --region us-east-1 --tx-per-day 1000000
 """
+
 import argparse
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 
@@ -50,8 +51,9 @@ def estimate_aws(region: str = "us-east-1", tx_per_day: int = 1_000_000, fraud_r
     ollama_hourly = 1.006  # GPU instance
     chroma_hourly = 0.0208
 
-    costs.compute_monthly = (kafka_hourly + zookeeper_hourly + spark_hourly +
-                             api_hourly + ollama_hourly + chroma_hourly) * compute_hours
+    costs.compute_monthly = (
+        kafka_hourly + zookeeper_hourly + spark_hourly + api_hourly + ollama_hourly + chroma_hourly
+    ) * compute_hours
 
     # EKS control plane
     costs.compute_monthly += 0.10 * compute_hours  # $0.10/hr for EKS
@@ -64,7 +66,7 @@ def estimate_aws(region: str = "us-east-1", tx_per_day: int = 1_000_000, fraud_r
 
     # Network: Data transfer (egress)
     # Assume 1KB per transaction, 10% of traffic goes to API responses
-    daily_data_gb = (tx_per_day * 1024) / (1024 ** 3)
+    daily_data_gb = (tx_per_day * 1024) / (1024**3)
     monthly_data_gb = daily_data_gb * 30
     egress_per_gb = 0.09  # First 10TB/month
     costs.network_monthly = monthly_data_gb * egress_per_gb
@@ -82,9 +84,13 @@ def estimate_aws(region: str = "us-east-1", tx_per_day: int = 1_000_000, fraud_r
     # Managed Prometheus: $0.90/million samples, ~1M/day = $27
     costs.monitoring_monthly = 15 + 27
 
-    costs.total_monthly = (costs.compute_monthly + costs.storage_monthly +
-                          costs.network_monthly + costs.ml_inference_monthly +
-                          costs.monitoring_monthly)
+    costs.total_monthly = (
+        costs.compute_monthly
+        + costs.storage_monthly
+        + costs.network_monthly
+        + costs.ml_inference_monthly
+        + costs.monitoring_monthly
+    )
     costs.annual_run_rate = costs.total_monthly * 12
     costs.cost_per_transaction = costs.total_monthly / (tx_per_day * 30)
     costs.cost_per_fraud_alert = costs.total_monthly / (tx_per_day * 30 * fraud_rate) if fraud_rate > 0 else 0
@@ -105,14 +111,15 @@ def estimate_gcp(region: str = "us-central1", tx_per_day: int = 1_000_000, fraud
     ollama_hourly = 1.030  # g2-standard-4 (L4 GPU)
     chroma_hourly = 0.017  # e2-small
 
-    costs.compute_monthly = (kafka_hourly + zookeeper_hourly + spark_hourly +
-                             api_hourly + ollama_hourly + chroma_hourly) * compute_hours
+    costs.compute_monthly = (
+        kafka_hourly + zookeeper_hourly + spark_hourly + api_hourly + ollama_hourly + chroma_hourly
+    ) * compute_hours
     costs.compute_monthly += 0.10 * compute_hours  # GKE control plane
 
     storage_gb = 180
     costs.storage_monthly = storage_gb * 0.08  # pd-standard
 
-    daily_data_gb = (tx_per_day * 1024) / (1024 ** 3)
+    daily_data_gb = (tx_per_day * 1024) / (1024**3)
     monthly_data_gb = daily_data_gb * 30
     costs.network_monthly = monthly_data_gb * 0.08  # GCP egress
 
@@ -121,9 +128,13 @@ def estimate_gcp(region: str = "us-central1", tx_per_day: int = 1_000_000, fraud
 
     costs.monitoring_monthly = 20  # Cloud Monitoring
 
-    costs.total_monthly = (costs.compute_monthly + costs.storage_monthly +
-                          costs.network_monthly + costs.ml_inference_monthly +
-                          costs.monitoring_monthly)
+    costs.total_monthly = (
+        costs.compute_monthly
+        + costs.storage_monthly
+        + costs.network_monthly
+        + costs.ml_inference_monthly
+        + costs.monitoring_monthly
+    )
     costs.annual_run_rate = costs.total_monthly * 12
     costs.cost_per_transaction = costs.total_monthly / (tx_per_day * 30)
     costs.cost_per_fraud_alert = costs.total_monthly / (tx_per_day * 30 * fraud_rate) if fraud_rate > 0 else 0
@@ -144,14 +155,15 @@ def estimate_azure(region: str = "eastus", tx_per_day: int = 1_000_000, fraud_ra
     ollama_hourly = 1.120  # Standard_NC8as_T4_v3
     chroma_hourly = 0.021  # Standard_B1s
 
-    costs.compute_monthly = (kafka_hourly + zookeeper_hourly + spark_hourly +
-                             api_hourly + ollama_hourly + chroma_hourly) * compute_hours
+    costs.compute_monthly = (
+        kafka_hourly + zookeeper_hourly + spark_hourly + api_hourly + ollama_hourly + chroma_hourly
+    ) * compute_hours
     costs.compute_monthly += 0.10 * compute_hours  # AKS
 
     storage_gb = 180
     costs.storage_monthly = storage_gb * 0.084  # Premium SSD LRS
 
-    daily_data_gb = (tx_per_day * 1024) / (1024 ** 3)
+    daily_data_gb = (tx_per_day * 1024) / (1024**3)
     monthly_data_gb = daily_data_gb * 30
     costs.network_monthly = monthly_data_gb * 0.087
 
@@ -160,9 +172,13 @@ def estimate_azure(region: str = "eastus", tx_per_day: int = 1_000_000, fraud_ra
 
     costs.monitoring_monthly = 20  # Azure Monitor
 
-    costs.total_monthly = (costs.compute_monthly + costs.storage_monthly +
-                          costs.network_monthly + costs.ml_inference_monthly +
-                          costs.monitoring_monthly)
+    costs.total_monthly = (
+        costs.compute_monthly
+        + costs.storage_monthly
+        + costs.network_monthly
+        + costs.ml_inference_monthly
+        + costs.monitoring_monthly
+    )
     costs.annual_run_rate = costs.total_monthly * 12
     costs.cost_per_transaction = costs.total_monthly / (tx_per_day * 30)
     costs.cost_per_fraud_alert = costs.total_monthly / (tx_per_day * 30 * fraud_rate) if fraud_rate > 0 else 0
@@ -208,13 +224,12 @@ def print_cost_report(cloud_name: str, costs: CostBreakdown, tx_per_day: int):
 
 def main():
     parser = argparse.ArgumentParser(description="Cloud infrastructure cost estimation")
-    parser.add_argument("--cloud", choices=["aws", "gcp", "azure", "all"], default="all",
-                       help="Cloud provider to estimate")
+    parser.add_argument(
+        "--cloud", choices=["aws", "gcp", "azure", "all"], default="all", help="Cloud provider to estimate"
+    )
     parser.add_argument("--region", default="us-east-1", help="Cloud region")
-    parser.add_argument("--tx-per-day", type=int, default=1_000_000,
-                       help="Expected daily transaction volume")
-    parser.add_argument("--fraud-rate", type=float, default=0.0001,
-                       help="Expected fraud rate (default: 0.01%)")
+    parser.add_argument("--tx-per-day", type=int, default=1_000_000, help="Expected daily transaction volume")
+    parser.add_argument("--fraud-rate", type=float, default=0.0001, help="Expected fraud rate (default: 0.01%)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     args = parser.parse_args()
 

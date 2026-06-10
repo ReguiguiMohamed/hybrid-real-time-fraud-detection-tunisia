@@ -21,13 +21,14 @@ Usage:
         dedup.mark_processed("tx-id-001")
         # ... score transaction
 """
+
 import logging
-import time
-import sqlite3
 import os
+import sqlite3
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
-from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class DedupCache:
         """Initialize Redis connection."""
         try:
             import redis
+
             redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
             self._redis_client = redis.Redis.from_url(redis_url, socket_timeout=5, decode_responses=True)
             self._redis_client.ping()
@@ -173,14 +175,17 @@ class DedupCache:
             cursor = conn.cursor()
 
             # Insert or update (in case of retry)
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO dedup_cache (tx_id, processed_at, score, alert_triggered)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(tx_id) DO UPDATE SET
                     processed_at = excluded.processed_at,
                     score = excluded.score,
                     alert_triggered = excluded.alert_triggered
-            """, (tx_id, time.time(), score, 1 if alert_triggered else 0))
+            """,
+                (tx_id, time.time(), score, 1 if alert_triggered else 0),
+            )
 
             # Evict expired entries periodically (every 100th call)
             if int(time.time()) % 100 == 0:
@@ -200,6 +205,7 @@ class DedupCache:
             data = self._redis_client.get(f"dedup:{tx_id}")
             if data:
                 import json
+
                 return json.loads(data)
             return None
 

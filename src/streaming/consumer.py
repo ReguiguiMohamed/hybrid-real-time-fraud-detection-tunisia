@@ -1,35 +1,38 @@
 # src/streaming/consumer.py
-import os
 import logging
+import os
 import threading
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Set HADOOP_HOME from environment variable (required for PySpark on Windows)
-hadoop_home = os.getenv('HADOOP_HOME')
+hadoop_home = os.getenv("HADOOP_HOME")
 if hadoop_home:
-    os.environ['HADOOP_HOME'] = hadoop_home
+    os.environ["HADOOP_HOME"] = hadoop_home
+
+import time
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, window, count, approx_count_distinct, when, lit, to_timestamp, expr
+from pyspark.sql.functions import approx_count_distinct, col, count, expr, from_json, lit, to_timestamp, when, window
 from pyspark.sql.types import DoubleType
-from shared.schemas import Transaction, TRANSACTION_SPARK_SCHEMA
-from shared.risk_config import RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
-from shared.rules_engine import get_rules_engine
-from shared.quality_gates import (
-    validate_transaction_quality,
-    apply_d17_rule,
-    apply_tunicheque_rules,
-    apply_ttn_rules,
-    apply_fcy_rules,
-    apply_device_behavior_rules,
-)
-from shared.utils import make_authenticated_request, log_failed_alert, retry_failed_alerts, get_sqlite_connection
+
 from compliance.pkyc import PKYCPublisher
 from compliance.sanctions import SanctionsScreener
-import time
+from shared.quality_gates import (
+    apply_d17_rule,
+    apply_device_behavior_rules,
+    apply_fcy_rules,
+    apply_ttn_rules,
+    apply_tunicheque_rules,
+    validate_transaction_quality,
+)
+from shared.risk_config import CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP, RISK_WEIGHTS
+from shared.rules_engine import get_rules_engine
+from shared.schemas import TRANSACTION_SPARK_SCHEMA, Transaction
+from shared.utils import get_sqlite_connection, log_failed_alert, make_authenticated_request, retry_failed_alerts
 
 # Use the schema from the shared module to ensure consistency
 schema = TRANSACTION_SPARK_SCHEMA
@@ -43,14 +46,16 @@ MODEL_FEATURE_COLS = [
     "high_velocity_flag",
 ]
 
+
 class FraudProcessor:
     def __init__(self, kafka_bootstrap=None):
         # Initializing with Kafka support (Delta Lake config removed to avoid streaming conflicts)
-        self.spark = SparkSession.builder \
-            .appName("Tunisia-Fraud-Silver-Layer") \
-            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1") \
-            .config("spark.sql.streaming.checkpointLocation", "./tmp/checkpoint") \
+        self.spark = (
+            SparkSession.builder.appName("Tunisia-Fraud-Silver-Layer")
+            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1")
+            .config("spark.sql.streaming.checkpointLocation", "./tmp/checkpoint")
             .getOrCreate()
+        )
         if kafka_bootstrap is None:
             kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
         self.kafka_bootstrap = kafka_bootstrap
@@ -143,10 +148,7 @@ class FraudProcessor:
         try:
             import numpy as np
 
-            feature_values = [
-                self._as_float(row_dict.get(feature_name))
-                for feature_name in self._model_feature_cols
-            ]
+            feature_values = [self._as_float(row_dict.get(feature_name)) for feature_name in self._model_feature_cols]
             sample = np.array([feature_values], dtype=float)
             shap_values = self._shap_explainer.shap_values(sample)
 
@@ -161,13 +163,15 @@ class FraudProcessor:
             total_abs_impact = sum(abs(float(impact)) for impact in values) or 0.0
             for feature_name, feature_value, impact in zip(self._model_feature_cols, feature_values, values):
                 impact_value = float(impact)
-                ranked.append({
-                    "feature": feature_name,
-                    "value": feature_value,
-                    "impact": impact_value,
-                    "abs_impact": abs(impact_value),
-                    "direction": "increases_risk" if impact_value >= 0 else "decreases_risk",
-                })
+                ranked.append(
+                    {
+                        "feature": feature_name,
+                        "value": feature_value,
+                        "impact": impact_value,
+                        "abs_impact": abs(impact_value),
+                        "direction": "increases_risk" if impact_value >= 0 else "decreases_risk",
+                    }
+                )
 
             ranked.sort(key=lambda item: item["abs_impact"], reverse=True)
             top5 = ranked[:5]
@@ -204,11 +208,7 @@ class FraudProcessor:
                     logging.exception("DLQ retry worker encountered an error")
                 self._dlq_retry_stop.wait(interval)
 
-        self._dlq_retry_thread = threading.Thread(
-            target=retry_loop,
-            name="dlq-retry-worker",
-            daemon=True
-        )
+        self._dlq_retry_thread = threading.Thread(target=retry_loop, name="dlq-retry-worker", daemon=True)
         self._dlq_retry_thread.start()
 
     @staticmethod
@@ -297,9 +297,9 @@ class FraudProcessor:
 
         return df.withColumn(
             "sanctions_hit_flag",
-            col("sender_account").isin(sanctioned_accounts) |
-            col("receiver_account").isin(sanctioned_accounts) |
-            col("user_id").isin(sanctioned_accounts),
+            col("sender_account").isin(sanctioned_accounts)
+            | col("receiver_account").isin(sanctioned_accounts)
+            | col("user_id").isin(sanctioned_accounts),
         )
 
     def _count_new_feedback_since_promotion(self):
@@ -317,8 +317,7 @@ class FraudProcessor:
             row = cursor.fetchone()
             if row and row[0]:
                 cursor.execute(
-                    "SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL AND timestamp > ?",
-                    (row[0],)
+                    "SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL AND timestamp > ?", (row[0],)
                 )
             else:
                 cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
@@ -344,11 +343,12 @@ class FraudProcessor:
 
             # Calculate ingestion latency: time from event timestamp to processing time
             import datetime
+
             event_timestamp_str = str(row_dict.get("timestamp", ""))
             if event_timestamp_str:
                 try:
                     # Parse the event timestamp
-                    event_time = datetime.datetime.fromisoformat(event_timestamp_str.replace('Z', '+00:00'))
+                    event_time = datetime.datetime.fromisoformat(event_timestamp_str.replace("Z", "+00:00"))
                     processing_time = datetime.datetime.now(datetime.timezone.utc)
                     ingestion_latency = (processing_time - event_time).total_seconds()
                 except:
@@ -380,7 +380,7 @@ class FraudProcessor:
                 "sar_report": report,
                 "alert_type": alert_type,
                 "shap_top5": shap_top5,
-                "ingestion_latency": ingestion_latency  # Include latency in payload for monitoring
+                "ingestion_latency": ingestion_latency,  # Include latency in payload for monitoring
             }
 
             try:
@@ -393,10 +393,7 @@ class FraudProcessor:
 
                 start_time = time.time()
                 api_response = make_authenticated_request(
-                    "POST",
-                    "/alerts/add/",
-                    payload=alert_payload,
-                    timeout=5  # 5 second timeout to avoid blocking
+                    "POST", "/alerts/add/", payload=alert_payload, timeout=5  # 5 second timeout to avoid blocking
                 )
                 api_call_duration = time.time() - start_time
 
@@ -450,8 +447,9 @@ class FraudProcessor:
         if not sanctions_rows and not high_risk_rows and not sampled_low_risk_rows and not uncertainty_rows:
             return
 
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+
         from rag_engine.sar_generator import SARGenerator
-        from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
         sar_gen = SARGenerator() if sanctions_rows or high_risk_rows else None
 
@@ -508,9 +506,7 @@ class FraudProcessor:
             print(f"Triggering model retraining based on {new_feedback_count} new feedback records")
 
             retrain_response = make_authenticated_request(
-                "POST",
-                "/retrain-model/",
-                timeout=10  # 10 second timeout for retraining trigger
+                "POST", "/retrain-model/", timeout=10  # 10 second timeout for retraining trigger
             )
 
             if retrain_response and retrain_response.status_code == 200:
@@ -529,22 +525,27 @@ class FraudProcessor:
 
     def process_stream(self):
         # 1. Ingest (Bronze Layer)
-        raw_stream = self.spark.readStream.format("kafka") \
-            .option("kafka.bootstrap.servers", self.kafka_bootstrap) \
-            .option("subscribe", "tunisian_transactions") \
+        raw_stream = (
+            self.spark.readStream.format("kafka")
+            .option("kafka.bootstrap.servers", self.kafka_bootstrap)
+            .option("subscribe", "tunisian_transactions")
             .load()
+        )
 
         # Deserialize JSON value
-        json_df = raw_stream.selectExpr("CAST(value AS STRING)") \
-            .select(from_json(col("value"), schema).alias("data")) \
+        json_df = (
+            raw_stream.selectExpr("CAST(value AS STRING)")
+            .select(from_json(col("value"), schema).alias("data"))
             .select("data.*")
+        )
 
         # Apply data quality gates
         validated_df = validate_transaction_quality(json_df)
 
         # 2. Enrich & Score (Silver Layer)
-        enriched = validated_df.withColumn("event_time", to_timestamp(col("timestamp"))) \
-                         .withWatermark("event_time", "10 minutes")
+        enriched = validated_df.withColumn("event_time", to_timestamp(col("timestamp"))).withWatermark(
+            "event_time", "10 minutes"
+        )
 
         # Apply channel-specific and account-type rules
         enriched_with_d17 = apply_d17_rule(enriched)
@@ -555,21 +556,17 @@ class FraudProcessor:
         enriched_with_d17 = self._apply_sanctions_screening(enriched_with_d17)
 
         # Complex Windowing: Velocity + Multi-Gov
-        analytics = enriched_with_d17.groupBy(
-            window(col("event_time"), "5 minutes", "1 minute"),
-            col("user_id")
-        ).agg(
+        analytics = enriched_with_d17.groupBy(window(col("event_time"), "5 minutes", "1 minute"), col("user_id")).agg(
             count("transaction_id").alias("v_count"),
             approx_count_distinct("governorate").alias("g_dist"),
-            lit(None).cast(DoubleType()).alias("amount_tnd")  # Placeholder for avg amount
+            lit(None).cast(DoubleType()).alias("amount_tnd"),  # Placeholder for avg amount
         )
 
         # Calculate per-user window aggregates.
         # Boolean risk flags from channel rules are max-aggregated so that a single
         # flagged transaction in the window elevates the entire user window's score.
         analytics_with_amount = enriched_with_d17.groupBy(
-            window(col("event_time"), "5 minutes", "1 minute"),
-            col("user_id")
+            window(col("event_time"), "5 minutes", "1 minute"), col("user_id")
         ).agg(
             count("transaction_id").alias("v_count"),
             approx_count_distinct("governorate").alias("g_dist"),
@@ -585,8 +582,12 @@ class FraudProcessor:
             expr("max(case when pep_connected = true then 1 else 0 end)").alias("pep_connected_flag"),
             expr("sum(case when payment_method = 'Flouci' then 1 else 0 end)").alias("flouci_count"),
             # TuniChèque flags
-            expr("max(case when tunicheque_missing_token_flag = true then 1 else 0 end)").alias("tunicheque_missing_token"),
-            expr("max(case when tunicheque_expired_lock_flag = true then 1 else 0 end)").alias("tunicheque_expired_lock"),
+            expr("max(case when tunicheque_missing_token_flag = true then 1 else 0 end)").alias(
+                "tunicheque_missing_token"
+            ),
+            expr("max(case when tunicheque_expired_lock_flag = true then 1 else 0 end)").alias(
+                "tunicheque_expired_lock"
+            ),
             # TTN e-invoicing flags
             expr("max(case when ttn_missing_token_flag = true then 1 else 0 end)").alias("ttn_missing_token"),
             expr("max(case when ttn_missing_invoice_id_flag = true then 1 else 0 end)").alias("ttn_missing_invoice_id"),
@@ -596,7 +597,9 @@ class FraudProcessor:
             # FCY multi-sender smurfing: count of distinct users sending to FCY accounts in window
             expr("sum(case when account_type = 'FCY' then 1 else 0 end)").alias("fcy_tx_count"),
             # Device fingerprinting / behavioral biometrics flags
-            expr("max(case when device_vpn_new_high_amount_flag = true then 1 else 0 end)").alias("device_vpn_new_high_amount"),
+            expr("max(case when device_vpn_new_high_amount_flag = true then 1 else 0 end)").alias(
+                "device_vpn_new_high_amount"
+            ),
             expr("max(case when device_emulator_flag = true then 1 else 0 end)").alias("device_emulator"),
             expr("max(case when device_shared_accounts_flag = true then 1 else 0 end)").alias("device_shared_accounts"),
         )
@@ -609,135 +612,134 @@ class FraudProcessor:
         _smurfing = _engine.get_smurfing_params()
 
         # 3. Weighted Risk Scoring (The Industrial Logic)
-        scored = analytics_with_amount.withColumn(
-            "velocity_risk",
-            when(col("v_count") > 3, lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            "travel_risk",
-            when(col("g_dist") > 1, lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            # Finance Law 2026: TND 5,000 cash cap repealed. Threshold now sourced
-            # from the rules engine (default 15,000 TND) as a general large-tx flag.
-            "high_value_risk",
-            when(col("avg_amount") > lit(_high_value_threshold), lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            "d17_risk",
-            when((col("avg_amount") > 2000) & (col("flouci_count") > 0), lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            # Velocity-based smurfing: multiple sub-threshold txs whose window
-            # aggregate exceeds the minimum — does not depend on any hard cash cap.
-            "smurfing_velocity_risk",
-            when(
-                (col("v_count") >= lit(_smurfing["min_count"])) &
-                (col("avg_amount") < lit(_smurfing["unit_cap"])) &
-                (col("v_count") * col("avg_amount") > lit(_smurfing["agg_min"])),
-                lit(1.0)
-            ).otherwise(lit(0.0))
-        ).withColumn(
-            # FCY layering: round-amount conversion or large single credit into FCY account
-            "fcy_risk",
-            when(
-                (col("fcy_round_amount") == lit(1)) |
-                (col("fcy_large_credit") == lit(1)) |
-                (col("fcy_tx_count") >= lit(3)),
-                lit(1.0)
-            ).otherwise(lit(0.0))
-        ).withColumn(
-            # TuniChèque: missing QR token = counterfeit or pre-reform cheque (high risk)
-            "tunicheque_risk",
-            when(
-                (col("tunicheque_missing_token") == lit(1)) |
-                (col("tunicheque_expired_lock") == lit(1)),
-                lit(1.0)
-            ).otherwise(lit(0.0))
-        ).withColumn(
-            # TTN e-invoicing: missing clearance token or invoice ID = non-compliant or fabricated
-            "ttn_risk",
-            when(
-                (col("ttn_missing_token") == lit(1)) |
-                (col("ttn_missing_invoice_id") == lit(1)),
-                lit(1.0)
-            ).otherwise(lit(0.0))
-        ).withColumn(
-            "pep_risk",
-            when(col("pep_connected_flag") == lit(1), lit(1.0)).otherwise(lit(0.0))
-        ).withColumn(
-            # Device risk: emulator, fresh-device VPN high amount, or shared-device mule pattern
-            "device_risk",
-            when(
-                (col("device_vpn_new_high_amount") == lit(1)) |
-                (col("device_emulator") == lit(1)) |
-                (col("device_shared_accounts") == lit(1)),
-                lit(1.0)
-            ).otherwise(lit(0.0))
-        ).withColumn(
-            "risk_score",
-            (col("sanctions_hit") * lit(1.0)) +
-            (col("pep_risk") * RISK_WEIGHTS["high_value"]) +
-            (col("velocity_risk") * RISK_WEIGHTS["velocity"]) +
-            (col("travel_risk") * RISK_WEIGHTS["travel"]) +
-            (col("high_value_risk") * RISK_WEIGHTS["high_value"]) +
-            (col("d17_risk") * RISK_WEIGHTS["d17_limit"]) +
-            (col("smurfing_velocity_risk") * RISK_WEIGHTS["d17_limit"]) +
-            # Channel compliance risks use high_value weight (0.2) as they are definitive signals
-            (col("tunicheque_risk") * RISK_WEIGHTS["high_value"]) +
-            (col("ttn_risk") * RISK_WEIGHTS["high_value"]) +
-            # FCY layering: round amount or large single credit into FCY account
-            (col("fcy_risk") * RISK_WEIGHTS["high_value"]) +
-            # Device/behavioral biometric risks are strong EDD signals.
-            (col("device_risk") * RISK_WEIGHTS["high_value"])
+        scored = (
+            analytics_with_amount.withColumn("velocity_risk", when(col("v_count") > 3, lit(1.0)).otherwise(lit(0.0)))
+            .withColumn("travel_risk", when(col("g_dist") > 1, lit(1.0)).otherwise(lit(0.0)))
+            .withColumn(
+                # Finance Law 2026: TND 5,000 cash cap repealed. Threshold now sourced
+                # from the rules engine (default 15,000 TND) as a general large-tx flag.
+                "high_value_risk",
+                when(col("avg_amount") > lit(_high_value_threshold), lit(1.0)).otherwise(lit(0.0)),
+            )
+            .withColumn(
+                "d17_risk", when((col("avg_amount") > 2000) & (col("flouci_count") > 0), lit(1.0)).otherwise(lit(0.0))
+            )
+            .withColumn(
+                # Velocity-based smurfing: multiple sub-threshold txs whose window
+                # aggregate exceeds the minimum — does not depend on any hard cash cap.
+                "smurfing_velocity_risk",
+                when(
+                    (col("v_count") >= lit(_smurfing["min_count"]))
+                    & (col("avg_amount") < lit(_smurfing["unit_cap"]))
+                    & (col("v_count") * col("avg_amount") > lit(_smurfing["agg_min"])),
+                    lit(1.0),
+                ).otherwise(lit(0.0)),
+            )
+            .withColumn(
+                # FCY layering: round-amount conversion or large single credit into FCY account
+                "fcy_risk",
+                when(
+                    (col("fcy_round_amount") == lit(1))
+                    | (col("fcy_large_credit") == lit(1))
+                    | (col("fcy_tx_count") >= lit(3)),
+                    lit(1.0),
+                ).otherwise(lit(0.0)),
+            )
+            .withColumn(
+                # TuniChèque: missing QR token = counterfeit or pre-reform cheque (high risk)
+                "tunicheque_risk",
+                when(
+                    (col("tunicheque_missing_token") == lit(1)) | (col("tunicheque_expired_lock") == lit(1)), lit(1.0)
+                ).otherwise(lit(0.0)),
+            )
+            .withColumn(
+                # TTN e-invoicing: missing clearance token or invoice ID = non-compliant or fabricated
+                "ttn_risk",
+                when(
+                    (col("ttn_missing_token") == lit(1)) | (col("ttn_missing_invoice_id") == lit(1)), lit(1.0)
+                ).otherwise(lit(0.0)),
+            )
+            .withColumn("pep_risk", when(col("pep_connected_flag") == lit(1), lit(1.0)).otherwise(lit(0.0)))
+            .withColumn(
+                # Device risk: emulator, fresh-device VPN high amount, or shared-device mule pattern
+                "device_risk",
+                when(
+                    (col("device_vpn_new_high_amount") == lit(1))
+                    | (col("device_emulator") == lit(1))
+                    | (col("device_shared_accounts") == lit(1)),
+                    lit(1.0),
+                ).otherwise(lit(0.0)),
+            )
+            .withColumn(
+                "risk_score",
+                (col("sanctions_hit") * lit(1.0))
+                + (col("pep_risk") * RISK_WEIGHTS["high_value"])
+                + (col("velocity_risk") * RISK_WEIGHTS["velocity"])
+                + (col("travel_risk") * RISK_WEIGHTS["travel"])
+                + (col("high_value_risk") * RISK_WEIGHTS["high_value"])
+                + (col("d17_risk") * RISK_WEIGHTS["d17_limit"])
+                + (col("smurfing_velocity_risk") * RISK_WEIGHTS["d17_limit"])
+                +
+                # Channel compliance risks use high_value weight (0.2) as they are definitive signals
+                (col("tunicheque_risk") * RISK_WEIGHTS["high_value"]) + (col("ttn_risk") * RISK_WEIGHTS["high_value"]) +
+                # FCY layering: round amount or large single credit into FCY account
+                (col("fcy_risk") * RISK_WEIGHTS["high_value"]) +
+                # Device/behavioral biometric risks are strong EDD signals.
+                (col("device_risk") * RISK_WEIGHTS["high_value"]),
+            )
         )
 
         # Prepare features for ML model regardless of model availability to ensure consistent schema
-        features_df = scored \
-            .withColumn(
+        features_df = (
+            scored.withColumn(
                 # D17 e-wallet smurfing: amount in the 1400–1500 TND range (just below D17 soft limit).
                 # Kept separate from smurfing_velocity_risk which is payment-method agnostic.
                 "is_smurfing",
-                when(col("avg_amount").between(D17_SOFT_LIMIT - 100, D17_SOFT_LIMIT), 1).otherwise(0)
-            ) \
-            .withColumn("smurfing_velocity_flag", col("smurfing_velocity_risk").cast("integer")) \
+                when(col("avg_amount").between(D17_SOFT_LIMIT - 100, D17_SOFT_LIMIT), 1).otherwise(0),
+            )
+            .withColumn("smurfing_velocity_flag", col("smurfing_velocity_risk").cast("integer"))
             .withColumn("high_velocity_flag", when(col("v_count") > D17_VELOCITY_CAP, 1).otherwise(0))
+        )
 
         # Apply ML inference if model is available
         if self.ml_model:
+            from pyspark.ml import PipelineModel
             from pyspark.ml.feature import VectorAssembler
             from pyspark.ml.functions import vector_to_array
-            from pyspark.ml import PipelineModel
 
             if isinstance(self.ml_model, PipelineModel):
                 predictions = self.ml_model.transform(features_df)
             else:
                 # Create feature vector for ML model
-                assembler = VectorAssembler(
-                    inputCols=MODEL_FEATURE_COLS,
-                    outputCol="features"
-                )
+                assembler = VectorAssembler(inputCols=MODEL_FEATURE_COLS, outputCol="features")
                 assembled_df = assembler.transform(features_df)
                 predictions = self.ml_model.transform(assembled_df)
-            final_df = predictions.withColumnRenamed("prediction", "ml_prediction") \
-                                  .withColumn("ml_probability", vector_to_array(col("probability")).getItem(1)) \
-                                  .drop("probability")
+            final_df = (
+                predictions.withColumnRenamed("prediction", "ml_prediction")
+                .withColumn("ml_probability", vector_to_array(col("probability")).getItem(1))
+                .drop("probability")
+            )
         else:
             # Fallback to rule-based scoring but maintain consistent schema
-            final_df = features_df.withColumn("ml_prediction", lit(-1)) \
-                                 .withColumn("ml_probability", lit(0.0))
+            final_df = features_df.withColumn("ml_prediction", lit(-1)).withColumn("ml_probability", lit(0.0))
 
         # For performance, use foreachBatch to handle SAR generation and alerting asynchronously.
 
         # 4. Persistence: Using Parquet for streaming (Delta Lake for batch operations)
         # Due to compatibility issues between Spark 4.1.1 and Delta Lake 4.0.1 for streaming sinks
-        query = final_df.writeStream \
-            .format("parquet") \
-            .outputMode("append") \
-            .option("path", "./data/parquet/silver_fraud_alerts") \
-            .option("checkpointLocation", "./tmp/checkpoint/silver_fraud") \
-            .foreachBatch(self._check_and_trigger_retraining) \
+        query = (
+            final_df.writeStream.format("parquet")
+            .outputMode("append")
+            .option("path", "./data/parquet/silver_fraud_alerts")
+            .option("checkpointLocation", "./tmp/checkpoint/silver_fraud")
+            .foreachBatch(self._check_and_trigger_retraining)
             .start()
+        )
 
         self.start_dlq_retry_worker()
 
         return query
+
 
 if __name__ == "__main__":
     processor = FraudProcessor()

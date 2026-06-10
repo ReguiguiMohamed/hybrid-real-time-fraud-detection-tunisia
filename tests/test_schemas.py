@@ -1,6 +1,8 @@
 """Tests for Pydantic schemas and Spark schema conversion."""
+
 import pytest
-from shared.schemas import Transaction, pydantic_to_spark_schema, TRANSACTION_SPARK_SCHEMA
+
+from shared.schemas import TRANSACTION_SPARK_SCHEMA, Transaction, pydantic_to_spark_schema
 
 
 class TestTransactionSchema:
@@ -46,19 +48,38 @@ class TestSparkSchemaConversion:
     # Core fields that must always be present (subset check, not exact equality,
     # so adding new Optional fields to Transaction doesn't break this test).
     CORE_FIELDS = [
-        "transaction_id", "timestamp", "user_id", "amount_tnd",
-        "governorate", "payment_method", "branch_id", "fraud_seed",
+        "transaction_id",
+        "timestamp",
+        "user_id",
+        "amount_tnd",
+        "governorate",
+        "payment_method",
+        "branch_id",
+        "fraud_seed",
     ]
     # New fields added for Finance Law 2026 / TuniChèque / TTN / FCY compliance
     COMPLIANCE_FIELDS = [
-        "tunicheque_token", "tunicheque_provision_locked", "tunicheque_clearing_deadline",
-        "ttn_clearance_token", "ttn_invoice_id",
-        "account_type", "fcy_currency",
-        "device_id", "device_os", "device_model", "app_version",
-        "session_typing_cadence_ms", "session_copy_paste_ratio",
-        "network_type", "vpn_detected", "emulator_detected",
-        "device_age_days", "device_account_count_7d",
-        "sender_account", "receiver_account", "pep_connected",
+        "tunicheque_token",
+        "tunicheque_provision_locked",
+        "tunicheque_clearing_deadline",
+        "ttn_clearance_token",
+        "ttn_invoice_id",
+        "account_type",
+        "fcy_currency",
+        "device_id",
+        "device_os",
+        "device_model",
+        "app_version",
+        "session_typing_cadence_ms",
+        "session_copy_paste_ratio",
+        "network_type",
+        "vpn_detected",
+        "emulator_detected",
+        "device_age_days",
+        "device_account_count_7d",
+        "sender_account",
+        "receiver_account",
+        "pep_connected",
     ]
 
     def test_schema_contains_all_core_fields(self):
@@ -79,11 +100,13 @@ class TestSparkSchemaConversion:
 
     def test_amount_is_double_type(self):
         from pyspark.sql.types import DoubleType
+
         amount_field = next(f for f in TRANSACTION_SPARK_SCHEMA.fields if f.name == "amount_tnd")
         assert isinstance(amount_field.dataType, DoubleType)
 
     def test_pydantic_to_spark_returns_struct_type(self):
         from pyspark.sql.types import StructType
+
         result = pydantic_to_spark_schema(Transaction)
         assert isinstance(result, StructType)
 
@@ -93,8 +116,11 @@ class TestTransactionOptionalFields:
 
     def test_optional_fields_default_none(self):
         tx = Transaction(
-            user_id="U1", amount_tnd=100.0,
-            governorate="Tunis", payment_method="Flouci", branch_id="B1",
+            user_id="U1",
+            amount_tnd=100.0,
+            governorate="Tunis",
+            payment_method="Flouci",
+            branch_id="B1",
         )
         assert tx.tunicheque_token is None
         assert tx.ttn_clearance_token is None
@@ -116,8 +142,11 @@ class TestTransactionOptionalFields:
 
     def test_tunicheque_fields_accepted(self):
         tx = Transaction(
-            user_id="U1", amount_tnd=5000.0,
-            governorate="Tunis", payment_method="TUNICHEQUE", branch_id="B1",
+            user_id="U1",
+            amount_tnd=5000.0,
+            governorate="Tunis",
+            payment_method="TUNICHEQUE",
+            branch_id="B1",
             tunicheque_token="QR_ABC123",
             tunicheque_provision_locked=True,
             tunicheque_clearing_deadline="2026-05-09",
@@ -127,8 +156,11 @@ class TestTransactionOptionalFields:
 
     def test_ttn_fields_accepted(self):
         tx = Transaction(
-            user_id="U1", amount_tnd=2000.0,
-            governorate="Sfax", payment_method="TTN_EINVOICE", branch_id="B2",
+            user_id="U1",
+            amount_tnd=2000.0,
+            governorate="Sfax",
+            payment_method="TTN_EINVOICE",
+            branch_id="B2",
             ttn_clearance_token="TTN_XYZ789",
             ttn_invoice_id="INV-2026-00042",
         )
@@ -137,17 +169,24 @@ class TestTransactionOptionalFields:
 
     def test_fcy_fields_accepted(self):
         tx = Transaction(
-            user_id="U1", amount_tnd=10000.0,
-            governorate="Tunis", payment_method="Virement", branch_id="B1",
-            account_type="FCY", fcy_currency="EUR",
+            user_id="U1",
+            amount_tnd=10000.0,
+            governorate="Tunis",
+            payment_method="Virement",
+            branch_id="B1",
+            account_type="FCY",
+            fcy_currency="EUR",
         )
         assert tx.account_type == "FCY"
         assert tx.fcy_currency == "EUR"
 
     def test_sanctions_pep_fields_accepted(self):
         tx = Transaction(
-            user_id="U1", amount_tnd=1000.0,
-            governorate="Tunis", payment_method="Virement", branch_id="B1",
+            user_id="U1",
+            amount_tnd=1000.0,
+            governorate="Tunis",
+            payment_method="Virement",
+            branch_id="B1",
             sender_account="ACC-SENDER-1",
             receiver_account="ACC-RECEIVER-1",
             pep_connected=True,
@@ -158,8 +197,11 @@ class TestTransactionOptionalFields:
 
     def test_device_behavior_fields_accepted(self):
         tx = Transaction(
-            user_id="U1", amount_tnd=1800.0,
-            governorate="Tunis", payment_method="Flouci", branch_id="B1",
+            user_id="U1",
+            amount_tnd=1800.0,
+            governorate="Tunis",
+            payment_method="Flouci",
+            branch_id="B1",
             device_id="DEV-HASH-1",
             device_os="Android",
             device_model="Pixel 9",

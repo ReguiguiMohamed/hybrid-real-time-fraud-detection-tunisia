@@ -1,4 +1,5 @@
 """Isolation Forest anomaly detector for zero-day fraud signals."""
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from shared.utils import get_sqlite_connection
-
 
 DEFAULT_ANOMALY_FEATURES = [
     "amount_tnd",
@@ -60,15 +60,20 @@ class IsolationForestAnomalyDetector:
         if len(features) < 2:
             raise ValueError("Isolation Forest training requires at least 2 records")
 
-        self.pipeline = Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-            ("model", IsolationForest(
-                n_estimators=200,
-                contamination=self.contamination,
-                random_state=self.random_state,
-            )),
-        ])
+        self.pipeline = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+                (
+                    "model",
+                    IsolationForest(
+                        n_estimators=200,
+                        contamination=self.contamination,
+                        random_state=self.random_state,
+                    ),
+                ),
+            ]
+        )
         self.pipeline.fit(features)
         self.model_version = model_version or f"isoforest_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
         return self
@@ -83,12 +88,14 @@ class IsolationForestAnomalyDetector:
         results = []
         for score, prediction in zip(scores, predictions):
             score_value = round(float(score), 6)
-            results.append({
-                "anomaly_score": score_value,
-                "is_anomaly": bool(prediction == -1),
-                "alert_type": "HIGH_ANOMALY" if score_value < self.HIGH_ANOMALY_THRESHOLD else None,
-                "model_version": self.model_version,
-            })
+            results.append(
+                {
+                    "anomaly_score": score_value,
+                    "is_anomaly": bool(prediction == -1),
+                    "alert_type": "HIGH_ANOMALY" if score_value < self.HIGH_ANOMALY_THRESHOLD else None,
+                    "model_version": self.model_version,
+                }
+            )
         return results
 
     def save(self, model_path: str | Path) -> Path:
@@ -96,12 +103,15 @@ class IsolationForestAnomalyDetector:
             raise RuntimeError("Cannot save an untrained Isolation Forest model")
         path = Path(model_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({
-            "pipeline": self.pipeline,
-            "feature_columns": self.feature_columns,
-            "contamination": self.contamination,
-            "model_version": self.model_version,
-        }, path)
+        joblib.dump(
+            {
+                "pipeline": self.pipeline,
+                "feature_columns": self.feature_columns,
+                "contamination": self.contamination,
+                "model_version": self.model_version,
+            },
+            path,
+        )
         return path
 
     @classmethod
@@ -142,9 +152,12 @@ class IsolationForestAnomalyDetector:
             conn.close()
 
     def metadata_json(self) -> str:
-        return json.dumps({
-            "model_version": self.model_version,
-            "feature_columns": self.feature_columns,
-            "contamination": self.contamination,
-            "high_anomaly_threshold": self.HIGH_ANOMALY_THRESHOLD,
-        }, sort_keys=True)
+        return json.dumps(
+            {
+                "model_version": self.model_version,
+                "feature_columns": self.feature_columns,
+                "contamination": self.contamination,
+                "high_anomaly_threshold": self.HIGH_ANOMALY_THRESHOLD,
+            },
+            sort_keys=True,
+        )

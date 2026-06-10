@@ -1,4 +1,5 @@
 """Train the complementary Isolation Forest anomaly detector from recorded alerts."""
+
 from __future__ import annotations
 
 import argparse

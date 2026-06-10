@@ -1,7 +1,6 @@
 """Tests for risk configuration constants."""
-from shared.risk_config import (
-    RISK_WEIGHTS, CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP
-)
+
+from shared.risk_config import CBDC_PILOT_GOVERNORATES, D17_SOFT_LIMIT, D17_VELOCITY_CAP, RISK_WEIGHTS
 
 
 class TestRiskConfig:

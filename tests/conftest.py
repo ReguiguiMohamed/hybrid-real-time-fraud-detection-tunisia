@@ -1,15 +1,17 @@
 """
 Shared test fixtures for the fraud detection system test suite.
 """
-import os
-import sys
-import sqlite3
-import tempfile
-import pytest
+
 import importlib
-from pathlib import Path
+import os
+import sqlite3
+import sys
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -145,22 +147,65 @@ def populated_db(tmp_db):
 
     # Insert sample alerts
     alerts = [
-        ("TXN_001", "USER_100", 3000.0, "Tunis", "Flouci", "Tunis-GNC",
-         datetime.now(timezone.utc).isoformat(), 0.92, None, "high_risk"),
-        ("TXN_002", "USER_200", 1450.0, "Sfax", "eDinar", "Sfax-Agency",
-         datetime.now(timezone.utc).isoformat(), 0.45, None, "random_sample"),
-        ("TXN_003", "USER_300", 8500.0, "Sousse", "Konnect", "Sousse-Agency",
-         datetime.now(timezone.utc).isoformat(), 0.88, "SAR report text", "high_risk"),
-        ("TXN_004", "USER_100", 500.0, "Ariana", "Carte Bancaire", "Ariana-Desk",
-         datetime.now(timezone.utc).isoformat(), 0.55, None, "uncertainty_sample"),
+        (
+            "TXN_001",
+            "USER_100",
+            3000.0,
+            "Tunis",
+            "Flouci",
+            "Tunis-GNC",
+            datetime.now(timezone.utc).isoformat(),
+            0.92,
+            None,
+            "high_risk",
+        ),
+        (
+            "TXN_002",
+            "USER_200",
+            1450.0,
+            "Sfax",
+            "eDinar",
+            "Sfax-Agency",
+            datetime.now(timezone.utc).isoformat(),
+            0.45,
+            None,
+            "random_sample",
+        ),
+        (
+            "TXN_003",
+            "USER_300",
+            8500.0,
+            "Sousse",
+            "Konnect",
+            "Sousse-Agency",
+            datetime.now(timezone.utc).isoformat(),
+            0.88,
+            "SAR report text",
+            "high_risk",
+        ),
+        (
+            "TXN_004",
+            "USER_100",
+            500.0,
+            "Ariana",
+            "Carte Bancaire",
+            "Ariana-Desk",
+            datetime.now(timezone.utc).isoformat(),
+            0.55,
+            None,
+            "uncertainty_sample",
+        ),
     ]
     for a in alerts:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO high_risk_alerts
             (transaction_id, user_id, amount_tnd, governorate, payment_method, branch_id,
              timestamp, ml_probability, sar_report, alert_type)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, a)
+        """,
+            a,
+        )
 
     # Insert sample feedback
     feedback = [
@@ -169,26 +214,32 @@ def populated_db(tmp_db):
         ("TXN_003", "Confirmed Fraud", "Smurfing confirmed", "Sousse-Agency"),
     ]
     for f in feedback:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO feedback_labels (transaction_id, analyst_label, analyst_comment, branch_id)
             VALUES (?, ?, ?, ?)
-        """, f)
+        """,
+            f,
+        )
 
     # Insert a champion model
-    cursor.execute("""
+    cursor.execute(
+        """
         INSERT INTO model_registry
         (version_id, model_path, f1_score, auc, is_champion, promoted_at, training_samples_count, feature_importance)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        "v1_test",
-        "models/test_model",
-        0.85,
-        0.90,
-        1,
-        datetime.now().isoformat(),
-        500,
-        '[{"feature": "v_count", "score": 0.35}, {"feature": "avg_amount", "score": 0.28}, {"feature": "g_dist", "score": 0.20}]'
-    ))
+    """,
+        (
+            "v1_test",
+            "models/test_model",
+            0.85,
+            0.90,
+            1,
+            datetime.now().isoformat(),
+            500,
+            '[{"feature": "v_count", "score": 0.35}, {"feature": "avg_amount", "score": 0.28}, {"feature": "g_dist", "score": 0.20}]',
+        ),
+    )
 
     conn.commit()
     conn.close()
@@ -205,13 +256,16 @@ def api_test_client(tmp_db, monkeypatch):
     monkeypatch.delenv("METRICS_TOKEN", raising=False)
 
     import shared.database as database_module
+
     importlib.reload(database_module)
     import dashboard.api as api_module
+
     importlib.reload(api_module)
 
     api_module.Base.metadata.create_all(bind=api_module.engine)
 
     from fastapi.testclient import TestClient
+
     client = TestClient(api_module.app)
     return client
 

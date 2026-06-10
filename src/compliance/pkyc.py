@@ -1,4 +1,5 @@
 """Perpetual KYC trigger evaluation and publishing."""
+
 from __future__ import annotations
 
 import json
@@ -99,13 +100,10 @@ class PKYCTriggerEvaluator:
                 signals["previous_ml_probability"] = round(previous_score, 6)
 
         account_event_type = str(tx_data.get("account_event_type", "")).upper()
-        if (
-            str(tx_data.get("account_type", "")).upper() == "FCY"
-            and (
-                account_event_type == "FCY_ACCOUNT_OPENED"
-                or cls._as_bool(tx_data.get("fcy_account_opened"))
-                or cls._as_float(tx_data.get("account_age_days")) == 0
-            )
+        if str(tx_data.get("account_type", "")).upper() == "FCY" and (
+            account_event_type == "FCY_ACCOUNT_OPENED"
+            or cls._as_bool(tx_data.get("fcy_account_opened"))
+            or cls._as_float(tx_data.get("account_age_days")) == 0
         ):
             reasons.append("FCY_ACCOUNT_OPENED")
             signals["account_type"] = "FCY"
@@ -168,19 +166,22 @@ class PKYCPublisher:
                     transaction_id TEXT
                 )
             """)
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO pkyc_triggers
                 (event_type, account_id, trigger_reason, timestamp, current_risk_tier, signals, transaction_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                event.event_type,
-                event.account_id,
-                event.trigger_reason,
-                event.timestamp,
-                event.current_risk_tier,
-                json.dumps(event.signals, sort_keys=True, default=str),
-                event.transaction_id,
-            ))
+            """,
+                (
+                    event.event_type,
+                    event.account_id,
+                    event.trigger_reason,
+                    event.timestamp,
+                    event.current_risk_tier,
+                    json.dumps(event.signals, sort_keys=True, default=str),
+                    event.transaction_id,
+                ),
+            )
             conn.commit()
         except Exception:
             logger.exception("Failed to record pKYC trigger audit event for tx %s", event.transaction_id)
@@ -196,10 +197,12 @@ class PKYCPublisher:
         try:
             from confluent_kafka import Producer
 
-            self._producer = Producer({
-                "bootstrap.servers": self.bootstrap_servers,
-                "client.id": "fraud-pkyc-publisher",
-            })
+            self._producer = Producer(
+                {
+                    "bootstrap.servers": self.bootstrap_servers,
+                    "client.id": "fraud-pkyc-publisher",
+                }
+            )
         except Exception as exc:
             logger.warning("pKYC publisher unavailable: %s", exc)
             self._producer = None

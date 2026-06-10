@@ -1,21 +1,15 @@
 import os
 import sqlite3
 from datetime import datetime
-from sqlalchemy import (
-    Column,
-    DateTime,
-    Float,
-    Integer,
-    String,
-    Text,
-    create_engine,
-    func,
-)
+
+from sqlalchemy import Column, DateTime, Float, Integer, String, Text, create_engine, func
 from sqlalchemy.orm import declarative_base, sessionmaker
+
 
 # Register adapters for Python 3.12+ sqlite3 deprecation
 def _adapt_datetime(value):
     return value.isoformat() if isinstance(value, datetime) else value
+
 
 sqlite3.register_adapter(datetime, _adapt_datetime)
 

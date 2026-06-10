@@ -2,7 +2,7 @@
 # Usage: make <target>
 # All targets are idempotent and safe to re-run.
 
-.PHONY: help setup dev prod test lint clean build monitor monitor-down bootstrap deploy k8s-apply k8s-dry-run migrate migrate-status cost-estimate audit-deps chaos-test backtest shadow-register shadow-status security-scan circuit-status
+.PHONY: help setup setup-dev dev prod test test-unit lint format clean build monitor monitor-down bootstrap deploy k8s-apply k8s-dry-run migrate migrate-status cost-estimate audit-deps chaos-test backtest shadow-register shadow-status security-scan circuit-status openapi
 
 # Default target
 help:
@@ -12,6 +12,7 @@ help:
 	@echo ""
 	@echo "  SETUP & BOOTSTRAP"
 	@echo "  make setup              Initialize environment, install deps"
+	@echo "  make setup-dev          Install runtime + development dependencies"
 	@echo "  make bootstrap          Seed database + train initial model"
 	@echo "  make bootstrap-imbalanced  Realistic 0.01% fraud rate data"
 	@echo "  make migrate            Run database schema migrations"
@@ -22,6 +23,7 @@ help:
 	@echo "  make test               Run full test suite"
 	@echo "  make test-unit          Run unit tests only (no Spark)"
 	@echo "  make lint               Run linter + type checks"
+	@echo "  make format             Format maintained Python sources"
 	@echo "  make chaos-test         Run chaos/failure integration tests"
 	@echo ""
 	@echo "  PRODUCTION"
@@ -42,6 +44,7 @@ help:
 	@echo "  make shadow-register    Register a shadow model for comparison"
 	@echo "  make shadow-status      Check current shadow model status"
 	@echo "  make circuit-status     Check RAG circuit breaker status"
+	@echo "  make openapi            Regenerate docs/openapi.json"
 	@echo ""
 	@echo "  COMPLIANCE & AUDIT"
 	@echo "  make security-scan      Run bandit + pip-audit + safety"
@@ -58,9 +61,17 @@ setup:
 	@echo "==> Installing dependencies from pinned requirements..."
 	pip install --upgrade pip
 	pip install -r requirements.txt
+	pip install -e . --no-deps
 	@echo "==> Creating required directories..."
 	mkdir -p data/parquet data/reports data/vector_db data/knowledge_base tmp/checkpoint models/registry
 	@echo "==> Setup complete."
+
+setup-dev:
+	@echo "==> Installing runtime and development dependencies..."
+	pip install --upgrade pip
+	pip install -r requirements-dev.txt
+	pip install -e . --no-deps
+	@echo "==> Development environment ready."
 
 bootstrap:
 	@echo "==> Bootstrapping fraud detection system..."
@@ -107,13 +118,19 @@ test-unit:
 	pytest tests/test_api.py tests/test_schemas.py tests/test_producer.py tests/test_risk_config.py tests/test_utils.py tests/test_monitoring.py -v --tb=short
 
 lint:
-	@echo "==> Running flake8..."
-	@flake8 src/ dashboard/ scripts/ notebooks/ --max-line-length=120 --extend-ignore=E501,W503 || true
+	@echo "==> Running static correctness checks..."
+	flake8 src/ dashboard/ scripts/ tests/
 	@echo "==> Running black (check mode)..."
-	@black --check src/ dashboard/ scripts/ notebooks/ 2>/dev/null || true
+	black --check src/ dashboard/ scripts/ tests/
 	@echo "==> Running isort (check mode)..."
-	@isort --check-only src/ dashboard/ scripts/ notebooks/ 2>/dev/null || true
+	isort --check-only src/ dashboard/ scripts/ tests/
 	@echo "==> Linting complete."
+
+format:
+	@echo "==> Formatting maintained Python sources..."
+	isort src/ dashboard/ scripts/ tests/
+	black src/ dashboard/ scripts/ tests/
+	@echo "==> Formatting complete."
 
 chaos-test:
 	@echo "==> Running chaos/integration tests..."
@@ -263,6 +280,11 @@ shadow-status:
 circuit-status:
 	@echo "==> RAG Circuit Breaker Status..."
 	python -c "from src.rag_engine.circuit_breaker import get_rag_circuit; import json; c=get_rag_circuit(); print(json.dumps(c.get_stats(), indent=2))"
+
+openapi:
+	@echo "==> Generating OpenAPI spec..."
+	python scripts/generate_openapi.py
+	@echo "==> OpenAPI spec generated: docs/openapi.json"
 
 # ==========================================
 # Security Scanning

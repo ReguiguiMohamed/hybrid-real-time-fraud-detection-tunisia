@@ -1,4 +1,5 @@
 """Regression tests for Kubernetes deployment wiring."""
+
 from pathlib import Path
 
 import yaml
@@ -12,11 +13,7 @@ def test_k8s_manifests_pass_local_validation():
 
 def test_no_static_secrets_are_applied():
     documents = load_documents()
-    assert not [
-        document
-        for _, document in documents
-        if document.get("kind") == "Secret"
-    ]
+    assert not [document for _, document in documents if document.get("kind") == "Secret"]
 
 
 def test_compose_consumer_matches_sar_runtime_wiring():

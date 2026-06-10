@@ -7,21 +7,19 @@ Covers:
 - generate_deterministic_fallback(): deadline correctness, penalty language
 - format_sar_report(): penalty line present in output
 """
+
 import os
-import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from rag_engine.sar_validator import (
-    ctaf_filing_deadline,
-    generate_deterministic_fallback,
-    format_sar_report,
-)
+import pytest
 
+from rag_engine.sar_validator import ctaf_filing_deadline, format_sar_report, generate_deterministic_fallback
 
 # ---------------------------------------------------------------------------
 # ctaf_filing_deadline
 # ---------------------------------------------------------------------------
+
 
 class TestCtafFilingDeadline:
 
@@ -50,9 +48,7 @@ class TestCtafFilingDeadline:
         start = datetime(2026, 4, 30)
         result = ctaf_filing_deadline(from_date=start, business_days=10)
         # May 1 skipped → deadline pushed 1 day later than if no holiday
-        no_holiday_result = ctaf_filing_deadline(
-            from_date=start, business_days=10
-        )
+        no_holiday_result = ctaf_filing_deadline(from_date=start, business_days=10)
         # Just assert the deadline is after the holiday
         assert result.date() > datetime(2026, 5, 1).date()
 
@@ -98,6 +94,7 @@ class TestCtafFilingDeadline:
 # generate_deterministic_fallback
 # ---------------------------------------------------------------------------
 
+
 class TestDeterministicFallbackCompliance:
 
     def _make_tx(self, amount=500.0, payment_method="Flouci"):
@@ -115,18 +112,16 @@ class TestDeterministicFallbackCompliance:
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.8)
         deadline_str = report.urgency_assessment.filing_deadline
         deadline = datetime.strptime(deadline_str, "%Y-%m-%d")
-        assert deadline.date() > datetime.now(timezone.utc).replace(tzinfo=None).date(), (
-            f"filing_deadline {deadline_str} must be in the future"
-        )
+        assert (
+            deadline.date() > datetime.now(timezone.utc).replace(tzinfo=None).date()
+        ), f"filing_deadline {deadline_str} must be in the future"
 
     def test_filing_deadline_is_not_today(self):
         # Old bug: deadline was set to datetime.now(timezone.utc).replace(tzinfo=None) (i.e., now / today)
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.5)
         deadline_str = report.urgency_assessment.filing_deadline
         today = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d")
-        assert deadline_str != today, (
-            "filing_deadline must not be today — must be 10 business days from now"
-        )
+        assert deadline_str != today, "filing_deadline must not be today — must be 10 business days from now"
 
     def test_filing_deadline_is_approximately_ten_business_days(self):
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.7)
@@ -139,23 +134,23 @@ class TestDeterministicFallbackCompliance:
     def test_penalty_language_in_urgency_reason(self):
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.9)
         reason = report.urgency_assessment.reason
-        assert "50,000" in reason or "50000" in reason, (
-            "Urgency reason must mention the TND 50,000 CTAF non-compliance penalty"
-        )
+        assert (
+            "50,000" in reason or "50000" in reason
+        ), "Urgency reason must mention the TND 50,000 CTAF non-compliance penalty"
 
     def test_penalty_language_in_recommended_steps(self):
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.6)
         combined_steps = " ".join(report.recommended_next_steps)
-        assert "50,000" in combined_steps or "50000" in combined_steps, (
-            "Recommended steps must mention the TND 50,000 penalty"
-        )
+        assert (
+            "50,000" in combined_steps or "50000" in combined_steps
+        ), "Recommended steps must mention the TND 50,000 penalty"
 
     def test_business_days_language_in_steps(self):
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.6)
         combined_steps = " ".join(report.recommended_next_steps)
-        assert "business" in combined_steps.lower() or "ouvrables" in combined_steps.lower(), (
-            "Steps must specify 'business days' (jours ouvrables), not just 'days'"
-        )
+        assert (
+            "business" in combined_steps.lower() or "ouvrables" in combined_steps.lower()
+        ), "Steps must specify 'business days' (jours ouvrables), not just 'days'"
 
     def test_large_tx_risk_factor_uses_updated_threshold(self):
         # P0-1: threshold is now 15,000 TND, not 5,000
@@ -166,13 +161,13 @@ class TestDeterministicFallbackCompliance:
         factors_above = [rf.factor for rf in report_above.risk_factors]
 
         # 6,000 TND is below 15,000 threshold — should NOT get the large-tx factor
-        assert not any("15,000" in f or "Large transaction" in f for f in factors_below), (
-            "6,000 TND should not trigger the large-transaction risk factor (threshold is 15,000)"
-        )
+        assert not any(
+            "15,000" in f or "Large transaction" in f for f in factors_below
+        ), "6,000 TND should not trigger the large-transaction risk factor (threshold is 15,000)"
         # 20,000 TND exceeds 15,000 — should get the factor
-        assert any("Large transaction" in f or "15,000" in f for f in factors_above), (
-            "20,000 TND should trigger the large-transaction risk factor"
-        )
+        assert any(
+            "Large transaction" in f or "15,000" in f for f in factors_above
+        ), "20,000 TND should trigger the large-transaction risk factor"
 
     def test_report_passes_pydantic_validation(self):
         report = generate_deterministic_fallback(self._make_tx(), ml_score=0.75)
@@ -187,27 +182,34 @@ class TestDeterministicFallbackCompliance:
 # format_sar_report
 # ---------------------------------------------------------------------------
 
+
 class TestFormatSarReport:
 
     def test_formatted_output_contains_penalty_line(self):
         tx = {
-            "transaction_id": "TXN_FMT_001", "user_id": "U1",
-            "amount_tnd": 1000.0, "governorate": "Sfax",
-            "payment_method": "eDinar", "branch_id": "B1",
+            "transaction_id": "TXN_FMT_001",
+            "user_id": "U1",
+            "amount_tnd": 1000.0,
+            "governorate": "Sfax",
+            "payment_method": "eDinar",
+            "branch_id": "B1",
             "timestamp": "2026-05-01T09:00:00Z",
         }
         report = generate_deterministic_fallback(tx, ml_score=0.6)
         formatted = format_sar_report(report)
         assert "50,000" in formatted, "Formatted SAR must display the TND 50,000 penalty"
-        assert "jours ouvrables" in formatted or "business days" in formatted.lower(), (
-            "Formatted SAR must specify business days in the deadline line"
-        )
+        assert (
+            "jours ouvrables" in formatted or "business days" in formatted.lower()
+        ), "Formatted SAR must specify business days in the deadline line"
 
     def test_formatted_output_contains_deadline(self):
         tx = {
-            "transaction_id": "TXN_FMT_002", "user_id": "U2",
-            "amount_tnd": 500.0, "governorate": "Tunis",
-            "payment_method": "Flouci", "branch_id": "B2",
+            "transaction_id": "TXN_FMT_002",
+            "user_id": "U2",
+            "amount_tnd": 500.0,
+            "governorate": "Tunis",
+            "payment_method": "Flouci",
+            "branch_id": "B2",
             "timestamp": "2026-05-01T08:00:00Z",
         }
         report = generate_deterministic_fallback(tx, ml_score=0.85)

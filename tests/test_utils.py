@@ -1,10 +1,18 @@
 """Tests for shared utilities."""
+
 import os
 import sqlite3
+
 import pytest
+
 from shared.utils import (
-    get_api_url, get_api_headers, get_sqlite_connection,
-    ensure_dlq_table, log_failed_alert, update_dlq_status, retry_failed_alerts
+    ensure_dlq_table,
+    get_api_headers,
+    get_api_url,
+    get_sqlite_connection,
+    log_failed_alert,
+    retry_failed_alerts,
+    update_dlq_status,
 )
 
 
@@ -104,7 +112,9 @@ class TestDeadLetterQueue:
         assert cursor.fetchone()[0] == "SUCCESS"
         conn.close()
 
-    def test_retry_failed_alerts_does_not_copy_error_to_sar_report(self, tmp_path, monkeypatch, sample_transaction_dict):
+    def test_retry_failed_alerts_does_not_copy_error_to_sar_report(
+        self, tmp_path, monkeypatch, sample_transaction_dict
+    ):
         db_path = str(tmp_path / "dlq.db")
         monkeypatch.setattr("shared.utils.DLQ_DB_PATH", db_path)
         captured_payloads = []

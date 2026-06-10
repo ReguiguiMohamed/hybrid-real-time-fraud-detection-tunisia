@@ -6,11 +6,12 @@ Verifies all dependencies are pinned, checks for known CVEs, and reports outdate
 Usage:
     python scripts/audit_dependencies.py
 """
+
+import re
 import subprocess
 import sys
-import re
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 
@@ -34,22 +35,26 @@ def parse_requirements(filepath: str) -> list[DepInfo]:
                 continue
 
             # Parse package==version pattern
-            match = re.match(r'^([a-zA-Z0-9_-]+)==([^\s#]+)', line)
+            match = re.match(r"^([a-zA-Z0-9_-]+)==([^\s#]+)", line)
             if match:
-                deps.append(DepInfo(
-                    name=match.group(1),
-                    version=match.group(2),
-                    is_pinned=True,
-                ))
+                deps.append(
+                    DepInfo(
+                        name=match.group(1),
+                        version=match.group(2),
+                        is_pinned=True,
+                    )
+                )
             else:
                 # Unpinned dependency
-                match = re.match(r'^([a-zA-Z0-9_-]+)(.*)', line)
+                match = re.match(r"^([a-zA-Z0-9_-]+)(.*)", line)
                 if match:
-                    deps.append(DepInfo(
-                        name=match.group(1),
-                        version=match.group(2).strip() or "unpinned",
-                        is_pinned=False,
-                    ))
+                    deps.append(
+                        DepInfo(
+                            name=match.group(1),
+                            version=match.group(2).strip() or "unpinned",
+                            is_pinned=False,
+                        )
+                    )
 
     return deps
 
@@ -59,10 +64,13 @@ def check_outdated(deps: list[DepInfo]) -> list[DepInfo]:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "list", "--outdated", "--format=json"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode == 0:
             import json
+
             outdated = json.loads(result.stdout)
             outdated_names = {pkg["name"].lower() for pkg in outdated}
 

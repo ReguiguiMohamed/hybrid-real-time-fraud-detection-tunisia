@@ -7,9 +7,11 @@ on:
       - "dashboard/**"
       - "src/**"
       - "requirements.txt"
+      - "README.md"
       - "Dockerfile"
       - ".env.example"
       - "Dockerfile.api"
+      - ".github/workflows/deploy.yml"
 
 concurrency:
   group: hf-deploy
@@ -50,9 +52,13 @@ jobs:
 
           cd "$CLONE_DIR"
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git rm -rf --quiet . 2>/dev/null || true
 
           echo "Copying API files from source..."
+          cp "$GITHUB_WORKSPACE/README.md" .
           cp -r "$GITHUB_WORKSPACE/Dockerfile" .
           cp -r "$GITHUB_WORKSPACE/Dockerfile.api" .
           cp -r "$GITHUB_WORKSPACE/.env.example" .

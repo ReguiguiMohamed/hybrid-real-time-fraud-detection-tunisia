@@ -11,35 +11,37 @@ Key differences from the notebook EDA approach:
 Usage:
     python src/ml/train_pipeline.py
 """
-import os
-import sys
+
 import json
 import logging
-import sqlite3
+import os
 import pickle
-from pathlib import Path
+import sqlite3
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
-from compliance.change_audit import append_change_audit_event
-from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.metrics import auc as pr_auc
 from sklearn.metrics import (
     classification_report,
-    precision_recall_curve,
-    auc as pr_auc,
-    roc_auc_score,
+    confusion_matrix,
     f1_score,
+    precision_recall_curve,
     precision_score,
     recall_score,
-    confusion_matrix,
+    roc_auc_score,
 )
-from sklearn.ensemble import GradientBoostingClassifier
-import joblib
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+from compliance.change_audit import append_change_audit_event
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -168,16 +170,20 @@ class FraudDetectionPipeline:
         logger.info(f"Categorical: {categorical_cols}")
 
         # Numeric pipeline: impute + scale
-        numeric_transformer = Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ])
+        numeric_transformer = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+            ]
+        )
 
         # Categorical pipeline: impute + one-hot encode
-        categorical_transformer = Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-        ])
+        categorical_transformer = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="most_frequent")),
+                ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+            ]
+        )
 
         preprocessor = ColumnTransformer(
             transformers=[
@@ -213,11 +219,13 @@ class FraudDetectionPipeline:
                 "Install the pinned project requirements before running train_pipeline.py."
             ) from exc
 
-        pipeline = ImbPipeline(steps=[
-            ("preprocessor", preprocessor),
-            ("smote", SMOTE(random_state=42, k_neighbors=3)),  # Applied ONLY to train
-            ("classifier", model),
-        ])
+        pipeline = ImbPipeline(
+            steps=[
+                ("preprocessor", preprocessor),
+                ("smote", SMOTE(random_state=42, k_neighbors=3)),  # Applied ONLY to train
+                ("classifier", model),
+            ]
+        )
 
         return pipeline
 
@@ -241,9 +249,7 @@ class FraudDetectionPipeline:
         logger.info(f"Class distribution: {fraud_count}/{total_count} fraud ({fraud_rate*100:.2f}%)")
 
         # Split FIRST (before any preprocessing)
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
         logger.info(f"Train: {len(X_train)}, Test: {len(X_test)}")
         logger.info(f"Train fraud rate: {y_train.mean()*100:.2f}%")
@@ -366,12 +372,13 @@ class FraudDetectionPipeline:
             json.dump(serializable_metrics, f, indent=2)
 
         # Save feature importance
-        if hasattr(self.pipeline, "named_steps") and hasattr(self.pipeline.named_steps["classifier"], "feature_importances_"):
+        if hasattr(self.pipeline, "named_steps") and hasattr(
+            self.pipeline.named_steps["classifier"], "feature_importances_"
+        ):
             importances = self.pipeline.named_steps["classifier"].feature_importances_
             feature_names = self.metrics.get("feature_columns", [])
             feature_importance = [
-                {"feature": name, "importance": float(imp)}
-                for name, imp in zip(feature_names, importances)
+                {"feature": name, "importance": float(imp)} for name, imp in zip(feature_names, importances)
             ]
             feature_importance.sort(key=lambda x: x["importance"], reverse=True)
 
@@ -389,26 +396,30 @@ class FraudDetectionPipeline:
 
         approved_by = os.getenv("MODEL_PROMOTION_APPROVED_BY")
         if not approved_by or approved_by.strip().lower() in {"system", "automation", "auto", "scheduler"}:
-            append_change_audit_event({
-                "event_type": "MODEL_PROMOTION_BLOCKED",
-                "actor": os.getenv("MODEL_PROMOTION_USER", "system"),
-                "approved_by": None,
-                "entity_type": "MODEL",
-                "entity_id": version_id,
-                "action": "BLOCK_PROMOTION",
-                "previous_state": None,
-                "new_state": {
-                    "version_id": version_id,
-                    "model_path": model_path,
-                    "f1_score": self.metrics.get("f1", 0.0),
-                    "auc": self.metrics.get("pr_auc", 0.0),
-                    "training_samples_count": self.metrics.get("train_samples", 0),
-                },
-                "promotion_trigger": "train_pipeline_register",
-                "performance_delta": None,
-                "justification": "Standalone model registration attempted without a human approver.",
-            })
-            raise RuntimeError("MODEL_PROMOTION_APPROVED_BY must identify a human approver before champion registration.")
+            append_change_audit_event(
+                {
+                    "event_type": "MODEL_PROMOTION_BLOCKED",
+                    "actor": os.getenv("MODEL_PROMOTION_USER", "system"),
+                    "approved_by": None,
+                    "entity_type": "MODEL",
+                    "entity_id": version_id,
+                    "action": "BLOCK_PROMOTION",
+                    "previous_state": None,
+                    "new_state": {
+                        "version_id": version_id,
+                        "model_path": model_path,
+                        "f1_score": self.metrics.get("f1", 0.0),
+                        "auc": self.metrics.get("pr_auc", 0.0),
+                        "training_samples_count": self.metrics.get("train_samples", 0),
+                    },
+                    "promotion_trigger": "train_pipeline_register",
+                    "performance_delta": None,
+                    "justification": "Standalone model registration attempted without a human approver.",
+                }
+            )
+            raise RuntimeError(
+                "MODEL_PROMOTION_APPROVED_BY must identify a human approver before champion registration."
+            )
 
         conn = get_sqlite_connection(self.feedback_db_path)
         cursor = conn.cursor()
@@ -454,41 +465,46 @@ class FraudDetectionPipeline:
         pr_auc_val = self.metrics.get("pr_auc", 0.0)
         train_samples = self.metrics.get("train_samples", 0)
 
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO model_registry
             (version_id, model_path, f1_score, auc, is_champion, promoted_at, training_samples_count, feature_importance)
             VALUES (?, ?, ?, ?, 1, ?, ?, ?)
-        """, (
-            version_id,
-            model_path,
-            f1,
-            pr_auc_val,  # Use PR-AUC for AUC column (more meaningful for imbalanced data)
-            datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
-            train_samples,
-            json.dumps(self.metrics.get("feature_columns", [])),
-        ))
+        """,
+            (
+                version_id,
+                model_path,
+                f1,
+                pr_auc_val,  # Use PR-AUC for AUC column (more meaningful for imbalanced data)
+                datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
+                train_samples,
+                json.dumps(self.metrics.get("feature_columns", [])),
+            ),
+        )
 
         conn.commit()
         conn.close()
-        append_change_audit_event({
-            "event_type": "MODEL_PROMOTION",
-            "actor": approved_by.strip(),
-            "approved_by": approved_by.strip(),
-            "entity_type": "MODEL",
-            "entity_id": version_id,
-            "action": "PROMOTE",
-            "previous_state": previous_state,
-            "new_state": {
-                "version_id": version_id,
-                "model_path": model_path,
-                "f1_score": f1,
-                "auc": pr_auc_val,
-                "training_samples_count": train_samples,
-            },
-            "promotion_trigger": "train_pipeline_register",
-            "performance_delta": None,
-            "justification": "Human-approved champion registration from offline training pipeline.",
-        })
+        append_change_audit_event(
+            {
+                "event_type": "MODEL_PROMOTION",
+                "actor": approved_by.strip(),
+                "approved_by": approved_by.strip(),
+                "entity_type": "MODEL",
+                "entity_id": version_id,
+                "action": "PROMOTE",
+                "previous_state": previous_state,
+                "new_state": {
+                    "version_id": version_id,
+                    "model_path": model_path,
+                    "f1_score": f1,
+                    "auc": pr_auc_val,
+                    "training_samples_count": train_samples,
+                },
+                "promotion_trigger": "train_pipeline_register",
+                "performance_delta": None,
+                "justification": "Human-approved champion registration from offline training pipeline.",
+            }
+        )
         logger.info(f"Model registered as champion: {version_id} (F1={f1:.4f}, PR-AUC={pr_auc_val:.4f})")
 
 

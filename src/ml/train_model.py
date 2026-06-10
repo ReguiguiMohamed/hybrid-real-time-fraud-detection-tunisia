@@ -1,19 +1,27 @@
 # src/ml/train_model.py
+import json
 import os
 import uuid
-import json
-import numpy as np
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, when, lit, stddev, mean, count, current_timestamp, expr, to_timestamp
-from xgboost.spark import SparkXGBClassifier
-from pyspark.ml import Pipeline, PipelineModel
-from pyspark.ml.feature import VectorAssembler
-from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from datetime import datetime, timezone
 from pathlib import Path
-from pyspark.sql.types import DoubleType, IntegerType, FloatType
-from shared.utils import get_sqlite_connection
+
+import numpy as np
+from pyspark.ml import Pipeline, PipelineModel
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+from pyspark.ml.feature import VectorAssembler
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, count, current_timestamp, expr, lit, mean, stddev, to_timestamp, when
+from pyspark.sql.types import DoubleType, FloatType, IntegerType
+from xgboost.spark import SparkXGBClassifier
+
 from compliance.change_audit import append_change_audit_event
+from ml.model_repository import ModelRepository
+from shared.risk_config import (
+    EWALLET_REVIEW_THRESHOLD_TND,
+    HIGH_VALUE_REVIEW_THRESHOLD_TND,
+    STRUCTURING_AMOUNT_MAX_TND,
+    STRUCTURING_AMOUNT_MIN_TND,
+)
 
 
 class DriftDetector:
@@ -21,20 +29,26 @@ class DriftDetector:
 
     def __init__(self, threshold=0.05, ks_alpha=0.05):
         self.threshold = threshold  # For simple statistical differences
-        self.ks_alpha = ks_alpha   # Significance level for KS test
+        self.ks_alpha = ks_alpha  # Significance level for KS test
         self.reference_samples = {}  # Store samples for KS test
-        self.reference_stats = {}    # Store stats for simple comparison
+        self.reference_stats = {}  # Store stats for simple comparison
 
     def collect_samples(self, df, sample_size=1000):
         """Collect samples for statistical testing"""
         import random
+
         samples = {}
-        numeric_cols = [field.name for field in df.schema.fields
-                       if isinstance(field.dataType, (DoubleType, IntegerType, FloatType))]
+        numeric_cols = [
+            field.name for field in df.schema.fields if isinstance(field.dataType, (DoubleType, IntegerType, FloatType))
+        ]
 
         for col_name in numeric_cols:
             # Sample data from the column
-            sampled_df = df.select(col(col_name)).filter(col(col_name).isNotNull()).sample(fraction=min(sample_size/df.count(), 1.0))
+            sampled_df = (
+                df.select(col(col_name))
+                .filter(col(col_name).isNotNull())
+                .sample(fraction=min(sample_size / df.count(), 1.0))
+            )
             samples[col_name] = [row[0] for row in sampled_df.collect()]
 
         return samples
@@ -42,20 +56,21 @@ class DriftDetector:
     def calculate_statistics(self, df):
         """Calculate statistical measures for a dataframe"""
         stats = {}
-        numeric_cols = [field.name for field in df.schema.fields
-                       if isinstance(field.dataType, (DoubleType, IntegerType, FloatType))]
+        numeric_cols = [
+            field.name for field in df.schema.fields if isinstance(field.dataType, (DoubleType, IntegerType, FloatType))
+        ]
 
         for col_name in numeric_cols:
             col_stats = df.agg(
                 mean(col(col_name)).alias(f"{col_name}_mean"),
                 stddev(col(col_name)).alias(f"{col_name}_stddev"),
-                count(col(col_name)).alias(f"{col_name}_count")
+                count(col(col_name)).alias(f"{col_name}_count"),
             ).collect()[0]
 
             stats[col_name] = {
                 "mean": col_stats[f"{col_name}_mean"],
                 "stddev": col_stats[f"{col_name}_stddev"],
-                "count": col_stats[f"{col_name}_count"]
+                "count": col_stats[f"{col_name}_count"],
             }
 
         return stats
@@ -65,7 +80,7 @@ class DriftDetector:
         import scipy.stats as stats
 
         # Collect samples for KS test
-        current_samples = self.collect_samples(self.current_df) if hasattr(self, 'current_df') else {}
+        current_samples = self.collect_samples(self.current_df) if hasattr(self, "current_df") else {}
 
         if not reference_stats:
             # Store current stats and samples as reference
@@ -99,15 +114,19 @@ class DriftDetector:
 
                 if mean_change > self.threshold or std_change > self.threshold:
                     drift_detected = True
-                    drift_details.append({
-                        "column": col_name,
-                        "test_type": "statistical_comparison",
-                        "mean_change": mean_change,
-                        "std_change": std_change,
-                        "current_mean": curr_stat["mean"],
-                        "reference_mean": ref_stat["mean"],
-                        "significance": "high" if (mean_change > self.threshold or std_change > self.threshold) else "low"
-                    })
+                    drift_details.append(
+                        {
+                            "column": col_name,
+                            "test_type": "statistical_comparison",
+                            "mean_change": mean_change,
+                            "std_change": std_change,
+                            "current_mean": curr_stat["mean"],
+                            "reference_mean": ref_stat["mean"],
+                            "significance": (
+                                "high" if (mean_change > self.threshold or std_change > self.threshold) else "low"
+                            ),
+                        }
+                    )
 
         # 2. Kolmogorov-Smirnov test for distribution similarity
         for col_name, current_sample in current_samples.items():
@@ -120,42 +139,63 @@ class DriftDetector:
 
                         if p_value < self.ks_alpha:  # Reject null hypothesis (distributions are different)
                             drift_detected = True
-                            drift_details.append({
-                                "column": col_name,
-                                "test_type": "kolmogorov_smirnov",
-                                "ks_statistic": ks_statistic,
-                                "p_value": p_value,
-                                "significant": True,
-                                "message": f"Distribution drift detected (p={p_value:.4f} < alpha={self.ks_alpha})"
-                            })
+                            drift_details.append(
+                                {
+                                    "column": col_name,
+                                    "test_type": "kolmogorov_smirnov",
+                                    "ks_statistic": ks_statistic,
+                                    "p_value": p_value,
+                                    "significant": True,
+                                    "message": f"Distribution drift detected (p={p_value:.4f} < alpha={self.ks_alpha})",
+                                }
+                            )
                         else:
-                            drift_details.append({
-                                "column": col_name,
-                                "test_type": "kolmogorov_smirnov",
-                                "ks_statistic": ks_statistic,
-                                "p_value": p_value,
-                                "significant": False,
-                                "message": f"No significant distribution drift (p={p_value:.4f} >= alpha={self.ks_alpha})"
-                            })
+                            drift_details.append(
+                                {
+                                    "column": col_name,
+                                    "test_type": "kolmogorov_smirnov",
+                                    "ks_statistic": ks_statistic,
+                                    "p_value": p_value,
+                                    "significant": False,
+                                    "message": f"No significant distribution drift (p={p_value:.4f} >= alpha={self.ks_alpha})",
+                                }
+                            )
                     except Exception as e:
                         print(f"Error in KS test for {col_name}: {e}")
-                        drift_details.append({
-                            "column": col_name,
-                            "test_type": "kolmogorov_smirnov",
-                            "error": str(e),
-                            "significant": False,
-                            "message": f"KS test failed: {e}"
-                        })
+                        drift_details.append(
+                            {
+                                "column": col_name,
+                                "test_type": "kolmogorov_smirnov",
+                                "error": str(e),
+                                "significant": False,
+                                "message": f"KS test failed: {e}",
+                            }
+                        )
 
         return drift_detected, drift_details
 
 
 class FraudModelTrainer:
-    def __init__(self, silver_path="./data/parquet/silver_fraud_alerts", feedback_db_path="./data/feedback.db"):
-        self.spark = SparkSession.builder.appName("TunisianFraud-ModelTrainer").getOrCreate()
+    def __init__(
+        self,
+        silver_path="./data/parquet/silver_fraud_alerts",
+        feedback_db_path=None,
+        repository=None,
+        spark=None,
+    ):
         self.silver_path = silver_path
         self.feedback_db_path = feedback_db_path
+        self.repository = repository or (
+            ModelRepository.for_sqlite_path(feedback_db_path) if feedback_db_path else ModelRepository()
+        )
+        self._spark = spark
         self.drift_detector = DriftDetector(threshold=0.1)
+
+    @property
+    def spark(self):
+        if self._spark is None:
+            self._spark = SparkSession.builder.appName("TunisianFraud-ModelTrainer").getOrCreate()
+        return self._spark
 
     @staticmethod
     def _parse_float_env(name, default):
@@ -181,87 +221,35 @@ class FraudModelTrainer:
             return None
         return approver.strip()
 
-
-    def _ensure_model_registry(self):
-        conn = get_sqlite_connection(self.feedback_db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS model_registry (
-                version_id TEXT PRIMARY KEY,
-                model_path TEXT NOT NULL,
-                f1_score REAL,
-                auc REAL,
-                is_champion INTEGER DEFAULT 0,
-                promoted_at DATETIME,
-                training_samples_count INTEGER,
-                feature_importance TEXT
-            )
-        """)
-        cursor.execute("PRAGMA table_info(model_registry)")
-        registry_columns = {row[1] for row in cursor.fetchall()}
-        if "feature_importance" not in registry_columns:
-            cursor.execute("ALTER TABLE model_registry ADD COLUMN feature_importance TEXT")
-        conn.commit()
-        conn.close()
-
-    def _get_current_champion(self):
-        conn = get_sqlite_connection(self.feedback_db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT version_id, model_path, f1_score, auc, promoted_at
-            FROM model_registry
-            WHERE is_champion = 1
-            ORDER BY promoted_at DESC
-            LIMIT 1
-        """)
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return None
+    @staticmethod
+    def _promotion_decision(challenger_metrics, champion_metrics, threshold, approved_by):
+        """Return metric eligibility, approval, and F1 improvement."""
+        improvement = None
+        if champion_metrics:
+            improvement = challenger_metrics["f1_score"] - champion_metrics["f1_score"]
+        metric_eligible = champion_metrics is None or improvement >= threshold
         return {
-            "version_id": row[0],
-            "model_path": row[1],
-            "f1_score": row[2],
-            "auc": row[3],
-            "promoted_at": row[4]
+            "metric_eligible": metric_eligible,
+            "approved": approved_by is not None,
+            "promote": metric_eligible and approved_by is not None,
+            "f1_improvement": improvement,
         }
 
-    def _ensure_audit_logs(self):
-        conn = get_sqlite_connection(self.feedback_db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entity_type TEXT,
-                entity_id TEXT,
-                action TEXT,
-                user_id TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                previous_state TEXT,
-                new_state TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
+    def _ensure_model_registry(self):
+        self.repository.ensure_schema()
+
+    def _get_current_champion(self):
+        return self.repository.get_current_champion()
 
     def _log_audit_event(self, entity_type, entity_id, action, user_id, previous_state, new_state):
-        self._ensure_audit_logs()
-        conn = get_sqlite_connection(self.feedback_db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO audit_logs
-            (entity_type, entity_id, action, user_id, previous_state, new_state)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            entity_type,
-            entity_id,
-            action,
-            user_id,
-            previous_state,
-            new_state
-        ))
-        conn.commit()
-        conn.close()
+        self.repository.log_audit_event(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action=action,
+            user_id=user_id,
+            previous_state=previous_state,
+            new_state=new_state,
+        )
 
     def _record_model_registry_entry(
         self,
@@ -272,41 +260,23 @@ class FraudModelTrainer:
         is_champion,
         promoted_at,
         training_samples_count,
-        feature_importance
+        feature_importance,
     ):
-        conn = get_sqlite_connection(self.feedback_db_path)
-        cursor = conn.cursor()
-        if is_champion:
-            cursor.execute("UPDATE model_registry SET is_champion = 0 WHERE is_champion = 1")
-        cursor.execute("""
-            INSERT INTO model_registry
-            (version_id, model_path, f1_score, auc, is_champion, promoted_at, training_samples_count, feature_importance)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            version_id,
-            model_path,
-            f1_score,
-            auc,
-            1 if is_champion else 0,
-            promoted_at,
-            training_samples_count,
-            feature_importance
-        ))
-        conn.commit()
-        conn.close()
+        self.repository.record_model(
+            version_id=version_id,
+            model_path=model_path,
+            f1_score=f1_score,
+            auc=auc,
+            is_champion=is_champion,
+            promoted_at=promoted_at,
+            training_samples_count=training_samples_count,
+            feature_importance=feature_importance,
+        )
 
     def check_feedback_availability(self):
         """Check if enough human feedback is available to retrain"""
         try:
-            conn = get_sqlite_connection(self.feedback_db_path)
-            cursor = conn.cursor()
-
-            # Count total feedback records
-            cursor.execute("SELECT COUNT(*) FROM feedback_labels WHERE analyst_label IS NOT NULL")
-            total_feedback = cursor.fetchone()[0]
-
-            conn.close()
-            return total_feedback
+            return self.repository.count_verified_feedback()
         except Exception as e:
             print(f"Error checking feedback availability: {e}")
             return 0
@@ -314,55 +284,54 @@ class FraudModelTrainer:
     def load_feedback_data(self):
         """Load human-verified feedback data for retraining"""
         try:
-            conn = get_sqlite_connection(self.feedback_db_path)
-            cursor = conn.cursor()
-
-            # Get feedback data with proper label mapping
-            cursor.execute("""
-                SELECT
-                    fl.transaction_id,
-                    hra.user_id,
-                    hra.amount_tnd,
-                    hra.governorate,
-                    hra.payment_method,
-                    hra.ml_probability,
-                    CASE
-                        WHEN fl.analyst_label = 'Confirmed Fraud' THEN 1
-                        WHEN fl.analyst_label = 'False Positive' THEN 0
-                        ELSE -1
-                    END as verified_label
-                FROM feedback_labels fl
-                INNER JOIN high_risk_alerts hra
-                    ON hra.transaction_id = fl.transaction_id
-                WHERE fl.analyst_label IN ('Confirmed Fraud', 'False Positive')
-            """)
-
-            feedback_records = cursor.fetchall()
-            conn.close()
+            feedback_records = self.repository.get_verified_feedback_rows()
 
             # Convert to DataFrame if records exist
             if feedback_records:
                 # Create a temporary view for SQL operations
                 feedback_df = self.spark.createDataFrame(
                     feedback_records,
-                    ["transaction_id", "user_id", "amount_tnd", "governorate", "payment_method", "ml_probability", "verified_label"]
+                    [
+                        "transaction_id",
+                        "user_id",
+                        "amount_tnd",
+                        "governorate",
+                        "payment_method",
+                        "ml_probability",
+                        "verified_label",
+                    ],
                 )
 
-                enhanced_threshold = self._parse_float_env("HIGH_VALUE_THRESHOLD_TND", 15000.0)
-                d17_soft_limit = self._parse_float_env("D17_SOFT_LIMIT_TND", 500.0)
+                enhanced_threshold = self._parse_float_env(
+                    "HIGH_VALUE_THRESHOLD_TND",
+                    HIGH_VALUE_REVIEW_THRESHOLD_TND,
+                )
+                ewallet_threshold = self._parse_float_env(
+                    "EWALLET_REVIEW_THRESHOLD_TND",
+                    EWALLET_REVIEW_THRESHOLD_TND,
+                )
 
                 # Reviewed alerts do not carry raw rolling-window counters, so only
                 # derive features that are directly supported by the stored alert.
                 enriched_feedback = (
-                    feedback_df
-                    .withColumn("avg_amount", col("amount_tnd"))
-                    .withColumn("is_smurfing", when(col("amount_tnd").between(1400, 1500), 1).otherwise(0))
-                    .withColumn("high_value_risk", when(col("amount_tnd") > lit(enhanced_threshold), 1.0).otherwise(0.0))
+                    feedback_df.withColumn("avg_amount", col("amount_tnd"))
+                    .withColumn(
+                        "is_smurfing",
+                        when(
+                            col("amount_tnd").between(
+                                STRUCTURING_AMOUNT_MIN_TND,
+                                STRUCTURING_AMOUNT_MAX_TND,
+                            ),
+                            1,
+                        ).otherwise(0),
+                    )
+                    .withColumn(
+                        "high_value_risk", when(col("amount_tnd") > lit(enhanced_threshold), 1.0).otherwise(0.0)
+                    )
                     .withColumn(
                         "d17_risk",
                         when(
-                            (col("payment_method") == lit("Flouci")) &
-                            (col("amount_tnd") > lit(d17_soft_limit)),
+                            (col("payment_method") == lit("Flouci")) & (col("amount_tnd") > lit(ewallet_threshold)),
                             1.0,
                         ).otherwise(0.0),
                     )
@@ -399,13 +368,15 @@ class FraudModelTrainer:
             # But this should be avoided in production once feedback is available
             try:
                 silver_df = self.spark.read.parquet(self.silver_path)
-                print(f"Using {silver_df.count()} records from silver layer with heuristic labels (NOT RECOMMENDED in production)")
+                print(
+                    f"Using {silver_df.count()} records from silver layer with heuristic labels (NOT RECOMMENDED in production)"
+                )
 
                 # Create heuristic labels based on ml_probability threshold
                 # This is only for initial model training before feedback is available
                 combined_df = silver_df.withColumn(
                     "label",
-                    when(col("ml_probability") > 0.9, 1).otherwise(0)  # Higher threshold for heuristic labeling
+                    when(col("ml_probability") > 0.9, 1).otherwise(0),  # Higher threshold for heuristic labeling
                 )
 
                 # Only use records with heuristic labels
@@ -426,7 +397,8 @@ class FraudModelTrainer:
         auc = evaluator.evaluate(predictions, {evaluator.metricName: "areaUnderROC"})
 
         # Calculate precision, recall, and F1 manually
-        from pyspark.sql.functions import sum as spark_sum, count
+        from pyspark.sql.functions import count
+        from pyspark.sql.functions import sum as spark_sum
 
         # Calculate TP, FP, TN, FN
         tp = predictions.filter((col("prediction") == 1) & (col("label") == 1)).count()
@@ -446,7 +418,7 @@ class FraudModelTrainer:
             "tp": tp,
             "fp": fp,
             "tn": tn,
-            "fn": fn
+            "fn": fn,
         }
 
     @staticmethod
@@ -545,10 +517,10 @@ class FraudModelTrainer:
             )
 
             if drift_detected:
-                print(f"⚠️ Data drift detected: {drift_details}")
+                print(f"Data drift detected: {drift_details}")
                 return True, drift_details
             else:
-                print("✅ No significant data drift detected")
+                print("No significant data drift detected")
                 return False, []
 
         except Exception as e:
@@ -562,7 +534,8 @@ class FraudModelTrainer:
         feedback_count = self.check_feedback_availability()
         print(f"Available feedback records: {feedback_count}")
 
-        drift_detected, drift_details = self.detect_data_drift()
+        drift_enabled = os.getenv("RETRAIN_ON_DRIFT_ENABLED", "false").lower() in {"1", "true", "yes"}
+        drift_detected, drift_details = self.detect_data_drift() if drift_enabled else (False, [])
 
         min_feedback = max(1, int(self._parse_float_env("RETRAIN_MIN_FEEDBACK", 100)))
         if feedback_count < min_feedback and not drift_detected:
@@ -591,7 +564,7 @@ class FraudModelTrainer:
             "travel_risk",
             "high_value_risk",
             "d17_risk",
-            "risk_score"
+            "risk_score",
         ]
 
         feature_cols = [col for col in potential_feature_cols if col in available_cols and col != "label"]
@@ -604,11 +577,7 @@ class FraudModelTrainer:
         assembler = VectorAssembler(inputCols=feature_cols, outputCol="features", handleInvalid="skip")
 
         xgb = SparkXGBClassifier(
-            featuresCol="features",
-            labelCol="label",
-            max_depth=6,
-            n_estimators=100,
-            learning_rate=0.1
+            featuresCol="features", labelCol="label", max_depth=6, n_estimators=100, learning_rate=0.1
         )
 
         pipeline = Pipeline(stages=[assembler, xgb])
@@ -616,10 +585,7 @@ class FraudModelTrainer:
 
         challenger_metrics = self.evaluate_model(challenger_model, test_data)
         feature_scores = self.get_feature_scores(challenger_model)
-        feature_importance = json.dumps([
-            {"feature": name, "score": float(score)}
-            for name, score in feature_scores
-        ])
+        feature_importance = json.dumps([{"feature": name, "score": float(score)} for name, score in feature_scores])
         print(f"Challenger model metrics: {challenger_metrics}")
 
         champion_entry = self._get_current_champion()
@@ -634,17 +600,19 @@ class FraudModelTrainer:
                 print(f"Error evaluating champion model: {e}")
 
         promotion_threshold = self._parse_float_env("CHAMPION_PROMOTION_THRESHOLD", 0.02)
-        promotion_candidate = False
-        if not champion_entry or not champion_metrics:
-            promotion_candidate = True
-        else:
-            improvement = challenger_metrics["f1_score"] - champion_metrics["f1_score"]
-            promotion_candidate = improvement >= promotion_threshold
-
         approved_by = self._get_model_promotion_approver()
-        promote = promotion_candidate and approved_by is not None
+        decision = self._promotion_decision(
+            challenger_metrics,
+            champion_metrics,
+            promotion_threshold,
+            approved_by,
+        )
+        promotion_candidate = decision["metric_eligible"]
+        promote = decision["promote"]
 
-        version_id = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        version_id = (
+            datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        )
         model_path = str(Path("models") / "registry" / f"fraud_xgb_{version_id}")
         Path(model_path).parent.mkdir(parents=True, exist_ok=True)
         challenger_model.write().overwrite().save(model_path)
@@ -659,97 +627,84 @@ class FraudModelTrainer:
             is_champion=promote,
             promoted_at=promoted_at,
             training_samples_count=training_samples_count,
-            feature_importance=feature_importance
+            feature_importance=feature_importance,
         )
 
         if promote:
             print("Challenger model promoted to champion.")
             previous_state = json.dumps(champion_entry) if champion_entry else None
-            new_state = json.dumps({
-                "version_id": version_id,
-                "model_path": model_path,
-                "f1_score": challenger_metrics["f1_score"],
-                "auc": challenger_metrics["auc"],
-                "approved_by": approved_by,
-                "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
-                "promotion_threshold": promotion_threshold,
-            })
-            self._log_audit_event(
-                "MODEL",
-                version_id,
-                "PROMOTE",
-                approved_by,
-                previous_state,
-                new_state
-            )
-            append_change_audit_event({
-                "event_type": "MODEL_PROMOTION",
-                "actor": approved_by,
-                "approved_by": approved_by,
-                "entity_type": "MODEL",
-                "entity_id": version_id,
-                "action": "PROMOTE",
-                "previous_state": champion_entry,
-                "new_state": {
+            new_state = json.dumps(
+                {
                     "version_id": version_id,
                     "model_path": model_path,
                     "f1_score": challenger_metrics["f1_score"],
                     "auc": challenger_metrics["auc"],
-                    "training_samples_count": training_samples_count,
-                },
-                "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
-                "performance_delta": {
-                    "f1_score": (
-                        None if not champion_metrics
-                        else challenger_metrics["f1_score"] - champion_metrics["f1_score"]
-                    ),
-                    "auc": (
-                        None if not champion_metrics
-                        else challenger_metrics["auc"] - champion_metrics["auc"]
-                    ),
-                },
-                "justification": "Human-approved champion promotion after champion-challenger evaluation.",
-            })
+                    "approved_by": approved_by,
+                    "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                    "promotion_threshold": promotion_threshold,
+                }
+            )
+            self._log_audit_event("MODEL", version_id, "PROMOTE", approved_by, previous_state, new_state)
+            append_change_audit_event(
+                {
+                    "event_type": "MODEL_PROMOTION",
+                    "actor": approved_by,
+                    "approved_by": approved_by,
+                    "entity_type": "MODEL",
+                    "entity_id": version_id,
+                    "action": "PROMOTE",
+                    "previous_state": champion_entry,
+                    "new_state": {
+                        "version_id": version_id,
+                        "model_path": model_path,
+                        "f1_score": challenger_metrics["f1_score"],
+                        "auc": challenger_metrics["auc"],
+                        "training_samples_count": training_samples_count,
+                    },
+                    "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                    "performance_delta": {
+                        "f1_score": (None if decision["f1_improvement"] is None else decision["f1_improvement"]),
+                        "auc": (None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]),
+                    },
+                    "justification": "Human-approved champion promotion after champion-challenger evaluation.",
+                }
+            )
             return True
 
         if promotion_candidate and approved_by is None:
             print("Champion promotion blocked: MODEL_PROMOTION_APPROVED_BY must identify a human approver.")
-            append_change_audit_event({
-                "event_type": "MODEL_PROMOTION_BLOCKED",
-                "actor": os.getenv("MODEL_PROMOTION_USER", "system"),
-                "approved_by": None,
-                "entity_type": "MODEL",
-                "entity_id": version_id,
-                "action": "BLOCK_PROMOTION",
-                "previous_state": champion_entry,
-                "new_state": {
-                    "version_id": version_id,
-                    "model_path": model_path,
-                    "f1_score": challenger_metrics["f1_score"],
-                    "auc": challenger_metrics["auc"],
-                    "training_samples_count": training_samples_count,
-                },
-                "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
-                "performance_delta": {
-                    "f1_score": (
-                        None if not champion_metrics
-                        else challenger_metrics["f1_score"] - champion_metrics["f1_score"]
-                    ),
-                    "auc": (
-                        None if not champion_metrics
-                        else challenger_metrics["auc"] - champion_metrics["auc"]
-                    ),
-                },
-                "justification": "Promotion candidate met metric gate but no human approver was provided.",
-            })
+            append_change_audit_event(
+                {
+                    "event_type": "MODEL_PROMOTION_BLOCKED",
+                    "actor": os.getenv("MODEL_PROMOTION_USER", "system"),
+                    "approved_by": None,
+                    "entity_type": "MODEL",
+                    "entity_id": version_id,
+                    "action": "BLOCK_PROMOTION",
+                    "previous_state": champion_entry,
+                    "new_state": {
+                        "version_id": version_id,
+                        "model_path": model_path,
+                        "f1_score": challenger_metrics["f1_score"],
+                        "auc": challenger_metrics["auc"],
+                        "training_samples_count": training_samples_count,
+                    },
+                    "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
+                    "performance_delta": {
+                        "f1_score": (None if decision["f1_improvement"] is None else decision["f1_improvement"]),
+                        "auc": (None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]),
+                    },
+                    "justification": "Promotion candidate met metric gate but no human approver was provided.",
+                }
+            )
 
         print("Champion model retained. Challenger registered for audit.")
         return False
 
     def schedule_retraining(self, interval_minutes=60):
         """Schedule periodic retraining of the model"""
-        import time
         import threading
+        import time
 
         def retrain_loop():
             while True:
@@ -757,9 +712,9 @@ class FraudModelTrainer:
                     print(f"Checking for retraining opportunity at {datetime.now()}")
                     success = self.train_champion_challenger()
                     if success:
-                        print(f"✅ Model retrained successfully at {datetime.now()}")
+                        print(f"Model retrained successfully at {datetime.now()}")
                     else:
-                        print(f"ℹ️  No retraining needed at {datetime.now()}")
+                        print(f"No retraining needed at {datetime.now()}")
 
                     # Wait for the specified interval before next check
                     time.sleep(interval_minutes * 60)
@@ -779,9 +734,9 @@ if __name__ == "__main__":
     # Option 1: Run a single training cycle
     success = trainer.train_champion_challenger()
     if success:
-        print("✅ Champion-challenger training cycle completed successfully")
+        print("Champion-challenger training cycle completed successfully")
     else:
-        print("ℹ️  No model update performed")
+        print("No model update performed")
 
     # Option 2: Start continuous retraining (uncomment to use)
     # print("Starting continuous retraining scheduler...")

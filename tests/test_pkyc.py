@@ -1,6 +1,6 @@
 import json
 
-from compliance.pkyc import PKYCTriggerEvaluator, PKYCPublisher
+from compliance.pkyc import PKYCPublisher, PKYCTriggerEvaluator
 from shared.pii_masking import hash_pii
 
 

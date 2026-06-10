@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: CI
 
 on:
   push:
@@ -8,121 +8,85 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  PYTEST_ADDOPTS: "--color=yes"
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
 
 jobs:
-  lint:
-    name: Lint Check
+  quality:
+    name: Format and static correctness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install lint dependencies
-        run: |
-          pip install flake8 black isort
+      - name: Install quality tools
+        run: pip install black==24.10.0 flake8==7.1.1 isort==5.13.2
 
-      - name: Run flake8
-        run: flake8 src/ dashboard/ scripts/ --max-line-length=120 --extend-ignore=E501,W503 --exit-zero
+      - name: Check formatting
+        run: black --check src dashboard scripts tests
 
-      - name: Run black (check mode)
-        run: black --check src/ dashboard/ scripts/ --diff || true
+      - name: Check import ordering
+        run: isort --check-only src dashboard scripts tests
 
-      - name: Run isort (check mode)
-        run: isort --check-only src/ dashboard/ scripts/ --diff || true
+      - name: Check syntax and undefined names
+        run: flake8 src dashboard scripts tests
 
-  test:
-    name: Unit Tests
+      - name: Compile maintained Python modules
+        run: python -m compileall -q src dashboard scripts
+
+  verified-slice:
+    name: Verified prototype tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
+      - name: Install runtime and test dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov httpx faker
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install -e . --no-deps
 
-      - name: Run unit tests with coverage
+      - name: Run tests with enforced coverage
         run: |
-          python -m pytest tests/test_api.py tests/test_schemas.py tests/test_producer.py tests/test_risk_config.py tests/test_utils.py tests/test_monitoring.py -v --tb=short --cov=src --cov=dashboard --cov-report=term --cov-report=xml:coverage.xml
+          python -m pytest -p pytest_cov tests -m "not integration" \
+            --cov=dashboard.api \
+            --cov=shared.database \
+            --cov=shared.utils \
+            --cov=compliance \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=70
 
-      - name: Upload coverage to artifacts
+      - name: Regenerate OpenAPI snapshot
+        run: |
+          python scripts/generate_openapi.py
+          git diff --exit-code -- docs/openapi.json
+
+      - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: verified-slice-coverage
           path: coverage.xml
 
-      - name: Enforce minimum coverage
-        if: always()
-        run: |
-          python -m pytest tests/test_api.py tests/test_schemas.py tests/test_producer.py tests/test_risk_config.py tests/test_utils.py tests/test_monitoring.py --tb=short --cov=src --cov=dashboard --cov-report=term --cov-fail-under=70 || echo "Coverage below 70% threshold"
-
-  security:
-    name: Security Scan
+  security-gate:
+    name: High-severity security gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install security tools
-        run: pip install bandit pip-audit safety
+      - name: Install Bandit
+        run: pip install bandit==1.7.10
 
-      - name: Run bandit
-        run: bandit -r src/ dashboard/ scripts/ -f json -o bandit-report.json --exit-code 2 || true
-
-      - name: Run pip-audit
-        run: pip-audit --requirement requirements.txt --format json --output pip-audit-report.json || true
-
-      - name: Run safety check
-        run: safety check -r requirements.txt --json --output safety-report.json || true
-
-      - name: Upload security reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports
-          path: |
-            bandit-report.json
-            pip-audit-report.json
-            safety-report.json
-
-  api-tests:
-    name: API Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest httpx
-
-      - name: Run full API test suite
-        run: python -m pytest tests/test_api.py -v --tb=short
-
-      - name: Run schema tests
-        run: python -m pytest tests/test_schemas.py -v --tb=short
-
-      - name: Run monitoring tests
-        run: python -m pytest tests/test_monitoring.py -v --tb=short
+      - name: Fail on high-severity findings
+        run: bandit -r src dashboard scripts -lll

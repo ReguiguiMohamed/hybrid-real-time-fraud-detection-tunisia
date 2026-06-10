@@ -3,10 +3,12 @@ Chaos Test: Kafka Failure & Recovery
 Tests the pipeline's behavior when Kafka becomes unavailable and recovers.
 Uses Testcontainers for realistic integration testing.
 """
-import pytest
-import time
+
 import threading
-from unittest.mock import patch, MagicMock
+import time
+from unittest.mock import MagicMock, patch
+
+import pytest
 from testcontainers.kafka import KafkaContainer
 
 
@@ -19,17 +21,15 @@ class TestKafkaFailureRecovery:
         from src.streaming.consumer import FraudProcessor
 
         # Mock Kafka to raise connection error
-        with patch('pyspark.sql.SparkSession') as mock_spark:
+        with patch("pyspark.sql.SparkSession") as mock_spark:
             mock_spark.builder = MagicMock()
             mock_spark.builder.appName.return_value = mock_spark.builder
             mock_spark.builder.config.return_value = mock_spark.builder
 
-            with patch('pyspark.sql.SparkSession.readStream') as mock_read:
+            with patch("pyspark.sql.SparkSession.readStream") as mock_read:
                 from pyspark.sql.utils import AnalysisException
-                mock_read.side_effect = AnalysisException(
-                    "Failed to connect to Kafka: Connection refused",
-                    None
-                )
+
+                mock_read.side_effect = AnalysisException("Failed to connect to Kafka: Connection refused", None)
 
                 # Should raise exception (expected behavior)
                 # The important thing is it doesn't crash silently
@@ -38,106 +38,46 @@ class TestKafkaFailureRecovery:
                     processor.spark = mock_spark
                     processor.process_stream()
 
-    def test_dlq_captures_failed_alerts_on_api_down(self):
+    def test_dlq_captures_failed_alerts_on_api_down(self, tmp_path, monkeypatch):
         """Failed alerts should be captured in DLQ when API is down."""
-        from src.shared.utils import log_failed_alert, get_sqlite_connection
-        import tempfile
-        import os
+        import src.shared.utils as utils
 
-        # Create temp DB
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
+        db_path = tmp_path / "dead_letter_queue.db"
+        monkeypatch.setattr(utils, "DLQ_DB_PATH", str(db_path))
+        tx_data = {"transaction_id": "test-tx-001", "user_id": "user-1"}
+        alert_payload = {"transaction_id": "test-tx-001", "amount_tnd": 5000.0}
 
-        try:
-            conn = get_sqlite_connection(db_path)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS dead_letter_queue (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    transaction_id TEXT,
-                    error_code TEXT,
-                    error_message TEXT,
-                    alert_payload TEXT,
-                    status TEXT DEFAULT 'PENDING',
-                    retry_count INTEGER DEFAULT 0,
-                    max_retries INTEGER DEFAULT 3,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    next_retry_at DATETIME
-                )
-            """)
-            conn.commit()
-            conn.close()
+        utils.log_failed_alert(tx_data, alert_payload, "API_DOWN", "Connection refused")
 
-            # Log a failed alert
-            tx_data = {"transaction_id": "test-tx-001", "user_id": "user-1"}
-            alert_payload = {"transaction_id": "test-tx-001", "amount_tnd": 5000.0}
+        with utils.get_sqlite_connection(str(db_path)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM failed_alerts WHERE status = 'PENDING'").fetchone()[0]
+        assert count == 1, "Failed alert should be in DLQ"
 
-            with patch('src.shared.utils.get_sqlite_connection', return_value=get_sqlite_connection(db_path)):
-                log_failed_alert(tx_data, alert_payload, "API_DOWN", "Connection refused")
-
-            # Verify it's in the DLQ
-            conn = get_sqlite_connection(db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM dead_letter_queue WHERE status = 'PENDING'")
-            count = cursor.fetchone()[0]
-            conn.close()
-
-            assert count == 1, "Failed alert should be in DLQ"
-        finally:
-            os.unlink(db_path)
-
-    def test_dlq_retry_mechanism(self):
+    def test_dlq_retry_mechanism(self, tmp_path, monkeypatch):
         """DLQ retry worker should attempt to re-process failed alerts."""
-        from src.shared.utils import retry_failed_alerts, get_sqlite_connection
-        import tempfile
-        import os
+        import src.shared.utils as utils
 
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
+        db_path = tmp_path / "dead_letter_queue.db"
+        monkeypatch.setattr(utils, "DLQ_DB_PATH", str(db_path))
+        utils.log_failed_alert(
+            {
+                "transaction_id": "test-tx-002",
+                "user_id": "user-2",
+                "amount_tnd": 1000.0,
+            },
+            {"transaction_id": "test-tx-002"},
+            "API_DOWN",
+            "Connection refused",
+        )
+        monkeypatch.setattr(utils, "make_authenticated_request", lambda *_args, **_kwargs: None)
 
-        try:
-            conn = get_sqlite_connection(db_path)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS dead_letter_queue (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    transaction_id TEXT,
-                    error_code TEXT,
-                    error_message TEXT,
-                    alert_payload TEXT,
-                    status TEXT DEFAULT 'PENDING',
-                    retry_count INTEGER DEFAULT 0,
-                    max_retries INTEGER DEFAULT 3,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    next_retry_at DATETIME
-                )
-            """)
-            # Insert a pending alert with next_retry in the past
-            cursor.execute("""
-                INSERT INTO dead_letter_queue
-                (transaction_id, error_code, error_message, alert_payload, status, retry_count, max_retries, next_retry_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '-1 minute'))
-            """, ("test-tx-002", "API_DOWN", "Connection refused", '{"amount": 1000}', "PENDING", 0, 3))
-            conn.commit()
-            conn.close()
+        utils.retry_failed_alerts(max_attempts=3)
 
-            # Run retry (will fail since API is down, but should increment retry_count)
-            with patch('src.shared.utils.make_authenticated_request', return_value=None):
-                with patch('src.shared.utils.get_sqlite_connection', return_value=get_sqlite_connection(db_path)):
-                    retry_failed_alerts(max_attempts=3)
-
-            # Verify retry_count was incremented
-            conn = get_sqlite_connection(db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT retry_count, status FROM dead_letter_queue WHERE transaction_id = 'test-tx-002'")
-            row = cursor.fetchone()
-            conn.close()
-
-            assert row[0] == 1, "Retry count should be incremented"
-        finally:
-            os.unlink(db_path)
+        with utils.get_sqlite_connection(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT attempts, status FROM failed_alerts WHERE transaction_id = 'test-tx-002'"
+            ).fetchone()
+        assert row[0] == 1, "Retry count should be incremented"
 
 
 @pytest.mark.integration
@@ -146,8 +86,8 @@ class TestCheckpointRecovery:
 
     def test_checkpoint_directory_created(self):
         """Spark should create checkpoint directory during streaming."""
-        import tempfile
         import os
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             checkpoint_path = os.path.join(tmpdir, "test_checkpoint")
@@ -169,6 +109,7 @@ class TestCheckpointRecovery:
 
         # Verify checkpoint data is serializable
         import json
+
         serialized = json.dumps(checkpoint_data)
         deserialized = json.loads(serialized)
 
@@ -182,7 +123,7 @@ class TestOllamaFallback:
 
     def test_sar_generator_fallback_on_ollama_down(self):
         """SAR generator should use deterministic template when Ollama is down."""
-        from src.rag_engine.sar_validator import validate_sar_output, generate_deterministic_fallback
+        from src.rag_engine.sar_validator import generate_deterministic_fallback, validate_sar_output
 
         tx_data = {
             "transaction_id": "test-tx-003",
@@ -269,9 +210,17 @@ class TestLoadAndDegradation:
 
     def test_graceful_degradation_without_ml_model(self):
         """System should function with rule-based scoring when ML model is unavailable."""
+        import os
+        import sys
+
+        if os.getenv("RUN_SPARK_TESTS") != "1":
+            pytest.skip("Set RUN_SPARK_TESTS=1 to run local Spark worker tests.")
+
         from pyspark.sql import SparkSession
         from pyspark.sql.functions import lit
 
+        os.environ["PYSPARK_PYTHON"] = sys.executable
+        os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
         spark = SparkSession.builder.appName("test").getOrCreate()
 
         # Create sample data

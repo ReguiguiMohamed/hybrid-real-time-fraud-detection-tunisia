@@ -1,17 +1,16 @@
 # dashboard/monitoring.py
 import os
-import sys
-import numpy as np
+import statistics
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
-from collections import deque
-import statistics
 from typing import List, Optional
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+import numpy as np
 
 from compliance.change_audit import append_change_audit_event
 from shared.utils import get_sqlite_connection
+
 
 class ForensicAnalyticEngine:
     PSI_RETRAIN_THRESHOLD = 0.2
@@ -22,29 +21,24 @@ class ForensicAnalyticEngine:
         self.db_path = db_path
         self.inference_latencies = deque(maxlen=1000)  # Keep last 1000 measurements
         self.drift_monitoring = {}
-        
+
     def record_inference_latency(self, latency_ms: float):
         """Record the latency of an inference call"""
         self.inference_latencies.append(latency_ms)
-        
+
     def get_performance_metrics(self):
         """Calculate performance metrics"""
         if not self.inference_latencies:
-            return {
-                "avg_latency_ms": 0,
-                "p95_latency_ms": 0,
-                "p99_latency_ms": 0,
-                "total_calls": 0
-            }
-        
+            return {"avg_latency_ms": 0, "p95_latency_ms": 0, "p99_latency_ms": 0, "total_calls": 0}
+
         latencies = list(self.inference_latencies)
         return {
             "avg_latency_ms": round(statistics.mean(latencies), 2),
             "p95_latency_ms": round(np.percentile(latencies, 95), 2),
             "p99_latency_ms": round(np.percentile(latencies, 99), 2),
-            "total_calls": len(latencies)
+            "total_calls": len(latencies),
         }
-    
+
     def get_feedback_analysis(self):
         """Analyze feedback patterns"""
         try:
@@ -82,16 +76,11 @@ class ForensicAnalyticEngine:
                 "precision": round(precision, 3),
                 "feedback_counts": feedback_counts,
                 "total_feedback": total_labeled,
-                "prob_label_pairs": prob_label_pairs
+                "prob_label_pairs": prob_label_pairs,
             }
         except Exception as e:
             print(f"Error getting feedback analysis: {e}")
-            return {
-                "precision": 0,
-                "feedback_counts": {},
-                "total_feedback": 0,
-                "prob_label_pairs": []
-            }
+            return {"precision": 0, "feedback_counts": {}, "total_feedback": 0, "prob_label_pairs": []}
 
     def get_ml_threshold_analysis(self):
         """Analyze optimal threshold based on feedback"""
@@ -110,25 +99,28 @@ class ForensicAnalyticEngine:
             fp = sum(1 for prob, label in prob_label_pairs if prob >= threshold and label == "False Positive")
 
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall = tp / sum(1 for _, label in prob_label_pairs if label == "Confirmed Fraud") if sum(1 for _, label in prob_label_pairs if label == "Confirmed Fraud") > 0 else 0
+            recall = (
+                tp / sum(1 for _, label in prob_label_pairs if label == "Confirmed Fraud")
+                if sum(1 for _, label in prob_label_pairs if label == "Confirmed Fraud") > 0
+                else 0
+            )
 
             f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
 
             threshold_analysis[threshold] = {
                 "precision": round(precision, 3),
                 "recall": round(recall, 3),
-                "f1_score": round(f1_score, 3)
+                "f1_score": round(f1_score, 3),
             }
 
         # Find threshold with highest F1 score
         best_threshold = max(thresholds, key=lambda t: threshold_analysis[t]["f1_score"])
 
-        return {
-            "optimal_threshold": best_threshold,
-            "threshold_analysis": threshold_analysis
-        }
+        return {"optimal_threshold": best_threshold, "threshold_analysis": threshold_analysis}
 
-    def detect_feature_drift(self, feature_name: str, current_values: List[float], reference_values: List[float] = None):
+    def detect_feature_drift(
+        self, feature_name: str, current_values: List[float], reference_values: List[float] = None
+    ):
         """Detect statistical drift in feature distributions"""
         if reference_values is None or len(current_values) == 0 or len(reference_values) == 0:
             # For now, we'll use a simple approach - compare to a baseline
@@ -138,16 +130,13 @@ class ForensicAnalyticEngine:
         # Simple statistical drift detection using KS test
         try:
             from scipy import stats
+
             ks_stat, p_value = stats.ks_2samp(reference_values, current_values)
 
             # If p-value is low, it suggests significant difference (drift)
             drift_detected = p_value < 0.05
 
-            return {
-                "drift_detected": drift_detected,
-                "ks_statistic": ks_stat,
-                "p_value": p_value
-            }
+            return {"drift_detected": drift_detected, "ks_statistic": ks_stat, "p_value": p_value}
         except ImportError:
             # If scipy is not available, return a simple result
             return {"drift_detected": False, "ks_statistic": 0, "p_value": 1.0}
@@ -244,8 +233,7 @@ class ForensicAnalyticEngine:
         score_drift_result = score_drift_result or {}
 
         drifted_features = [
-            result for result in psi_results
-            if result.get("trigger_retraining") or result.get("drift_detected")
+            result for result in psi_results if result.get("trigger_retraining") or result.get("drift_detected")
         ]
         score_drifted = bool(score_drift_result.get("drift_detected"))
         trigger = bool(drifted_features or score_drifted)
@@ -299,19 +287,23 @@ class ForensicAnalyticEngine:
                 baseline_period_days=baseline_period_days,
             )
             if comparison.get("error"):
-                psi_results.append({
-                    "feature": feature,
-                    "error": comparison["error"],
-                    "drift_detected": False,
-                    "trigger_retraining": False,
-                })
+                psi_results.append(
+                    {
+                        "feature": feature,
+                        "error": comparison["error"],
+                        "drift_detected": False,
+                        "trigger_retraining": False,
+                    }
+                )
                 continue
 
-            psi_results.append(self.detect_feature_drift_psi(
-                feature,
-                current_values=comparison.get("current_values", []),
-                reference_values=comparison.get("baseline_values", []),
-            ))
+            psi_results.append(
+                self.detect_feature_drift_psi(
+                    feature,
+                    current_values=comparison.get("current_values", []),
+                    reference_values=comparison.get("baseline_values", []),
+                )
+            )
 
         score_values = []
         score_comparison = self.get_distribution_comparison(
@@ -323,20 +315,23 @@ class ForensicAnalyticEngine:
             score_values = score_comparison.get("baseline_values", []) + score_comparison.get("current_values", [])
 
         score_drift = self.page_hinkley_test(score_values)
-        decision = self.evaluate_drift_retraining_trigger(
-            psi_results=psi_results,
-            score_drift_result=score_drift,
-            audit_log_path=audit_log_path,
-        ) if audit else {
-            "trigger_retraining": any(result.get("trigger_retraining") for result in psi_results)
-            or bool(score_drift.get("drift_detected")),
-            "trigger_reason": None,
-            "drifted_features": [
-                result for result in psi_results
-                if result.get("trigger_retraining") or result.get("drift_detected")
-            ],
-            "score_drift": score_drift,
-        }
+        decision = (
+            self.evaluate_drift_retraining_trigger(
+                psi_results=psi_results,
+                score_drift_result=score_drift,
+                audit_log_path=audit_log_path,
+            )
+            if audit
+            else {
+                "trigger_retraining": any(result.get("trigger_retraining") for result in psi_results)
+                or bool(score_drift.get("drift_detected")),
+                "trigger_reason": None,
+                "drifted_features": [
+                    result for result in psi_results if result.get("trigger_retraining") or result.get("drift_detected")
+                ],
+                "score_drift": score_drift,
+            }
+        )
 
         return {
             "psi_results": psi_results,
@@ -350,40 +345,51 @@ class ForensicAnalyticEngine:
     # Columns allowed for distribution comparison queries (whitelist)
     ALLOWED_DISTRIBUTION_COLUMNS = {"amount_tnd", "ml_probability"}
 
-    def get_distribution_comparison(self, feature_name: str, current_period_days: int = 7, baseline_period_days: int = 30):
+    def get_distribution_comparison(
+        self, feature_name: str, current_period_days: int = 7, baseline_period_days: int = 30
+    ):
         """Compare current feature distribution to baseline"""
         try:
             # Whitelist check to prevent SQL injection via column name
             if feature_name not in self.ALLOWED_DISTRIBUTION_COLUMNS:
                 return {
-                    "current_values": [], "baseline_values": [],
-                    "current_mean": 0, "baseline_mean": 0,
-                    "current_median": 0, "baseline_median": 0,
-                    "error": f"Column '{feature_name}' is not allowed for distribution comparison"
+                    "current_values": [],
+                    "baseline_values": [],
+                    "current_mean": 0,
+                    "baseline_mean": 0,
+                    "current_median": 0,
+                    "baseline_median": 0,
+                    "error": f"Column '{feature_name}' is not allowed for distribution comparison",
                 }
 
             conn = get_sqlite_connection(str(self.db_path))
             cursor = conn.cursor()
 
             # Get current period data
-            current_start = (datetime.now() - timedelta(days=current_period_days)).strftime('%Y-%m-%d')
-            cursor.execute(f"""
+            current_start = (datetime.now() - timedelta(days=current_period_days)).strftime("%Y-%m-%d")
+            cursor.execute(
+                f"""
                 SELECT {feature_name}
                 FROM high_risk_alerts
                 WHERE timestamp >= ?
                 AND {feature_name} IS NOT NULL
-            """, (current_start,))
+            """,
+                (current_start,),
+            )
             current_values = [row[0] for row in cursor.fetchall()]
 
             # Get baseline period data
-            baseline_end = (datetime.now() - timedelta(days=current_period_days)).strftime('%Y-%m-%d')
-            baseline_start = (datetime.now() - timedelta(days=baseline_period_days)).strftime('%Y-%m-%d')
-            cursor.execute(f"""
+            baseline_end = (datetime.now() - timedelta(days=current_period_days)).strftime("%Y-%m-%d")
+            baseline_start = (datetime.now() - timedelta(days=baseline_period_days)).strftime("%Y-%m-%d")
+            cursor.execute(
+                f"""
                 SELECT {feature_name}
                 FROM high_risk_alerts
                 WHERE timestamp BETWEEN ? AND ?
                 AND {feature_name} IS NOT NULL
-            """, (baseline_start, baseline_end))
+            """,
+                (baseline_start, baseline_end),
+            )
             baseline_values = [row[0] for row in cursor.fetchall()]
 
             conn.close()
@@ -394,7 +400,7 @@ class ForensicAnalyticEngine:
                 "current_mean": statistics.mean(current_values) if current_values else 0,
                 "baseline_mean": statistics.mean(baseline_values) if baseline_values else 0,
                 "current_median": statistics.median(current_values) if current_values else 0,
-                "baseline_median": statistics.median(baseline_values) if baseline_values else 0
+                "baseline_median": statistics.median(baseline_values) if baseline_values else 0,
             }
         except Exception as e:
             print(f"Error getting distribution comparison: {e}")
@@ -404,5 +410,5 @@ class ForensicAnalyticEngine:
                 "current_mean": 0,
                 "baseline_mean": 0,
                 "current_median": 0,
-                "baseline_median": 0
+                "baseline_median": 0,
             }

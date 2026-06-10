@@ -1,9 +1,10 @@
 # src/rag_engine/vector_store.py
 import logging
-import chromadb
-from sentence_transformers import SentenceTransformer
 import os
 from pathlib import Path
+
+import chromadb
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,9 @@ class CTAFVectorStore:
         try:
             self.client = chromadb.PersistentClient(path=persist_directory)
             self.collection = self.client.get_or_create_collection(
-                name="ctaf_regulations",
-                metadata={"hnsw:space": "cosine"}
+                name="ctaf_regulations", metadata={"hnsw:space": "cosine"}
             )
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
             self._initialize_knowledge_base()
         except Exception as e:
             logger.error(f"Failed to initialize vector store: {e}")
@@ -126,7 +126,7 @@ class CTAFVectorStore:
             embeddings = self.embedding_model.encode([query_text]).tolist()
             results = self.collection.query(
                 query_embeddings=embeddings,
-                n_results=min(n_results, self.collection.count()) if self.collection.count() > 0 else 1
+                n_results=min(n_results, self.collection.count()) if self.collection.count() > 0 else 1,
             )
             return results
         except Exception as e:

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import random
 import time
-from datetime import datetime, timezone
 import uuid
-import argparse
+from datetime import datetime, timezone
 
 from faker import Faker
 
@@ -14,6 +14,7 @@ from shared.schemas import Transaction
 
 try:
     from confluent_kafka import Producer
+
     KAFKA_AVAILABLE = True
 except ImportError:
     KAFKA_AVAILABLE = False
@@ -53,56 +54,54 @@ def publish_to_kafka(bootstrap_servers: str = "localhost:9092"):
     if not KAFKA_AVAILABLE:
         logger.error("Kafka library not available. Please install confluent-kafka.")
         return
-    
+
     try:
         conf = {
-            'bootstrap.servers': bootstrap_servers,
-            'client.id': 'tunisia-producer-1',
-            'acks': 'all',
-            'retries': 3,
-            'linger.ms': 5
+            "bootstrap.servers": bootstrap_servers,
+            "client.id": "tunisia-producer-1",
+            "acks": "all",
+            "retries": 3,
+            "linger.ms": 5,
         }
         producer = Producer(conf)
-        
+
         logger.info(f"Starting Tunisian Transaction Stream with Kafka publishing to {bootstrap_servers}")
-        
+
         def delivery_report(err, msg):
-            """ Called once for each message produced to indicate delivery result.
-                Triggered by poll() or flush(). """
+            """Called once for each message produced to indicate delivery result.
+            Triggered by poll() or flush()."""
             if err is not None:
-                logger.error(f'Message delivery failed: {err}')
+                logger.error(f"Message delivery failed: {err}")
             else:
-                logger.info(f'Message delivered to {msg.topic()} [{msg.partition()}] at offset {msg.offset()}')
+                logger.info(f"Message delivered to {msg.topic()} [{msg.partition()}] at offset {msg.offset()}")
 
         while True:
             tx = generate_tx()
-            
+
             # Publish to Kafka
             # confluent-kafka uses poll() to handle callbacks
             producer.poll(0)
-            
+
             producer.produce(
-                topic='tunisian_transactions', 
-                value=json.dumps(tx).encode('utf-8'), 
-                callback=delivery_report
+                topic="tunisian_transactions", value=json.dumps(tx).encode("utf-8"), callback=delivery_report
             )
-            
+
             # Adjust sleep based on desired rate
             time.sleep(random.uniform(0.1, 0.5))  # Faster for testing
-            
+
     except KeyboardInterrupt:
         logger.info("Stopping producer...")
     except Exception as e:
         logger.error(f"Error in Kafka producer: {e}")
     finally:
-        if 'producer' in locals():
+        if "producer" in locals():
             producer.flush()
 
 
 def simulate_locally(rate: float = 1.0):
     logger.info("Starting Tunisian Transaction Stream (Simulation Mode)")
     interval = 1.0 / rate if rate > 0 else 1.0
-    
+
     try:
         while True:
             tx = generate_tx()
@@ -116,11 +115,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tunisian Transaction Producer")
     parser.add_argument("--rate", type=float, default=1.0, help="Transactions per second (default: 1.0)")
     parser.add_argument("--kafka", action="store_true", help="Publish to Kafka instead of printing locally")
-    parser.add_argument("--bootstrap-servers", default="localhost:9092", 
-                       help="Kafka bootstrap servers (default: localhost:9092)")
-    
+    parser.add_argument(
+        "--bootstrap-servers", default="localhost:9092", help="Kafka bootstrap servers (default: localhost:9092)"
+    )
+
     args = parser.parse_args()
-    
+
     if args.kafka:
         publish_to_kafka(args.bootstrap_servers)
     else:

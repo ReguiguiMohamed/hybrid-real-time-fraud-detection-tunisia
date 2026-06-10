@@ -2,9 +2,10 @@
 Quality gates for fraud detection pipeline using Great Expectations principles.
 Includes channel-specific rules for TuniChèque (Feb 2025) and TTN e-invoicing (Jan 2026).
 """
+
 import os
 
-from pyspark.sql.functions import col, when, lit, isnan, isnull, lower, datediff, to_date, current_date
+from pyspark.sql.functions import col, current_date, datediff, isnan, isnull, lit, lower, to_date, when
 
 DEFAULT_FCY_LARGE_CREDIT_TND = 5000.0
 DEFAULT_DEVICE_HIGH_AMOUNT_TND = 1000.0
@@ -30,15 +31,9 @@ def evaluate_device_behavior_flags(
     shared_device_threshold=None,
 ):
     """Pure-Python device risk semantics used by Spark gates and unit tests."""
-    high_amount_threshold = (
-        DEFAULT_DEVICE_HIGH_AMOUNT_TND
-        if high_amount_threshold is None
-        else high_amount_threshold
-    )
+    high_amount_threshold = DEFAULT_DEVICE_HIGH_AMOUNT_TND if high_amount_threshold is None else high_amount_threshold
     shared_device_threshold = (
-        DEFAULT_SHARED_DEVICE_ACCOUNT_THRESHOLD
-        if shared_device_threshold is None
-        else shared_device_threshold
+        DEFAULT_SHARED_DEVICE_ACCOUNT_THRESHOLD if shared_device_threshold is None else shared_device_threshold
     )
 
     def as_float(value):
@@ -62,11 +57,9 @@ def evaluate_device_behavior_flags(
             and amount >= high_amount_threshold
         ),
         "device_emulator_flag": bool(emulator_detected),
-        "device_shared_accounts_flag": bool(
-            account_count is not None
-            and account_count > shared_device_threshold
-        ),
+        "device_shared_accounts_flag": bool(account_count is not None and account_count > shared_device_threshold),
     }
+
 
 def validate_transaction_quality(df):
     """
@@ -74,30 +67,52 @@ def validate_transaction_quality(df):
     This function adds quality validation columns but doesn't perform counts on streaming data
     """
     # Add quality validation columns to the streaming dataframe
-    df_validated = df.withColumn(
-        "negative_amount_flag",
-        when(col("amount_tnd") < 0, lit(True)).otherwise(lit(False))
-    ).withColumn(
-        "invalid_governorate_flag",
-        when(~col("governorate").isin([
-            "Tunis", "Sfax", "Sousse", "Ariana", "Bizerte", "Gabes", "Kairouan",
-            "Manouba", "Ben Arous", "Nabeul", "Zaghouan", "Monastir", "Mahdia",
-            "Kasserine", "Sidi Bouzid", "Gafsa", "Tozeur", "Kebili", "Medenine",
-            "Tataouine", "Jendouba", "Beja", "Le Kef", "Siliana"
-        ]), lit(True)).otherwise(lit(False))
-    ).withColumn(
-        "null_id_flag",
-        when(col("transaction_id").isNull(), lit(True)).otherwise(lit(False))
+    df_validated = (
+        df.withColumn("negative_amount_flag", when(col("amount_tnd") < 0, lit(True)).otherwise(lit(False)))
+        .withColumn(
+            "invalid_governorate_flag",
+            when(
+                ~col("governorate").isin(
+                    [
+                        "Tunis",
+                        "Sfax",
+                        "Sousse",
+                        "Ariana",
+                        "Bizerte",
+                        "Gabes",
+                        "Kairouan",
+                        "Manouba",
+                        "Ben Arous",
+                        "Nabeul",
+                        "Zaghouan",
+                        "Monastir",
+                        "Mahdia",
+                        "Kasserine",
+                        "Sidi Bouzid",
+                        "Gafsa",
+                        "Tozeur",
+                        "Kebili",
+                        "Medenine",
+                        "Tataouine",
+                        "Jendouba",
+                        "Beja",
+                        "Le Kef",
+                        "Siliana",
+                    ]
+                ),
+                lit(True),
+            ).otherwise(lit(False)),
+        )
+        .withColumn("null_id_flag", when(col("transaction_id").isNull(), lit(True)).otherwise(lit(False)))
     )
 
     # Filter out records that fail quality checks
     df_filtered = df_validated.filter(
-        (~col("negative_amount_flag")) &
-        (~col("invalid_governorate_flag")) &
-        (~col("null_id_flag"))
+        (~col("negative_amount_flag")) & (~col("invalid_governorate_flag")) & (~col("null_id_flag"))
     )
 
     return df_filtered
+
 
 def apply_tunicheque_rules(df):
     """
@@ -113,8 +128,8 @@ def apply_tunicheque_rules(df):
     df = df.withColumn(
         "tunicheque_missing_token_flag",
         when(
-            (lower(col("payment_method")) == lit("tunicheque")) &
-            (col("tunicheque_token").isNull() | (col("tunicheque_token") == lit(""))),
+            (lower(col("payment_method")) == lit("tunicheque"))
+            & (col("tunicheque_token").isNull() | (col("tunicheque_token") == lit(""))),
             lit(True),
         ).otherwise(lit(False)),
     )
@@ -122,11 +137,11 @@ def apply_tunicheque_rules(df):
     df = df.withColumn(
         "tunicheque_expired_lock_flag",
         when(
-            (lower(col("payment_method")) == lit("tunicheque")) &
-            col("tunicheque_provision_locked").isNotNull() &
-            col("tunicheque_provision_locked") &
-            col("tunicheque_clearing_deadline").isNotNull() &
-            (datediff(current_date(), to_date(col("tunicheque_clearing_deadline"))) > lit(0)),
+            (lower(col("payment_method")) == lit("tunicheque"))
+            & col("tunicheque_provision_locked").isNotNull()
+            & col("tunicheque_provision_locked")
+            & col("tunicheque_clearing_deadline").isNotNull()
+            & (datediff(current_date(), to_date(col("tunicheque_clearing_deadline"))) > lit(0)),
             lit(True),
         ).otherwise(lit(False)),
     )
@@ -149,8 +164,8 @@ def apply_ttn_rules(df):
     df = df.withColumn(
         "ttn_missing_token_flag",
         when(
-            (lower(col("payment_method")) == lit("ttn_einvoice")) &
-            (col("ttn_clearance_token").isNull() | (col("ttn_clearance_token") == lit(""))),
+            (lower(col("payment_method")) == lit("ttn_einvoice"))
+            & (col("ttn_clearance_token").isNull() | (col("ttn_clearance_token") == lit(""))),
             lit(True),
         ).otherwise(lit(False)),
     )
@@ -158,8 +173,8 @@ def apply_ttn_rules(df):
     df = df.withColumn(
         "ttn_missing_invoice_id_flag",
         when(
-            (lower(col("payment_method")) == lit("ttn_einvoice")) &
-            (col("ttn_invoice_id").isNull() | (col("ttn_invoice_id") == lit(""))),
+            (lower(col("payment_method")) == lit("ttn_einvoice"))
+            & (col("ttn_invoice_id").isNull() | (col("ttn_invoice_id") == lit(""))),
             lit(True),
         ).otherwise(lit(False)),
     )
@@ -184,10 +199,10 @@ def apply_fcy_rules(df):
     df = df.withColumn(
         "fcy_round_amount_flag",
         when(
-            (col("account_type") == lit("FCY")) &
-            col("fcy_currency").isNotNull() &
-            ((col("amount_tnd") % lit(1000.0)) == lit(0.0)) &
-            (col("amount_tnd") >= lit(1000.0)),
+            (col("account_type") == lit("FCY"))
+            & col("fcy_currency").isNotNull()
+            & ((col("amount_tnd") % lit(1000.0)) == lit(0.0))
+            & (col("amount_tnd") >= lit(1000.0)),
             lit(True),
         ).otherwise(lit(False)),
     )
@@ -205,8 +220,7 @@ def apply_fcy_rules(df):
     df = df.withColumn(
         "fcy_large_credit_flag",
         when(
-            (col("account_type") == lit("FCY")) &
-            (col("amount_tnd") > lit(fcy_large_credit_threshold)),
+            (col("account_type") == lit("FCY")) & (col("amount_tnd") > lit(fcy_large_credit_threshold)),
             lit(True),
         ).otherwise(lit(False)),
     )
@@ -236,11 +250,11 @@ def apply_device_behavior_rules(df):
     df = df.withColumn(
         "device_vpn_new_high_amount_flag",
         when(
-            (col("vpn_detected") == lit(True)) &
-            (col("device_id").isNotNull()) &
-            (col("device_age_days").isNotNull()) &
-            (col("device_age_days") <= lit(1.0)) &
-            (col("amount_tnd") >= lit(high_amount_threshold)),
+            (col("vpn_detected") == lit(True))
+            & (col("device_id").isNotNull())
+            & (col("device_age_days").isNotNull())
+            & (col("device_age_days") <= lit(1.0))
+            & (col("amount_tnd") >= lit(high_amount_threshold)),
             lit(True),
         ).otherwise(lit(False)),
     )
@@ -253,8 +267,8 @@ def apply_device_behavior_rules(df):
     df = df.withColumn(
         "device_shared_accounts_flag",
         when(
-            col("device_account_count_7d").isNotNull() &
-            (col("device_account_count_7d") > lit(shared_device_threshold)),
+            col("device_account_count_7d").isNotNull()
+            & (col("device_account_count_7d") > lit(shared_device_threshold)),
             lit(True),
         ).otherwise(lit(False)),
     )
@@ -269,8 +283,7 @@ def apply_d17_rule(df):
     """
     df_with_d17_flag = df.withColumn(
         "d17_risk_boost",
-        when((col("payment_method") == "Flouci") & (col("amount_tnd") > 2000), lit(0.2))
-        .otherwise(lit(0.0))
+        when((col("payment_method") == "Flouci") & (col("amount_tnd") > 2000), lit(0.2)).otherwise(lit(0.0)),
     )
 
     return df_with_d17_flag

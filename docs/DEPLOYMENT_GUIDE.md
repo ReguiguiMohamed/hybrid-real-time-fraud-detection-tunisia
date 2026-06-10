@@ -9,6 +9,9 @@ The system has two deployment slices:
 | **Verified Hosted** | Hugging Face Space + Neon PostgreSQL | FastAPI command-center API | Verified & running |
 | **Local Full-Stack** | Docker Compose / Kubernetes | Kafka, Spark, Ollama, ChromaDB, Streamlit, Prometheus | Scaffolding |
 
+The hosted deployment is a prototype persistence and API slice. It is not a
+regulated production environment and does not run Spark retraining.
+
 ## Verified Hosted Deployment (Hugging Face + Neon)
 
 ### Prerequisites
@@ -31,6 +34,7 @@ The system has two deployment slices:
    ANALYST_TOKEN=<your-analyst-token>
    API_TOKEN=<your-admin-token>
    METRICS_TOKEN=<your-metrics-token>  # optional, for Grafana Cloud
+   MODEL_RETRAINING_ENABLED=false
    DATABASE_URL=postgresql+psycopg2://user:pass@host.neon.tech/db?sslmode=require
    ```
 

@@ -29,6 +29,7 @@ data/pytest_basetemp*/
 data/pytest_tmp/
 htmlcov/
 .coverage
+coverage.xml
 backtest_report.json
 notebooks/output_*.html
 

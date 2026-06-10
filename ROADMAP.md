@@ -30,16 +30,28 @@
 ## Priority 2: Improve ML Pipeline
 
 ### 2.1 Champion/Challenger Workflow
+
+- [DONE 2026-06-10] Shared SQLAlchemy model repository supports SQLite/PostgreSQL.
+- [DONE 2026-06-10] Promotion policy and insufficient-feedback behavior have focused tests.
+- [PARTIAL] Shadow comparison recording and recommendation semantics are tested; labeled superiority evaluation remains.
+
 - Verify `FraudModelTrainer.train_champion_challenger()` actually works end-to-end
 - Add integration test: insert feedback → trigger retrain → verify champion promoted
 - Add shadow model comparison tracking (already exists in `src/ml/shadow_model.py` — test it)
 
 ### 2.2 ML Metrics & Monitoring
+
+- [DONE 2026-06-10] Hosted API exports champion F1, AUC, and version from the model registry.
+
 - Verify `model_f1_score`, `model_auc` Prometheus metrics actually get set somewhere
 - Build a retraining dashboard panel in the existing Grafana dashboard
 - Add model drift detection as a scheduled background task in the API
 
 ### 2.3 Backtesting
+
+- [DONE 2026-06-10] Centralized thresholds, honored alert threshold, and non-decisional proxy-label results.
+- [DONE 2026-06-10] Added focused backtest tests.
+
 - `scripts/backtest.py` — run it, verify output, add CI validation
 - Compare champion vs challenger on historical data automatically
 
@@ -64,6 +76,10 @@
 ## Priority 4: Infrastructure Hardening
 
 ### 4.1 DLQ Log Noise
+
+- [DONE] Empty DLQ cycles are debug-only.
+- [DONE] `DLQ_RETRY_ENABLED` is explicit; PostgreSQL deployments default to disabled.
+
 - Silence "No dead letter queue database found" message when no DLQ exists
 - Add optional flag to disable DLQ retry worker
 
@@ -104,3 +120,4 @@
 |------|-----------|
 | 2026-05-28 | Roadmap created. Task 1.1: expanded API test coverage — 153 tests total, all passing. Task 1.4: fixed 28 `datetime.utcnow()` deprecation warnings across 9 files. Task 1.2: no missing endpoints found, added batch feedback endpoint, added HATEOAS `_links` to responses, 8 new tests (161 total). |
 | 2026-06-06 | Task 1.3: created `docs/` directory with API_REFERENCE.md, DEPLOYMENT_GUIDE.md, OPERATIONAL_RUNBOOK.md. Added docstrings to all 6 missing endpoint handlers (branches, performance, feedback, threshold, drift, system-overview). Task 1.5: fixed SQLAlchemy datetime adapter deprecation (registered adapter in `src/shared/database.py`), fixed httpx raw bytes warning (changed `data=` to `content=` in test). Priority 3: created `.github/workflows/ci.yml` with lint, test, API test, and security jobs with coverage enforcement. Created `.github/workflows/deploy.yml` CD pipeline targeting Hugging Face Space. |
+| 2026-06-08 | **Priority 1 completed.** Tasks 1.3/1.5 finished: created `docs/DEPLOYMENT.md` (decision guide for HF Space vs Docker), created `scripts/generate_openapi.py` + `make openapi` target + `docs/openapi.json` (34 paths), added 3 OpenAPI spec tests (all endpoints present, Swagger renders, legacy routes deprecated), fixed remaining httpx raw bytes warning (`b"not json"`), fixed 7 auth status-code test failures (401→403 revert — HTTPBearer returns 401 when no header present). **70/70 API tests passing.** Ready for Priority 2 (ML Pipeline). |

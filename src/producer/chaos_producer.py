@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import random
 import time
-from datetime import datetime, timezone, timedelta
 import uuid
-import argparse
+from datetime import datetime, timedelta, timezone
 
 from faker import Faker
 
@@ -14,6 +14,7 @@ from shared.schemas import Transaction
 
 try:
     from confluent_kafka import Producer
+
     KAFKA_AVAILABLE = True
 except ImportError:
     KAFKA_AVAILABLE = False
@@ -65,23 +66,23 @@ def publish_to_kafka(bootstrap_servers: str = "localhost:9092", include_delayed=
 
     try:
         conf = {
-            'bootstrap.servers': bootstrap_servers,
-            'client.id': 'tunisia-chaos-producer-1',
-            'acks': 'all',
-            'retries': 3,
-            'linger.ms': 5
+            "bootstrap.servers": bootstrap_servers,
+            "client.id": "tunisia-chaos-producer-1",
+            "acks": "all",
+            "retries": 3,
+            "linger.ms": 5,
         }
         producer = Producer(conf)
 
         logger.info(f"Starting Tunisian Chaos Transaction Stream with Kafka publishing to {bootstrap_servers}")
 
         def delivery_report(err, msg):
-            """ Called once for each message produced to indicate delivery result.
-                Triggered by poll() or flush(). """
+            """Called once for each message produced to indicate delivery result.
+            Triggered by poll() or flush()."""
             if err is not None:
-                logger.error(f'Message delivery failed: {err}')
+                logger.error(f"Message delivery failed: {err}")
             else:
-                logger.info(f'Message delivered to {msg.topic()} [{msg.partition()}] at offset {msg.offset()}')
+                logger.info(f"Message delivered to {msg.topic()} [{msg.partition()}] at offset {msg.offset()}")
 
         while True:
             # Randomly decide whether to send a delayed transaction
@@ -93,11 +94,9 @@ def publish_to_kafka(bootstrap_servers: str = "localhost:9092", include_delayed=
 
             # Publish to Kafka
             producer.poll(0)
-            
+
             producer.produce(
-                topic='tunisian_transactions', 
-                value=json.dumps(tx).encode('utf-8'), 
-                callback=delivery_report
+                topic="tunisian_transactions", value=json.dumps(tx).encode("utf-8"), callback=delivery_report
             )
 
             # Adjust sleep based on desired rate
@@ -108,7 +107,7 @@ def publish_to_kafka(bootstrap_servers: str = "localhost:9092", include_delayed=
     except Exception as e:
         logger.error(f"Error in Kafka chaos producer: {e}")
     finally:
-        if 'producer' in locals():
+        if "producer" in locals():
             producer.flush()
 
 
@@ -123,7 +122,7 @@ def simulate_locally(rate: float = 1.0, include_delayed=False):
                 logger.info(f"Generated delayed transaction: {tx['transaction_id']}")
             else:
                 tx = generate_tx()
-            
+
             print(json.dumps(tx, indent=2))
             time.sleep(interval)
     except KeyboardInterrupt:
@@ -134,9 +133,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tunisian Chaos Transaction Producer")
     parser.add_argument("--rate", type=float, default=1.0, help="Transactions per second (default: 1.0)")
     parser.add_argument("--kafka", action="store_true", help="Publish to Kafka instead of printing locally")
-    parser.add_argument("--include-delayed", action="store_true", help="Include delayed transactions to test watermarking")
-    parser.add_argument("--bootstrap-servers", default="localhost:9092",
-                       help="Kafka bootstrap servers (default: localhost:9092)")
+    parser.add_argument(
+        "--include-delayed", action="store_true", help="Include delayed transactions to test watermarking"
+    )
+    parser.add_argument(
+        "--bootstrap-servers", default="localhost:9092", help="Kafka bootstrap servers (default: localhost:9092)"
+    )
 
     args = parser.parse_args()
 

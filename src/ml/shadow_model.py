@@ -21,12 +21,13 @@ Usage:
     # Evaluate shadow vs champion on accumulated data
     results = shadow.compare_performance()
 """
+
 import json
 import logging
 import sqlite3
 import time
-from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -112,12 +113,14 @@ class ShadowModelManager:
         try:
             # Try loading as Spark XGBoost model
             from xgboost.spark import SparkXGBClassifierModel
+
             self._shadow_model = SparkXGBClassifierModel.load(str(path))
             logger.info(f"Shadow model loaded (Spark XGBoost): {path}")
         except Exception:
             try:
                 # Try loading as sklearn pipeline
                 import joblib
+
                 self._shadow_model = joblib.load(str(path / "pipeline.pkl"))
                 logger.info(f"Shadow model loaded (sklearn pipeline): {path}")
             except Exception as e:
@@ -137,10 +140,13 @@ class ShadowModelManager:
         )
 
         # Register new shadow model
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO shadow_model_registry (version_id, model_path, status)
             VALUES (?, ?, 'shadow')
-        """, (version_id, str(path)))
+        """,
+            (version_id, str(path)),
+        )
         conn.commit()
         conn.close()
 
@@ -197,12 +203,16 @@ class ShadowModelManager:
     def record_shadow_comparison(self, tx_id: str, champion_prob: float, shadow_prob: float):
         """Record a single shadow comparison for later analysis."""
         try:
+            self._ensure_shadow_model_table()
             conn = sqlite3.connect(self.feedback_db_path)
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO shadow_score_log (transaction_id, champion_score, shadow_score, score_diff)
                 VALUES (?, ?, ?, ?)
-            """, (tx_id, champion_prob, shadow_prob, abs(champion_prob - shadow_prob)))
+            """,
+                (tx_id, champion_prob, shadow_prob, abs(champion_prob - shadow_prob)),
+            )
             conn.commit()
             conn.close()
             self._shadow_scores.append((tx_id, champion_prob, shadow_prob))
@@ -222,11 +232,14 @@ class ShadowModelManager:
         cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=window_hours)).isoformat()
 
         # Get all comparisons in the window
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT champion_score, shadow_score, score_diff
             FROM shadow_score_log
             WHERE timestamp > ?
-        """, (cutoff,))
+        """,
+            (cutoff,),
+        )
         rows = cursor.fetchall()
 
         if not rows:
@@ -262,12 +275,15 @@ class ShadowModelManager:
         """)
         shadow_row = cursor.fetchone()
         if shadow_row:
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE shadow_model_registry
                 SET total_comparisons = ?,
                     avg_score_diff = ?
                 WHERE version_id = ?
-            """, (len(rows), float(mean_diff), shadow_row[0]))
+            """,
+                (len(rows), float(mean_diff), shadow_row[0]),
+            )
 
         conn.commit()
         conn.close()
@@ -281,9 +297,7 @@ class ShadowModelManager:
             "mean_score_difference": float(mean_diff),
             "disagreement_rate": float(disagreement_rate),
             "high_divergence_rate": float(high_divergence_rate),
-            "recommendation": self._generate_recommendation(
-                disagreement_rate, high_divergence_rate, mean_diff
-            ),
+            "recommendation": self._generate_recommendation(disagreement_rate, high_divergence_rate, mean_diff),
         }
 
         logger.info(f"Shadow comparison ({len(rows)} samples): {results['recommendation']}")
@@ -297,7 +311,7 @@ class ShadowModelManager:
         elif high_divergence_rate > 0.1:
             return "REVIEW - Significant score divergence on subset. Check feature engineering differences."
         elif mean_diff < 0.02 and disagreement_rate < 0.05:
-            return "SAFE_TO_PROMOTE - Shadow model closely matches champion behavior."
+            return "ALIGNED - Similar behavior observed; labeled evaluation is still required."
         else:
             return "MONITOR - Continue collecting comparison data before promotion decision."
 

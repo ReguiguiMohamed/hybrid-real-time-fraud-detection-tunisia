@@ -1,8 +1,8 @@
-# Model Card: Tunisian Fraud Detection XGBoost Model
+# Model Card: Tunisian Fraud Detection Prototype
 
 ## Model Overview
 - **Model Name**: Tunisian Fraud Detection XGBoost Classifier
-- **Version**: v1
+- **Version**: 0.1.0 prototype
 - **Purpose**: Real-time fraud detection for Tunisian digital payment transactions
 - **Algorithm**: XGBoost Gradient Boosted Trees (Spark-compatible)
 
@@ -18,7 +18,7 @@ The model uses the following features extracted from transaction data:
 ## Training Data
 - **Source**: Silver layer aggregated transaction data
 - **Features**: Derived from 5-minute sliding windows of transaction data
-- **Target Variable**: Fraud indicator based on velocity, travel, and D17 rules
+- **Target Variable**: Human-reviewed labels where available; heuristic labels are limited to bootstrap experiments
 
 ## Model Parameters
 - `max_depth`: 6 (controls tree complexity)
@@ -27,13 +27,15 @@ The model uses the following features extracted from transaction data:
 
 ## Intended Use
 - Real-time fraud scoring in streaming pipeline
-- Integration with D17/Flouci wallet monitoring
-- Smurfing pattern detection for amounts near 1500 TND threshold
+- Configurable e-wallet monitoring controls
+- Structuring-pattern research using configurable amount and velocity ranges
 
 ## Limitations
 - Performance dependent on feature distribution similarity between training and inference
 - May require retraining as fraud patterns evolve
 - Designed specifically for Tunisian payment ecosystem characteristics
+- No model artifact in this repository should be interpreted as independently validated for production decisions
+- Hosted API deployment does not currently execute the Spark training workflow
 
 ## Ethical Considerations
 - Model should not discriminate based on non-financial attributes
@@ -41,4 +43,4 @@ The model uses the following features extracted from transaction data:
 - False positive impact on legitimate users should be monitored
 
 ## Version History
-- v1 (Jan 2026): Initial production model focusing on velocity and smurfing detection
+- 0.1.0 prototype (June 2026): Explicit prototype scope and separated offline/streaming training workflows

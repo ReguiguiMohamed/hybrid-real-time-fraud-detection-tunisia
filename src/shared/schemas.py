@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, Union, get_args, get_origin
+from typing import Any, Dict, Optional, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
+from pyspark.sql.types import BooleanType, DoubleType, StringType, StructField, StructType
 
 
 class Transaction(BaseModel):
@@ -23,17 +23,17 @@ class Transaction(BaseModel):
     tunicheque_token: Optional[str] = Field(
         None,
         description="QR verification token issued by the TuniChèque platform. "
-                    "Absence on a cheque transaction is itself a fraud signal.",
+        "Absence on a cheque transaction is itself a fraud signal.",
     )
     tunicheque_provision_locked: Optional[bool] = Field(
         None,
         description="True if the cheque amount has been reserved on the issuer's account "
-                    "by TuniChèque. False or null on non-cheque transactions.",
+        "by TuniChèque. False or null on non-cheque transactions.",
     )
     tunicheque_clearing_deadline: Optional[str] = Field(
         None,
         description="ISO date by which the cheque must be presented for clearing "
-                    "(maximum 8 business days after the provision-lock date).",
+        "(maximum 8 business days after the provision-lock date).",
     )
 
     # ── TTN / El Fatoora e-invoicing fields (Finance Law 2026, effective Jan 1 2026) ──
@@ -41,7 +41,7 @@ class Transaction(BaseModel):
     ttn_clearance_token: Optional[str] = Field(
         None,
         description="Real-time clearance token from the TTN El Fatoora platform. "
-                    "All B2B VAT-service transactions must carry this token from Jan 2026.",
+        "All B2B VAT-service transactions must carry this token from Jan 2026.",
     )
     ttn_invoice_id: Optional[str] = Field(
         None,
@@ -52,12 +52,11 @@ class Transaction(BaseModel):
     account_type: Optional[str] = Field(
         None,
         description="Account type: TND | FCY | MIXED. "
-                    "FCY accounts newly permitted for Tunisian residents under Finance Law 2026.",
+        "FCY accounts newly permitted for Tunisian residents under Finance Law 2026.",
     )
     fcy_currency: Optional[str] = Field(
         None,
-        description="ISO 4217 currency code for FCY accounts (e.g., EUR, USD). "
-                    "Null for TND accounts.",
+        description="ISO 4217 currency code for FCY accounts (e.g., EUR, USD). " "Null for TND accounts.",
     )
 
     # ── Device / behavioral biometrics signals (nullable — absent from API-originated transactions) ──
@@ -85,7 +84,9 @@ class Transaction(BaseModel):
     # Sanctions / PEP screening inputs.
     sender_account: Optional[str] = Field(None, description="Originating account identifier for sanctions screening.")
     receiver_account: Optional[str] = Field(None, description="Beneficiary account identifier for sanctions screening.")
-    pep_connected: Optional[bool] = Field(None, description="True when account enrichment marks the party as PEP-connected.")
+    pep_connected: Optional[bool] = Field(
+        None, description="True when account enrichment marks the party as PEP-connected."
+    )
 
 
 def pydantic_to_spark_schema(model_class) -> StructType:
@@ -93,14 +94,14 @@ def pydantic_to_spark_schema(model_class) -> StructType:
     Convert a Pydantic model to a Spark StructType schema.
     This ensures Single Source of Truth and prevents schema duplication issues.
     """
-    from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType
+    from pyspark.sql.types import BooleanType, DoubleType, StringType, StructField, StructType
 
     # Mapping from Python types to Spark types
     type_mapping = {
         str: StringType(),
         float: DoubleType(),
         bool: BooleanType(),
-        int: StringType()  # Using StringType for flexibility with UUIDs and timestamps
+        int: StringType(),  # Using StringType for flexibility with UUIDs and timestamps
     }
 
     model_fields = getattr(model_class, "model_fields", {})

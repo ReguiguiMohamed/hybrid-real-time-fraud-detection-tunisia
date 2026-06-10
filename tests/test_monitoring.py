@@ -1,9 +1,11 @@
 """Tests for the ForensicAnalyticEngine monitoring module."""
+
 import json
-import pytest
 import sqlite3
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
 
 from monitoring import ForensicAnalyticEngine
 

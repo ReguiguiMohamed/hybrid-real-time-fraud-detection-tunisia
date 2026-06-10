@@ -8,12 +8,12 @@ Provides:
 - Governorate generalization for external exports
 - K-anonymity checking before data release
 """
+
 import hashlib
 import hmac
 import os
-from typing import Optional
 from datetime import datetime
-
+from typing import Optional
 
 # Salt key for HMAC-based hashing (should be loaded from secret vault in production)
 _PIISALT = os.getenv("PII_SALT_KEY", "amastan-default-salt-change-in-production")
@@ -72,7 +72,7 @@ def mask_amount(amount: float, precision: int = 2) -> float:
     """
     if amount <= 0:
         return 0.0
-    divisor = 10 ** precision
+    divisor = 10**precision
     return round((amount // divisor) * divisor, 0)
 
 
@@ -200,4 +200,6 @@ def generate_data_retention_policy(data_type: str) -> dict:
             "legal_basis": "Operational error log retention",
         },
     }
-    return policies.get(data_type, {"retention_days": 365, "anonymize_after_days": 180, "legal_basis": "Default policy"})
+    return policies.get(
+        data_type, {"retention_days": 365, "anonymize_after_days": 180, "legal_basis": "Default policy"}
+    )

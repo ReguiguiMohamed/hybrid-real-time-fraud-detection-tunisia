@@ -7,9 +7,7 @@ from rag_engine.vector_store import CTAF_REGULATIONS
 
 class DeterministicTestVectorStore:
     def query(self, query_text, n_results=3):
-        regulation = next(
-            item for item in CTAF_REGULATIONS if item["id"] == "internal_sar_filing_controls"
-        )
+        regulation = next(item for item in CTAF_REGULATIONS if item["id"] == "internal_sar_filing_controls")
         return {
             "documents": [[regulation["text"]]],
             "ids": [[regulation["id"]]],
@@ -82,9 +80,7 @@ def _llm_payload(prompt, evidence):
 
 
 def test_sar_generator_retries_hallucinated_amount_and_audits(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        sar_generator_module, "CTAFVectorStore", lambda: DeterministicTestVectorStore()
-    )
+    monkeypatch.setattr(sar_generator_module, "CTAFVectorStore", lambda: DeterministicTestVectorStore())
     monkeypatch.setenv("SAR_LLM_AUDIT_LOG", str(tmp_path / "sar_audit.jsonl"))
 
     prompts = []
@@ -123,9 +119,7 @@ def test_sar_generator_retries_hallucinated_amount_and_audits(monkeypatch, tmp_p
 
 
 def test_sar_generator_falls_back_after_repeated_fact_check_failure(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        sar_generator_module, "CTAFVectorStore", lambda: DeterministicTestVectorStore()
-    )
+    monkeypatch.setattr(sar_generator_module, "CTAFVectorStore", lambda: DeterministicTestVectorStore())
     monkeypatch.setenv("SAR_LLM_AUDIT_LOG", str(tmp_path / "sar_audit.jsonl"))
 
     generator = sar_generator_module.SARGenerator()

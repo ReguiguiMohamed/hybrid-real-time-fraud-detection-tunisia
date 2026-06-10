@@ -6,12 +6,13 @@ Usage:
     python scripts/migrate.py current    # Show current migration status
     python scripts/migrate.py migrate "description"  # Generate new migration template
 """
-import sys
-import os
+
 import hashlib
 import importlib
-from pathlib import Path
+import os
+import sys
 from datetime import datetime
+from pathlib import Path
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -45,9 +46,7 @@ def get_applied_migrations(db_path):
     cursor = conn.cursor()
 
     # Check if migration_history table exists
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='migration_history'"
-    )
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='migration_history'")
     if not cursor.fetchone():
         conn.close()
         return set()
@@ -59,9 +58,9 @@ def get_applied_migrations(db_path):
 
 
 def file_checksum(filepath):
-    """Calculate MD5 checksum of a migration file for integrity verification."""
+    """Calculate a SHA-256 checksum for migration integrity verification."""
     with open(filepath, "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def cmd_upgrade():

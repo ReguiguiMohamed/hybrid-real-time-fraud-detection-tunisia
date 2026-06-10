@@ -41,7 +41,7 @@ safety check -r requirements.txt
 
 ### Known Limitations
 
-- SQLite is used for the feedback database. In production, this should be replaced with PostgreSQL with TDE (Transparent Data Encryption).
+- Local development uses SQLite. The verified hosted prototype uses Neon PostgreSQL, but regulated deployment still requires an approved encryption, migration, backup, and access-control design.
 - The DLQ is stored on the local filesystem. In production, this should be a persistent volume or cloud storage.
 - Ollama LLM runs without authentication. In production, add network-level access control.
 

@@ -85,6 +85,7 @@ services:
       - RANDOM_SAMPLE_RATE=${RANDOM_SAMPLE_RATE:-0.01}
       - DLQ_RETRY_INTERVAL_SECONDS=${DLQ_RETRY_INTERVAL_SECONDS:-60}
       - DLQ_RETRY_MAX_ATTEMPTS=${DLQ_RETRY_MAX_ATTEMPTS:-3}
+      - DLQ_RETRY_ENABLED=${DLQ_RETRY_ENABLED:-true}
     depends_on:
       kafka:
         condition: service_healthy
