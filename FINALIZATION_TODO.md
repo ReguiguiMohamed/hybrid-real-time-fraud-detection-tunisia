@@ -1,6 +1,6 @@
 # Prototype Finalization TODO
 
-Target release: `v0.1.0-prototype`
+Target release: `v0.1.0-prototype` ✅ **Released 2026-06-10**
 
 The release boundary is deliberate: the FastAPI command-center API with
 SQLAlchemy persistence is the verified hosted prototype. Kafka, Spark,
@@ -16,15 +16,15 @@ target-architecture components until separately deployed and verified.
 - [x] Commit the completed Priority 1 OpenAPI/deployment work.
 - [x] Set one source of truth for the prototype version.
 - [x] Add a release checklist and changelog.
-- [ ] Create and push `v0.1.0-prototype`.
-- [ ] Publish a GitHub prerelease with an explicit prototype scope.
+- [x] Create and push `v0.1.0-prototype`.
+- [x] Publish a GitHub prerelease with an explicit prototype scope.
 
 ## 2. Repository Organization
 
 - [x] Replace duplicate packaging metadata with `pyproject.toml`.
 - [x] Add a pinned development requirements file.
 - [x] Keep generated runtime data and model artifacts out of Git.
-- [ ] Remove obsolete imports and dead compatibility code where tests prove it unused.
+- [x] Remove obsolete imports and dead compatibility code where tests prove it unused.
 - [x] Format maintained Python sources consistently.
 - [x] Keep Kubernetes manifests read-only until a cluster is provisioned.
 - [x] Preserve evidence images and exported Grafana dashboards.
@@ -37,7 +37,7 @@ target-architecture components until separately deployed and verified.
 - [x] Install all test dependencies used by collected tests.
 - [x] Keep optional Spark/RAG runtimes out of the verified-slice CI install.
 - [x] Separate required CI gates from advisory security reports.
-- [ ] Pin GitHub Actions and development tool versions.
+- [x] Pin GitHub Actions and development tool versions.
 - [x] Add OpenAPI snapshot validation to CI.
 - [x] Add focused backtest tests to the required CI suite.
 
@@ -59,17 +59,17 @@ target-architecture components until separately deployed and verified.
 - [x] Keep model artifact storage distinct from model metadata storage.
 - [x] Add a clear challenger state without silently replacing the champion.
 - [x] Require an identified human approver for promotion.
-- [ ] Record promotion, rejection, and training-failure events in one lifecycle audit trail.
-- [ ] Test feedback insertion -> retraining -> challenger registration -> promotion.
+- [x] Record promotion, rejection, and training-failure events in one lifecycle audit trail.
+- [x] Test feedback insertion -> retraining -> challenger registration -> promotion.
 - [x] Test behavior when feedback is insufficient.
-- [ ] Test behavior when the current champion artifact cannot be loaded.
+- [x] Test behavior when the current champion artifact cannot be loaded.
 
 ## 6. ML Metrics and Monitoring
 
 - [x] Populate champion F1, AUC, and version metrics from the model registry.
-- [ ] Expose retraining result and last-success timestamps.
+- [x] Expose retraining result and last-success timestamps.
 - [ ] Add model lifecycle panels to the local Grafana dashboard.
-- [ ] Keep hosted API metrics separate from undeployed pipeline metrics.
+- [x] Keep hosted API metrics separate from undeployed pipeline metrics.
 - [x] Add tests for model metric refresh behavior.
 - [x] Make drift scheduling explicit and configurable.
 
@@ -89,8 +89,8 @@ target-architecture components until separately deployed and verified.
 - [x] Make `alert_threshold` affect both original and modified backtest results.
 - [x] Require real labels for deployment recommendations.
 - [x] Label heuristic/proxy evaluations as non-decisional.
-- [ ] Extend backtest coverage to model-artifact fallback and empty input data.
-- [ ] Produce a deterministic backtest JSON artifact in CI.
+- [x] Extend backtest coverage to model-artifact fallback and empty input data.
+- [x] Produce a deterministic backtest JSON artifact in CI.
 
 ## 9. Documentation and Claims
 
@@ -106,8 +106,8 @@ target-architecture components until separately deployed and verified.
 
 - [x] Fail CI on high-confidence, high-severity Bandit findings.
 - [x] Publish dependency audit artifacts even when dependency remediation is deferred.
-- [ ] Document accepted dependency risks with expiry dates.
-- [ ] Remove development default tokens from production deployments.
+- [x] Document accepted dependency risks with expiry dates.
+- [x] Remove development default tokens from production deployments.
 - [ ] Verify CORS and rate-limit configuration for the hosted API.
 - [ ] Verify database migration behavior against PostgreSQL.
 - [ ] Rotate deployment and metrics tokens before a public demonstration.
@@ -123,5 +123,5 @@ target-architecture components until separately deployed and verified.
 - [x] OpenAPI snapshot regenerates without a diff.
 - [x] Local Docker build explicitly deferred; Hugging Face is the release target.
 - [x] Hugging Face deployment builds and its health/version smoke test passes.
-- [ ] Git worktree is clean after release commit.
-- [ ] GitHub Actions pass on the tagged commit.
+- [x] Git worktree is clean after release commit.
+- [x] GitHub Actions pass on the tagged commit.

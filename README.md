@@ -5,7 +5,7 @@ app_port: 7860
 ---
 # Amastan Fraud Shield Guard
 
-**Version `0.1.0` - prototype**
+**Version `0.1.0-prototype` — [released](https://github.com/ReguiguiMohamed/hybrid-real-time-fraud-detection-tunisia/releases/tag/v0.1.0-prototype)**
 
 A fraud-detection command center and target streaming architecture for Tunisian digital payments. The verified hosted slice is **FastAPI + SQLAlchemy + Neon PostgreSQL**. Kafka, Spark Structured Streaming, XGBoost, Ollama, ChromaDB, Streamlit, and the local monitoring stack remain development or target-architecture components until separately deployed and verified.
 
