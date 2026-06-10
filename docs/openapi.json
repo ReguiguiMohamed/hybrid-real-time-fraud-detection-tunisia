@@ -907,6 +907,31 @@
         }
       }
     },
+    "/api/v1/retrain-model/summary": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "summary": "Get Retraining Summary",
+        "description": "Return persistent training status from the model registry.",
+        "operationId": "get_retraining_summary_api_v1_retrain_model_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/auth/whoami": {
       "get": {
         "tags": [

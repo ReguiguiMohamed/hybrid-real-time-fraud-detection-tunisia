@@ -62,10 +62,12 @@ def test_promotion_records_audit_event(tmp_path):
     promote → verify audit trail. No Spark needed — tests repository + decision
     logic integration."""
     from datetime import datetime, timezone
-    from shared.database import AuditLog
-    from ml.model_repository import ModelRepository
+
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from ml.model_repository import ModelRepository
+    from shared.database import AuditLog
 
     bind = create_engine(
         f"sqlite:///{(tmp_path / 'lifecycle.db').as_posix()}",
@@ -116,10 +118,11 @@ def test_promotion_records_audit_event(tmp_path):
 
 def test_training_failure_logs_audit_event(tmp_path):
     """When training fails, the audit trail records the failure reason."""
-    from ml.model_repository import ModelRepository
-    from shared.database import AuditLog
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from ml.model_repository import ModelRepository
+    from shared.database import AuditLog
 
     bind = create_engine(
         f"sqlite:///{(tmp_path / 'lifecycle.db').as_posix()}",
@@ -148,9 +151,11 @@ def test_champion_artifact_load_failure_returns_metadata(tmp_path):
     """Simulate a champion whose artifact cannot be loaded.
     The repository returns metadata; load failure is caller's responsibility."""
     from datetime import datetime, timezone
-    from ml.model_repository import ModelRepository
+
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from ml.model_repository import ModelRepository
 
     bind = create_engine(
         f"sqlite:///{(tmp_path / 'models.db').as_posix()}",

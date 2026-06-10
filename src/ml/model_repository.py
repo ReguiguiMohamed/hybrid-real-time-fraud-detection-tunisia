@@ -166,10 +166,7 @@ class ModelRepository:
 
     def get_training_status(self):
         with self.session() as db:
-            success_row = (
-                db.query(func.max(ModelRegistry.last_training_success_at))
-                .scalar()
-            )
+            success_row = db.query(func.max(ModelRegistry.last_training_success_at)).scalar()
             failure_row = (
                 db.query(
                     ModelRegistry.last_training_failure_at,

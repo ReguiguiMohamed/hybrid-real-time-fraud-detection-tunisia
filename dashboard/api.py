@@ -1698,6 +1698,7 @@ async def get_retraining_summary(auth=Depends(require_scopes({"analyst", "admin"
     """Return persistent training status from the model registry."""
     try:
         from ml.model_repository import ModelRepository
+
         repo = ModelRepository()
         summary = repo.get_champion_training_status()
         return {"status": "available", **summary}

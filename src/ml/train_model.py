@@ -605,7 +605,9 @@ class FraudModelTrainer:
 
             challenger_metrics = self.evaluate_model(challenger_model, test_data)
             feature_scores = self.get_feature_scores(challenger_model)
-            feature_importance = json.dumps([{"feature": name, "score": float(score)} for name, score in feature_scores])
+            feature_importance = json.dumps(
+                [{"feature": name, "score": float(score)} for name, score in feature_scores]
+            )
             print(f"Challenger model metrics: {challenger_metrics}")
 
             champion_entry = self._get_current_champion()
@@ -635,7 +637,9 @@ class FraudModelTrainer:
             challenger_model.write().overwrite().save(model_path)
             self.save_shap_artifacts(challenger_model, model_path)
 
-            promoted_at = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S") if promote else None
+            promoted_at = (
+                datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S") if promote else None
+            )
             self._record_model_registry_entry(
                 version_id=version_id,
                 model_path=model_path,
@@ -682,7 +686,9 @@ class FraudModelTrainer:
                         "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
                         "performance_delta": {
                             "f1_score": (None if decision["f1_improvement"] is None else decision["f1_improvement"]),
-                            "auc": (None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]),
+                            "auc": (
+                                None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]
+                            ),
                         },
                         "justification": "Human-approved champion promotion after champion-challenger evaluation.",
                     }
@@ -710,7 +716,9 @@ class FraudModelTrainer:
                         "promotion_trigger": "no_current_champion" if not champion_entry else "f1_improvement_gate",
                         "performance_delta": {
                             "f1_score": (None if decision["f1_improvement"] is None else decision["f1_improvement"]),
-                            "auc": (None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]),
+                            "auc": (
+                                None if not champion_metrics else challenger_metrics["auc"] - champion_metrics["auc"]
+                            ),
                         },
                         "justification": "Promotion candidate met metric gate but no human approver was provided.",
                     }

@@ -29,7 +29,7 @@ from typing import Optional
 import numpy as np
 from sqlalchemy import and_
 
-from shared.database import ShadowModelRegistry, ShadowScoreLog, SessionLocal
+from shared.database import SessionLocal, ShadowModelRegistry, ShadowScoreLog
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,7 @@ class ShadowModelManager:
             session.close()
 
     def _get_active_shadow(self, session):
-        return session.query(ShadowModelRegistry).filter(
-            ShadowModelRegistry.status == "shadow"
-        ).first()
+        return session.query(ShadowModelRegistry).filter(ShadowModelRegistry.status == "shadow").first()
 
     def register_shadow_model(self, model_path: str, version_id: str = None) -> bool:
         path = Path(model_path)
@@ -71,11 +69,13 @@ class ShadowModelManager:
 
         try:
             from xgboost.spark import SparkXGBClassifierModel
+
             self._shadow_model = SparkXGBClassifierModel.load(str(path))
             logger.info(f"Shadow model loaded (Spark XGBoost): {path}")
         except Exception:
             try:
                 import joblib
+
                 self._shadow_model = joblib.load(str(path / "pipeline.pkl"))
                 logger.info(f"Shadow model loaded (sklearn pipeline): {path}")
             except Exception as e:
@@ -86,12 +86,12 @@ class ShadowModelManager:
 
         session = self._db_session()
         try:
-            session.query(ShadowModelRegistry).filter(
-                ShadowModelRegistry.status == "shadow"
-            ).update({
-                "unregistered_at": datetime.now(timezone.utc),
-                "status": "inactive",
-            })
+            session.query(ShadowModelRegistry).filter(ShadowModelRegistry.status == "shadow").update(
+                {
+                    "unregistered_at": datetime.now(timezone.utc),
+                    "status": "inactive",
+                }
+            )
 
             entry = ShadowModelRegistry(
                 version_id=version_id,
@@ -116,12 +116,12 @@ class ShadowModelManager:
 
         session = self._db_session()
         try:
-            session.query(ShadowModelRegistry).filter(
-                ShadowModelRegistry.status == "shadow"
-            ).update({
-                "unregistered_at": datetime.now(timezone.utc),
-                "status": "inactive",
-            })
+            session.query(ShadowModelRegistry).filter(ShadowModelRegistry.status == "shadow").update(
+                {
+                    "unregistered_at": datetime.now(timezone.utc),
+                    "status": "inactive",
+                }
+            )
             session.commit()
             logger.info("Shadow model unregistered")
         except Exception:
@@ -186,9 +186,7 @@ class ShadowModelManager:
         session = self._db_session()
         try:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-            rows = session.query(ShadowScoreLog).filter(
-                ShadowScoreLog.timestamp > cutoff
-            ).all()
+            rows = session.query(ShadowScoreLog).filter(ShadowScoreLog.timestamp > cutoff).all()
 
             if not rows:
                 return {
@@ -205,8 +203,12 @@ class ShadowModelManager:
             shadow_mean = float(np.mean(shadow_scores))
             mean_diff = float(abs(champion_mean - shadow_mean))
 
-            champion_labels = [r.champion_label if r.champion_label is not None else (1 if r.champion_score > 0.5 else 0) for r in rows]
-            shadow_labels = [r.shadow_label if r.shadow_label is not None else (1 if r.shadow_score > 0.5 else 0) for r in rows]
+            champion_labels = [
+                r.champion_label if r.champion_label is not None else (1 if r.champion_score > 0.5 else 0) for r in rows
+            ]
+            shadow_labels = [
+                r.shadow_label if r.shadow_label is not None else (1 if r.shadow_score > 0.5 else 0) for r in rows
+            ]
             disagreements = sum(1 for c, s in zip(champion_labels, shadow_labels) if c != s)
             disagreement_rate = disagreements / max(len(rows), 1)
 
@@ -220,12 +222,14 @@ class ShadowModelManager:
             if labelled:
                 total_labelled = len(labelled)
                 champion_correct = sum(
-                    1 for r in labelled
+                    1
+                    for r in labelled
                     if (r.champion_label is not None and str(r.champion_label) == r.analyst_label)
                     or (r.champion_label is None and (1 if r.champion_score > 0.5 else 0) == int(r.analyst_label))
                 )
                 shadow_correct = sum(
-                    1 for r in labelled
+                    1
+                    for r in labelled
                     if (r.shadow_label is not None and str(r.shadow_label) == r.analyst_label)
                     or (r.shadow_label is None and (1 if r.shadow_score > 0.5 else 0) == int(r.analyst_label))
                 )
@@ -258,33 +262,36 @@ class ShadowModelManager:
                 "mean_score_difference": mean_diff,
                 "disagreement_rate": disagreement_rate,
                 "high_divergence_rate": high_divergence_rate,
-                "recommendation": self._generate_recommendation(
-                    disagreement_rate, high_divergence_rate, mean_diff
+                "recommendation": self._generate_recommendation(disagreement_rate, high_divergence_rate, mean_diff),
+                "label_analysis": (
+                    {
+                        "labelled_count": len(labelled),
+                        "label_agreement_rate": label_agreement_rate,
+                        "champion_correct_count": champion_correct_count,
+                        "shadow_correct_count": shadow_correct_count,
+                    }
+                    if labelled
+                    else None
                 ),
-                "label_analysis": {
-                    "labelled_count": len(labelled),
-                    "label_agreement_rate": label_agreement_rate,
-                    "champion_correct_count": champion_correct_count,
-                    "shadow_correct_count": shadow_correct_count,
-                } if labelled else None,
-                "latency": {
-                    "avg_ms": avg_latency_ms,
-                    "p95_ms": p95_latency_ms,
-                } if avg_latency_ms is not None else None,
+                "latency": (
+                    {
+                        "avg_ms": avg_latency_ms,
+                        "p95_ms": p95_latency_ms,
+                    }
+                    if avg_latency_ms is not None
+                    else None
+                ),
             }
 
             logger.info(
-                f"Shadow comparison ({len(rows)} samples, {len(labelled)} labelled): "
-                f"{results['recommendation']}"
+                f"Shadow comparison ({len(rows)} samples, {len(labelled)} labelled): " f"{results['recommendation']}"
             )
             return results
         finally:
             self._close_session(session)
 
     @staticmethod
-    def _generate_recommendation(
-        disagreement_rate: float, high_divergence_rate: float, mean_diff: float
-    ) -> str:
+    def _generate_recommendation(disagreement_rate: float, high_divergence_rate: float, mean_diff: float) -> str:
         if disagreement_rate > 0.3:
             return "HOLD - Shadow model disagrees with champion too often. Requires analyst review."
         elif high_divergence_rate > 0.1:
@@ -300,9 +307,7 @@ class ShadowModelManager:
     def get_shadow_status(self) -> dict:
         session = self._db_session()
         try:
-            row = session.query(ShadowModelRegistry).filter(
-                ShadowModelRegistry.status == "shadow"
-            ).first()
+            row = session.query(ShadowModelRegistry).filter(ShadowModelRegistry.status == "shadow").first()
 
             if not row:
                 return {"active": False, "message": "No shadow model registered"}
