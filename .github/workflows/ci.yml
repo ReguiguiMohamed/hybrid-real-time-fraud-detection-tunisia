@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
-      - uses: actions/setup-python@39cd1854d5c9e1a8e407c9f0c0e5b389c364b01d  # v5.5.0
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55  # v5.5.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -42,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
-      - uses: actions/setup-python@39cd1854d5c9e1a8e407c9f0c0e5b389c364b01d  # v5.5.0
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55  # v5.5.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -72,7 +72,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@65c4c4a1d7e2d1f4a7a2b00f0c0f5a8e3b9a1c1  # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: verified-slice-coverage
           path: coverage.xml
@@ -101,7 +101,7 @@ print(f'Backtest artifact: {result.total_transactions} txns, label={result.label
 
       - name: Upload backtest artifact
         if: always()
-        uses: actions/upload-artifact@65c4c4a1d7e2d1f4a7a2b00f0c0f5a8e3b9a1c1  # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: backtest-report
           path: backtest-report.json
@@ -113,7 +113,7 @@ print(f'Backtest artifact: {result.total_transactions} txns, label={result.label
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332  # v4.1.7
 
-      - uses: actions/setup-python@39cd1854d5c9e1a8e407c9f0c0e5b389c364b01d  # v5.5.0
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55  # v5.5.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
