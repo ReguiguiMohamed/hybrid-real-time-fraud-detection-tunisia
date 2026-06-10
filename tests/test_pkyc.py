@@ -114,10 +114,12 @@ def test_publisher_records_auditable_trigger_without_raw_account(tmp_path):
     assert event is not None
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
         SELECT event_type, account_id, trigger_reason, current_risk_tier, transaction_id
         FROM pkyc_triggers
-    """)
+    """
+    )
     row = cursor.fetchone()
     conn.close()
 

@@ -108,7 +108,8 @@ def save_model_and_register(model, accuracy, feature_importances):
     cursor = conn.cursor()
 
     # Create model_registry table if it doesn't exist
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS model_registry (
             version_id TEXT PRIMARY KEY,
             model_path TEXT NOT NULL,
@@ -119,7 +120,8 @@ def save_model_and_register(model, accuracy, feature_importances):
             training_samples_count INTEGER,
             feature_importance TEXT
         )
-    """)
+    """
+    )
 
     # Insert the champion model
     cursor.execute(

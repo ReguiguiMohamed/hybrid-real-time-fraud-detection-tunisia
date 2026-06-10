@@ -62,7 +62,8 @@ def tmp_db(tmp_path):
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS feedback_labels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             transaction_id TEXT NOT NULL,
@@ -72,9 +73,11 @@ def tmp_db(tmp_path):
             branch_id TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+    """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS high_risk_alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             transaction_id TEXT NOT NULL UNIQUE,
@@ -93,9 +96,11 @@ def tmp_db(tmp_path):
             ingestion_latency REAL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+    """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS model_registry (
             version_id TEXT PRIMARY KEY,
             model_path TEXT NOT NULL,
@@ -106,9 +111,11 @@ def tmp_db(tmp_path):
             training_samples_count INTEGER,
             feature_importance TEXT
         )
-    """)
+    """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS audit_logs (
             log_id INTEGER PRIMARY KEY AUTOINCREMENT,
             entity_type TEXT,
@@ -119,9 +126,11 @@ def tmp_db(tmp_path):
             previous_state TEXT,
             new_state TEXT
         )
-    """)
+    """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS pkyc_triggers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_type TEXT NOT NULL,
@@ -132,7 +141,8 @@ def tmp_db(tmp_path):
             signals TEXT NOT NULL,
             transaction_id TEXT
         )
-    """)
+    """
+    )
 
     conn.commit()
     conn.close()

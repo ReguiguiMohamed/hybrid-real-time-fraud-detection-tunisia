@@ -34,7 +34,8 @@ def test_rule_updates_write_tamper_evident_audit_event(tmp_path, monkeypatch):
     audit_path = tmp_path / "change_audit.jsonl"
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE risk_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rule_name TEXT NOT NULL UNIQUE,
@@ -47,8 +48,10 @@ def test_rule_updates_write_tamper_evident_audit_event(tmp_path, monkeypatch):
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
         CREATE TABLE rule_change_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rule_table TEXT NOT NULL,
@@ -61,11 +64,14 @@ def test_rule_updates_write_tamper_evident_audit_event(tmp_path, monkeypatch):
             changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             reason TEXT
         )
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
         INSERT INTO risk_rules (rule_name, rule_type, weight, threshold, description)
         VALUES ('high_value', 'amount_threshold', 0.2, 15000.0, 'Enhanced monitoring threshold')
-    """)
+    """
+    )
     conn.commit()
     conn.close()
 

@@ -101,14 +101,16 @@ class DedupCache:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._db_path)
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS dedup_cache (
                 tx_id TEXT PRIMARY KEY,
                 processed_at REAL NOT NULL,
                 score REAL DEFAULT 0.0,
                 alert_triggered INTEGER DEFAULT 0
             )
-        """)
+        """
+        )
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_dedup_expiry ON dedup_cache(processed_at)")
         conn.commit()
         conn.close()

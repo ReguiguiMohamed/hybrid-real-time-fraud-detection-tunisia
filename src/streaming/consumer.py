@@ -240,7 +240,8 @@ class FraudProcessor:
     def _ensure_model_registry_table(self):
         conn = get_sqlite_connection(self._feedback_db_path)
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS model_registry (
                 version_id TEXT PRIMARY KEY,
                 model_path TEXT NOT NULL,
@@ -251,7 +252,8 @@ class FraudProcessor:
                 training_samples_count INTEGER,
                 feature_importance TEXT
             )
-        """)
+        """
+        )
         conn.commit()
         conn.close()
 
@@ -260,13 +262,15 @@ class FraudProcessor:
             self._ensure_model_registry_table()
             conn = get_sqlite_connection(self._feedback_db_path)
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT model_path
                 FROM model_registry
                 WHERE is_champion = 1
                 ORDER BY promoted_at DESC
                 LIMIT 1
-            """)
+            """
+            )
             row = cursor.fetchone()
             conn.close()
             return row[0] if row else None
@@ -307,13 +311,15 @@ class FraudProcessor:
             self._ensure_model_registry_table()
             conn = get_sqlite_connection(self._feedback_db_path)
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT promoted_at
                 FROM model_registry
                 WHERE is_champion = 1
                 ORDER BY promoted_at DESC
                 LIMIT 1
-            """)
+            """
+            )
             row = cursor.fetchone()
             if row and row[0]:
                 cursor.execute(

@@ -13,7 +13,7 @@ target-architecture components until separately deployed and verified.
 - [x] Verify the pending OpenAPI and deployment documentation work.
 - [x] Run the API test suite.
 - [x] Run the maintained test suite without optional container tests.
-- [ ] Commit the completed Priority 1 OpenAPI/deployment work.
+- [x] Commit the completed Priority 1 OpenAPI/deployment work.
 - [x] Set one source of truth for the prototype version.
 - [x] Add a release checklist and changelog.
 - [ ] Create and push `v0.1.0-prototype`.
@@ -99,7 +99,7 @@ target-architecture components until separately deployed and verified.
 - [x] Align the model card with the actual training and deployment path.
 - [x] Add a concise design philosophy without turning documentation into branding copy.
 - [x] Link the API reference, deployment guide, runbook, roadmap, and TODO.
-- [ ] Update the GitHub description and repository topics.
+- [x] Update the GitHub description and repository topics.
 
 ## 10. Security and Operations
 
@@ -121,6 +121,6 @@ target-architecture components until separately deployed and verified.
 - [x] Optional chaos tests either pass with Docker or skip with a documented reason.
 - [x] OpenAPI snapshot regenerates without a diff.
 - [x] Local Docker build explicitly deferred; Hugging Face is the release target.
-- [ ] Hugging Face deployment builds and its health/version smoke test passes.
+- [x] Hugging Face deployment builds and its health/version smoke test passes.
 - [ ] Git worktree is clean after release commit.
 - [ ] GitHub Actions pass on the tagged commit.

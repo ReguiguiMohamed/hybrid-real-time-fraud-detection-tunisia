@@ -72,7 +72,8 @@ def make_authenticated_request(method, endpoint, payload=None, timeout=10):
 def ensure_dlq_table(conn):
     """Ensure the dead letter queue table and required columns exist."""
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS failed_alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             transaction_id TEXT,
@@ -89,7 +90,8 @@ def ensure_dlq_table(conn):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             status TEXT DEFAULT 'PENDING'  -- PENDING, RETRYING, FAILED, SUCCESS
         )
-    """)
+    """
+    )
 
     cursor.execute("PRAGMA table_info(failed_alerts)")
     existing_columns = {row[1] for row in cursor.fetchall()}

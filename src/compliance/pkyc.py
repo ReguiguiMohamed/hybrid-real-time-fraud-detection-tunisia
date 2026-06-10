@@ -154,7 +154,8 @@ class PKYCPublisher:
         try:
             conn = get_sqlite_connection(self.audit_db_path)
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS pkyc_triggers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_type TEXT NOT NULL,
@@ -165,7 +166,8 @@ class PKYCPublisher:
                     signals TEXT NOT NULL,
                     transaction_id TEXT
                 )
-            """)
+            """
+            )
             cursor.execute(
                 """
                 INSERT INTO pkyc_triggers

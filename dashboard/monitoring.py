@@ -46,11 +46,13 @@ class ForensicAnalyticEngine:
             cursor = conn.cursor()
 
             # Get feedback counts
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT analyst_label, COUNT(*) as count
                 FROM feedback_labels
                 GROUP BY analyst_label
-            """)
+            """
+            )
 
             feedback_counts = dict(cursor.fetchall())
 
@@ -61,12 +63,14 @@ class ForensicAnalyticEngine:
             precision = confirmed_fraud / total_labeled if total_labeled > 0 else 0
 
             # Get ML probability distribution for confirmed fraud vs false positives
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT hra.ml_probability, fl.analyst_label
                 FROM high_risk_alerts hra
                 JOIN feedback_labels fl ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IS NOT NULL
-            """)
+            """
+            )
 
             prob_label_pairs = cursor.fetchall()
 

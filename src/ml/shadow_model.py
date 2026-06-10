@@ -63,7 +63,8 @@ class ShadowModelManager:
         """Ensure the shadow model registry table exists."""
         conn = sqlite3.connect(self.feedback_db_path)
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS shadow_model_registry (
                 version_id TEXT PRIMARY KEY,
                 model_path TEXT NOT NULL,
@@ -75,8 +76,10 @@ class ShadowModelManager:
                 shadow_wins INTEGER DEFAULT 0,
                 champion_wins INTEGER DEFAULT 0
             )
-        """)
-        cursor.execute("""
+        """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS shadow_score_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 transaction_id TEXT NOT NULL,
@@ -85,7 +88,8 @@ class ShadowModelManager:
                 score_diff REAL NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+        """
+        )
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_shadow_tx ON shadow_score_log(transaction_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_shadow_ts ON shadow_score_log(timestamp)")
         conn.commit()
@@ -270,9 +274,11 @@ class ShadowModelManager:
         high_divergence_rate = high_divergence / max(len(rows), 1)
 
         # Update shadow model registry stats
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT version_id FROM shadow_model_registry WHERE status = 'shadow' LIMIT 1
-        """)
+        """
+        )
         shadow_row = cursor.fetchone()
         if shadow_row:
             cursor.execute(

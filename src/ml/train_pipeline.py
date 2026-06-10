@@ -425,7 +425,8 @@ class FraudDetectionPipeline:
         cursor = conn.cursor()
 
         # Create registry table if it doesn't exist
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS model_registry (
                 version_id TEXT PRIMARY KEY,
                 model_path TEXT NOT NULL,
@@ -436,15 +437,18 @@ class FraudDetectionPipeline:
                 training_samples_count INTEGER,
                 feature_importance TEXT
             )
-        """)
+        """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT version_id, model_path, f1_score, auc, promoted_at
             FROM model_registry
             WHERE is_champion = 1
             ORDER BY promoted_at DESC
             LIMIT 1
-        """)
+        """
+        )
         previous_champion = cursor.fetchone()
         previous_state = None
         if previous_champion:

@@ -27,6 +27,7 @@ All notable changes to this prototype are documented here.
 
 - Migration checksums now use SHA-256 instead of MD5.
 - Developer dependencies include the optional integration-test packages used during collection.
+- Runtime dependencies explicitly include Faker for transaction generation.
 - Champion metrics are populated from the shared model registry.
 
 ### Scope
