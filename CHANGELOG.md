@@ -18,6 +18,7 @@ All notable changes to this prototype are documented here.
 
 - Marked the portfolio prototype complete and moved the repository to maintenance mode.
 - Removed links to internal planning documents from public documentation.
+- Updated pinned GitHub Actions to Node.js 24-compatible releases.
 - CI now enforces formatting, static correctness, verified-slice coverage, and high-severity Bandit findings.
 - CI now fails when deterministic backtest artifact generation fails.
 - Weekly dependency and Semgrep scans are explicitly advisory reports.
