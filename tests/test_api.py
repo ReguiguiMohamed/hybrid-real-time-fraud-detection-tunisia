@@ -36,7 +36,7 @@ class TestHealthEndpoint:
             "ml_probability": 0.94,
             "alert_type": "high_risk",
         }
-        api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
 
         response = api_test_client.get("/metrics")
 
@@ -81,20 +81,20 @@ class TestHealthEndpoint:
 
 class TestAuthEndpoints:
     def test_whoami_admin(self, api_test_client, admin_headers):
-        response = api_test_client.get("/auth/whoami", headers=admin_headers)
+        response = api_test_client.get("/api/v1/auth/whoami", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["role"] == "ADMIN"
         assert data["authenticated"] is True
 
     def test_whoami_analyst(self, api_test_client, analyst_headers):
-        response = api_test_client.get("/auth/whoami", headers=analyst_headers)
+        response = api_test_client.get("/api/v1/auth/whoami", headers=analyst_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["role"] == "ANALYST"
 
     def test_unauthorized_request(self, api_test_client):
-        response = api_test_client.get("/auth/whoami", headers={"Authorization": "Bearer wrong_token"})
+        response = api_test_client.get("/api/v1/auth/whoami", headers={"Authorization": "Bearer wrong_token"})
         assert response.status_code == 401
 
 
@@ -112,7 +112,7 @@ class TestAlertEndpoints:
             "alert_type": "high_risk",
             "ingestion_latency": 1.23,
         }
-        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        response = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
         assert response.status_code == 200
         assert response.json()["status"] == "success"
 
@@ -126,7 +126,7 @@ class TestAlertEndpoints:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "ml_probability": 0.5,
         }
-        response = api_test_client.post("/alerts/add/", json=alert, headers=analyst_headers)
+        response = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=analyst_headers)
         assert response.status_code == 403
 
     def test_review_queue(self, api_test_client, admin_headers):
@@ -142,10 +142,10 @@ class TestAlertEndpoints:
             "ml_probability": 0.91,
             "alert_type": "high_risk",
         }
-        api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
 
         # Then query the review queue
-        response = api_test_client.get("/alerts/review-queue/?limit=10", headers=admin_headers)
+        response = api_test_client.get("/api/v1/alerts/review-queue/?limit=10", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
@@ -173,10 +173,10 @@ class TestAlertEndpoints:
                 }
             ],
         }
-        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        response = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
         assert response.status_code == 200
 
-        explain_response = api_test_client.get("/alerts/TXN_SHAP_001/explain", headers=admin_headers)
+        explain_response = api_test_client.get("/api/v1/alerts/TXN_SHAP_001/explain", headers=admin_headers)
         assert explain_response.status_code == 200
         explanation = explain_response.json()
         assert explanation["shap_top5"][0]["feature"] == "v_count"
@@ -197,11 +197,11 @@ class TestAlertEndpoints:
             "anomaly_score": -0.41,
             "anomaly_model_version": "iso_test",
         }
-        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        response = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
         assert response.status_code == 200
 
         queue = api_test_client.get(
-            "/alerts/review-queue/?alert_type=HIGH_ANOMALY",
+            "/api/v1/alerts/review-queue/?alert_type=HIGH_ANOMALY",
             headers=admin_headers,
         )
         assert queue.status_code == 200
@@ -222,7 +222,7 @@ class TestFeedbackEndpoints:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "ml_probability": 0.93,
         }
-        api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
 
         # Submit feedback
         feedback = {
@@ -230,7 +230,7 @@ class TestFeedbackEndpoints:
             "analyst_label": "Confirmed Fraud",
             "analyst_comment": "Clear fraud pattern",
         }
-        response = api_test_client.post("/feedback/", json=feedback, headers=analyst_headers)
+        response = api_test_client.post("/api/v1/feedback/", json=feedback, headers=analyst_headers)
         assert response.status_code == 200
         assert response.json()["status"] == "success"
 
@@ -239,7 +239,7 @@ class TestFeedbackEndpoints:
             "transaction_id": "TXN_001",
             "analyst_label": "Invalid Label",
         }
-        response = api_test_client.post("/feedback/", json=feedback, headers=analyst_headers)
+        response = api_test_client.post("/api/v1/feedback/", json=feedback, headers=analyst_headers)
         assert response.status_code == 422  # Validation error
 
     def test_batch_feedback_all_success(self, api_test_client, admin_headers, analyst_headers):
@@ -263,8 +263,8 @@ class TestFeedbackEndpoints:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "ml_probability": 0.91,
         }
-        api_test_client.post("/alerts/add/", json=alert1, headers=admin_headers)
-        api_test_client.post("/alerts/add/", json=alert2, headers=admin_headers)
+        api_test_client.post("/api/v1/alerts/add/", json=alert1, headers=admin_headers)
+        api_test_client.post("/api/v1/alerts/add/", json=alert2, headers=admin_headers)
 
         batch = {
             "feedback_items": [
@@ -276,7 +276,7 @@ class TestFeedbackEndpoints:
                 {"transaction_id": "TXN_BATCH_02", "analyst_label": "False Positive", "analyst_comment": "Batch fp"},
             ]
         }
-        response = api_test_client.post("/feedback/batch/", json=batch, headers=analyst_headers)
+        response = api_test_client.post("/api/v1/feedback/batch/", json=batch, headers=analyst_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "success"
@@ -287,7 +287,7 @@ class TestFeedbackEndpoints:
 
     def test_batch_feedback_returns_links(self, api_test_client, admin_headers, analyst_headers):
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_BATCH_LINKS",
                 "user_id": "U1",
@@ -308,7 +308,7 @@ class TestFeedbackEndpoints:
                 },
             ]
         }
-        response = api_test_client.post("/feedback/batch/", json=batch, headers=analyst_headers)
+        response = api_test_client.post("/api/v1/feedback/batch/", json=batch, headers=analyst_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "success"
@@ -317,20 +317,20 @@ class TestFeedbackEndpoints:
         assert "feedback_batch" in data["_links"]
 
     def test_batch_feedback_empty_list(self, api_test_client, analyst_headers):
-        response = api_test_client.post("/feedback/batch/", json={"feedback_items": []}, headers=analyst_headers)
+        response = api_test_client.post("/api/v1/feedback/batch/", json={"feedback_items": []}, headers=analyst_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "success"
         assert data["total"] == 0
 
     def test_batch_feedback_requires_auth(self, api_test_client):
-        response = api_test_client.post("/feedback/batch/", json={"feedback_items": []})
+        response = api_test_client.post("/api/v1/feedback/batch/", json={"feedback_items": []})
         assert response.status_code == 401
 
 
 class TestStatsEndpoint:
     def test_get_stats(self, api_test_client, admin_headers):
-        response = api_test_client.get("/stats/", headers=admin_headers)
+        response = api_test_client.get("/api/v1/stats/", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert "total_feedback" in data
@@ -406,26 +406,10 @@ class TestComplianceKpisEndpoint:
                 ("TXN_KPI_SANCTIONS", "Confirmed Fraud", "Reviewed", branch_id),
             ],
         )
-        cursor.execute(
-            """
-            INSERT INTO pkyc_triggers
-            (event_type, account_id, trigger_reason, timestamp, current_risk_tier, signals, transaction_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                "pKYC_trigger",
-                "hashed-account",
-                "LOW_RISK_TO_HIGH_SCORE",
-                now.isoformat(),
-                "HIGH",
-                "{}",
-                "TXN_KPI_SAR_ON_TIME",
-            ),
-        )
         conn.commit()
         conn.close()
 
-        response = api_test_client.get(f"/compliance/kpis/?branch_id={branch_id}", headers=admin_headers)
+        response = api_test_client.get(f"/api/v1/compliance/kpis/?branch_id={branch_id}", headers=admin_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -434,7 +418,6 @@ class TestComplianceKpisEndpoint:
         assert data["overdue_sar_count"] == 1
         assert data["overdue_sars"][0]["transaction_id"] == "TXN_KPI_OVERDUE"
         assert data["sanctions_hits"] == 1
-        assert data["pkyc_triggers_by_reason"] == {"LOW_RISK_TO_HIGH_SCORE": 1}
         assert data["false_positive_rate"] == 50.0
         assert data["high_risk_accounts_by_tier"]["CRITICAL"] == 2
         assert data["branch_id"] == branch_id
@@ -442,13 +425,13 @@ class TestComplianceKpisEndpoint:
 
 class TestExplainEndpoint:
     def test_explain_nonexistent_transaction(self, api_test_client, admin_headers):
-        response = api_test_client.get("/alerts/NONEXISTENT/explain", headers=admin_headers)
+        response = api_test_client.get("/api/v1/alerts/NONEXISTENT/explain", headers=admin_headers)
         assert response.status_code == 404
 
 
 class TestDriftMetricsEndpoint:
     def test_drift_metrics_shape(self, api_test_client, analyst_headers):
-        response = api_test_client.get("/metrics/drift", headers=analyst_headers)
+        response = api_test_client.get("/api/v1/metrics/drift", headers=analyst_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -509,7 +492,7 @@ class TestHighRiskEndpoint:
 class TestBranchesEndpoint:
     def test_list_branches_returns_distinct(self, api_test_client, admin_headers):
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_BR_1",
                 "user_id": "U1",
@@ -523,7 +506,7 @@ class TestBranchesEndpoint:
             headers=admin_headers,
         )
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_BR_2",
                 "user_id": "U2",
@@ -537,25 +520,25 @@ class TestBranchesEndpoint:
             headers=admin_headers,
         )
 
-        response = api_test_client.get("/branches/", headers=admin_headers)
+        response = api_test_client.get("/api/v1/branches/", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert "Tunis-GNC" in data
         assert "Sfax-Agency" in data
 
     def test_branches_empty_when_no_alerts(self, api_test_client, admin_headers):
-        response = api_test_client.get("/branches/", headers=admin_headers)
+        response = api_test_client.get("/api/v1/branches/", headers=admin_headers)
         assert response.status_code == 200
         assert response.json() == []
 
     def test_branches_unauthorized(self, api_test_client):
-        response = api_test_client.get("/branches/")
+        response = api_test_client.get("/api/v1/branches/")
         assert response.status_code == 401
 
 
 class TestModelPerformanceEndpoint:
     def test_model_performance_returns_shape(self, api_test_client, admin_headers, populated_db, monkeypatch):
-        response = api_test_client.get("/monitoring/model-performance/", headers=admin_headers)
+        response = api_test_client.get("/api/v1/monitoring/model-performance/", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert "precision" in data
@@ -579,17 +562,17 @@ class TestModelPerformanceEndpoint:
         client = TestClient(api_module.app)
         headers = {"Authorization": "Bearer test_admin_token"}
 
-        response = client.get("/monitoring/model-performance/", headers=headers)
+        response = client.get("/api/v1/monitoring/model-performance/", headers=headers)
         assert response.status_code == 200
         data = response.json()
         assert data["total_evaluated"] >= 3
 
     def test_model_performance_analyst_access(self, api_test_client, analyst_headers):
-        response = api_test_client.get("/monitoring/model-performance/", headers=analyst_headers)
+        response = api_test_client.get("/api/v1/monitoring/model-performance/", headers=analyst_headers)
         assert response.status_code == 200
 
     def test_model_performance_unauthorized(self, api_test_client):
-        response = api_test_client.get("/monitoring/model-performance/")
+        response = api_test_client.get("/api/v1/monitoring/model-performance/")
         assert response.status_code == 401
 
 
@@ -633,7 +616,7 @@ class TestExportEndpoint:
 class TestCtafExportEndpoint:
     def test_ctaf_export_returns_confirmed_fraud(self, api_test_client, admin_headers, analyst_headers):
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_CTAF_001",
                 "user_id": "U1",
@@ -647,7 +630,7 @@ class TestCtafExportEndpoint:
             headers=admin_headers,
         )
         api_test_client.post(
-            "/feedback/",
+            "/api/v1/feedback/",
             json={
                 "transaction_id": "TXN_CTAF_001",
                 "analyst_label": "Confirmed Fraud",
@@ -656,7 +639,7 @@ class TestCtafExportEndpoint:
             headers=analyst_headers,
         )
 
-        response = api_test_client.get("/alerts/ctaf-export?days=30", headers=admin_headers)
+        response = api_test_client.get("/api/v1/alerts/ctaf-export?days=30", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert data["total_cases"] >= 1
@@ -665,7 +648,7 @@ class TestCtafExportEndpoint:
 
     def test_ctaf_export_excludes_false_positives(self, api_test_client, admin_headers, analyst_headers):
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_CTAF_FP",
                 "user_id": "U1",
@@ -679,7 +662,7 @@ class TestCtafExportEndpoint:
             headers=admin_headers,
         )
         api_test_client.post(
-            "/feedback/",
+            "/api/v1/feedback/",
             json={
                 "transaction_id": "TXN_CTAF_FP",
                 "analyst_label": "False Positive",
@@ -688,13 +671,13 @@ class TestCtafExportEndpoint:
             headers=analyst_headers,
         )
 
-        response = api_test_client.get("/alerts/ctaf-export?days=30", headers=admin_headers)
+        response = api_test_client.get("/api/v1/alerts/ctaf-export?days=30", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert all(c["transaction_id"] != "TXN_CTAF_FP" for c in data["cases"])
 
     def test_ctaf_export_admin_only(self, api_test_client, analyst_headers):
-        response = api_test_client.get("/alerts/ctaf-export", headers=analyst_headers)
+        response = api_test_client.get("/api/v1/alerts/ctaf-export", headers=analyst_headers)
         assert response.status_code == 403
 
 
@@ -740,34 +723,6 @@ class TestMonitoringEndpoints:
             assert response.status_code == 401, f"{path} should reject missing auth"
 
 
-class TestRetrainEndpoint:
-    def test_retrain_requires_admin(self, api_test_client, analyst_headers):
-        response = api_test_client.post("/retrain-model/", headers=analyst_headers)
-        assert response.status_code == 403
-
-    def test_retrain_requires_auth(self, api_test_client):
-        response = api_test_client.post("/retrain-model/")
-        assert response.status_code == 401
-
-    def test_retrain_returns_success_shape(self, api_test_client, admin_headers):
-        response = api_test_client.post("/retrain-model/", headers=admin_headers)
-        assert response.status_code == 202
-        data = response.json()
-        assert data["status"] == "queued"
-        assert data["job_id"]
-
-        status = api_test_client.get(data["status_url"], headers=admin_headers)
-        assert status.status_code == 200
-        assert status.json()["status"] in {"no_change", "promoted", "failed"}
-
-    def test_retrain_can_be_disabled(self, api_test_client, admin_headers, monkeypatch):
-        monkeypatch.setenv("MODEL_RETRAINING_ENABLED", "false")
-
-        response = api_test_client.post("/retrain-model/", headers=admin_headers)
-
-        assert response.status_code == 503
-
-
 class TestEdgeCases:
     def test_duplicate_alert_is_detected(self, api_test_client, admin_headers):
         alert = {
@@ -779,21 +734,21 @@ class TestEdgeCases:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "ml_probability": 0.90,
         }
-        first = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        first = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
         assert first.status_code == 200
         assert first.json()["message"] == "Alert added successfully"
 
-        second = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        second = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
         assert second.status_code == 200
         assert second.json()["message"] == "Alert already exists"
 
     def test_missing_required_fields_returns_422(self, api_test_client, admin_headers):
         incomplete = {"user_id": "U1", "amount_tnd": 5000.0}
-        response = api_test_client.post("/alerts/add/", json=incomplete, headers=admin_headers)
+        response = api_test_client.post("/api/v1/alerts/add/", json=incomplete, headers=admin_headers)
         assert response.status_code == 422
 
     def test_malformed_json_returns_422(self, api_test_client, admin_headers):
-        response = api_test_client.post("/alerts/add/", content=b"not json", headers=admin_headers)
+        response = api_test_client.post("/api/v1/alerts/add/", content=b"not json", headers=admin_headers)
         assert response.status_code == 422
 
     def test_invalid_analyst_label_returns_422(self, api_test_client, analyst_headers):
@@ -801,7 +756,7 @@ class TestEdgeCases:
             "transaction_id": "TXN_001",
             "analyst_label": "MAYBE_FRAUD",
         }
-        response = api_test_client.post("/feedback/", json=feedback, headers=analyst_headers)
+        response = api_test_client.post("/api/v1/feedback/", json=feedback, headers=analyst_headers)
         assert response.status_code == 422
 
     def test_empty_transaction_id_accepted_by_pipeline(self, api_test_client, admin_headers):
@@ -819,7 +774,7 @@ class TestEdgeCases:
 
     def test_invalid_token_returns_401_on_get_endpoints(self, api_test_client):
         bad_headers = {"Authorization": "Bearer totally_wrong"}
-        for path in ["/stats/", "/branches/"]:
+        for path in ["/api/v1/stats/", "/api/v1/branches/"]:
             response = api_test_client.get(path, headers=bad_headers)
             assert response.status_code == 401, f"{path} should reject bad token"
 
@@ -833,14 +788,14 @@ class TestEdgeCases:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "ml_probability": 0.50,
         }
-        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        response = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
         # TransactionAlert has no explicit amount validator, so it may accept it
         # but should at least return a 2xx or 4xx response
         assert response.status_code in (200, 422)
 
     def test_metrics_labels_after_operations(self, api_test_client, admin_headers):
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_METRICS_LBL",
                 "user_id": "U1",
@@ -852,7 +807,7 @@ class TestEdgeCases:
             },
             headers=admin_headers,
         )
-        api_test_client.get("/alerts/high-risk/", headers=admin_headers)
+        api_test_client.get("/api/v1/alerts/high-risk/", headers=admin_headers)
 
         metrics = api_test_client.get("/metrics")
         assert metrics.status_code == 200
@@ -863,7 +818,7 @@ class TestEdgeCases:
 
 
 class TestIntegrationFlow:
-    """End-to-end flow: add alert → review queue → feedback → stats → export."""
+    """End-to-end flow: add alert, review it, submit feedback, then export."""
 
     def test_full_alert_lifecycle(self, api_test_client, admin_headers, analyst_headers):
         alert = {
@@ -878,17 +833,17 @@ class TestIntegrationFlow:
             "alert_type": "high_risk",
         }
 
-        add_resp = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
+        add_resp = api_test_client.post("/api/v1/alerts/add/", json=alert, headers=admin_headers)
         assert add_resp.status_code == 200
         assert add_resp.json()["status"] == "success"
 
-        queue_resp = api_test_client.get("/alerts/review-queue/?limit=10", headers=admin_headers)
+        queue_resp = api_test_client.get("/api/v1/alerts/review-queue/?limit=10", headers=admin_headers)
         assert queue_resp.status_code == 200
         queue = queue_resp.json()
         assert any(a["transaction_id"] == "TXN_LIFECYCLE" for a in queue)
 
         feedback_resp = api_test_client.post(
-            "/feedback/",
+            "/api/v1/feedback/",
             json={
                 "transaction_id": "TXN_LIFECYCLE",
                 "analyst_label": "Confirmed Fraud",
@@ -898,19 +853,19 @@ class TestIntegrationFlow:
         )
         assert feedback_resp.status_code == 200
 
-        stats_resp = api_test_client.get("/stats/", headers=admin_headers)
+        stats_resp = api_test_client.get("/api/v1/stats/", headers=admin_headers)
         assert stats_resp.status_code == 200
         stats = stats_resp.json()
         assert stats["total_feedback"] >= 1
 
-        export_resp = api_test_client.get("/alerts/ctaf-export?days=30", headers=admin_headers)
+        export_resp = api_test_client.get("/api/v1/alerts/ctaf-export?days=30", headers=admin_headers)
         assert export_resp.status_code == 200
         export = export_resp.json()
         assert any(c["transaction_id"] == "TXN_LIFECYCLE" for c in export["cases"])
 
     def test_feedback_updates_precision(self, api_test_client, admin_headers, analyst_headers):
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_PREC_1",
                 "user_id": "U1",
@@ -923,7 +878,7 @@ class TestIntegrationFlow:
             headers=admin_headers,
         )
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_PREC_2",
                 "user_id": "U2",
@@ -937,7 +892,7 @@ class TestIntegrationFlow:
         )
 
         api_test_client.post(
-            "/feedback/",
+            "/api/v1/feedback/",
             json={
                 "transaction_id": "TXN_PREC_1",
                 "analyst_label": "Confirmed Fraud",
@@ -945,7 +900,7 @@ class TestIntegrationFlow:
             headers=analyst_headers,
         )
         api_test_client.post(
-            "/feedback/",
+            "/api/v1/feedback/",
             json={
                 "transaction_id": "TXN_PREC_2",
                 "analyst_label": "False Positive",
@@ -953,87 +908,13 @@ class TestIntegrationFlow:
             headers=analyst_headers,
         )
 
-        stats = api_test_client.get("/stats/", headers=admin_headers).json()
+        stats = api_test_client.get("/api/v1/stats/", headers=admin_headers).json()
         assert stats["high_risk_precision"] == 0.5
-
-
-class TestLegacyEndpoints:
-    """Backward-compatible unversioned endpoint aliases."""
-
-    def test_legacy_whoami(self, api_test_client, admin_headers):
-        response = api_test_client.get("/auth/whoami", headers=admin_headers)
-        assert response.status_code == 200
-        assert response.json()["role"] == "ADMIN"
-
-    def test_legacy_add_alert(self, api_test_client, admin_headers):
-        alert = {
-            "transaction_id": "TXN_LEGACY_ADD",
-            "user_id": "U1",
-            "amount_tnd": 5000.0,
-            "governorate": "Tunis",
-            "payment_method": "Flouci",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "ml_probability": 0.90,
-        }
-        response = api_test_client.post("/alerts/add/", json=alert, headers=admin_headers)
-        assert response.status_code == 200
-
-    def test_legacy_feedback(self, api_test_client, admin_headers, analyst_headers):
-        api_test_client.post(
-            "/alerts/add/",
-            json={
-                "transaction_id": "TXN_LEGACY_FB",
-                "user_id": "U1",
-                "amount_tnd": 5000.0,
-                "governorate": "Tunis",
-                "payment_method": "Flouci",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "ml_probability": 0.90,
-            },
-            headers=admin_headers,
-        )
-        response = api_test_client.post(
-            "/feedback/",
-            json={
-                "transaction_id": "TXN_LEGACY_FB",
-                "analyst_label": "Confirmed Fraud",
-            },
-            headers=analyst_headers,
-        )
-        assert response.status_code == 200
-
-    def test_legacy_review_queue(self, api_test_client, admin_headers):
-        api_test_client.post(
-            "/alerts/add/",
-            json={
-                "transaction_id": "TXN_LEGACY_Q",
-                "user_id": "U1",
-                "amount_tnd": 5000.0,
-                "governorate": "Tunis",
-                "payment_method": "Flouci",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "ml_probability": 0.90,
-            },
-            headers=admin_headers,
-        )
-        response = api_test_client.get("/alerts/review-queue/", headers=admin_headers)
-        assert response.status_code == 200
-        data = response.json()
-        assert any(a["transaction_id"] == "TXN_LEGACY_Q" for a in data)
-
-    def test_legacy_stats_legacy_ctaf_and_model_perf(self, api_test_client, admin_headers):
-        assert api_test_client.get("/stats/", headers=admin_headers).status_code == 200
-        assert api_test_client.get("/compliance/kpis/", headers=admin_headers).status_code == 200
-        assert api_test_client.get("/monitoring/model-performance/", headers=admin_headers).status_code == 200
-
-    def test_legacy_explain_and_branches(self, api_test_client, admin_headers):
-        assert api_test_client.get("/alerts/NONEXISTENT/explain", headers=admin_headers).status_code == 404
-        assert api_test_client.get("/branches/", headers=admin_headers).status_code == 200
 
 
 class TestHateoasLinks:
     def test_whoami_has_links(self, api_test_client, admin_headers):
-        response = api_test_client.get("/auth/whoami", headers=admin_headers)
+        response = api_test_client.get("/api/v1/auth/whoami", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert "_links" in data
@@ -1041,7 +922,7 @@ class TestHateoasLinks:
         assert data["_links"]["stats"] == "/api/v1/stats/"
 
     def test_stats_has_links(self, api_test_client, admin_headers):
-        response = api_test_client.get("/stats/", headers=admin_headers)
+        response = api_test_client.get("/api/v1/stats/", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert "_links" in data
@@ -1050,7 +931,7 @@ class TestHateoasLinks:
 
     def test_ctaf_export_has_links(self, api_test_client, admin_headers, analyst_headers):
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_HATEOAS_01",
                 "user_id": "U1",
@@ -1063,11 +944,11 @@ class TestHateoasLinks:
             headers=admin_headers,
         )
         api_test_client.post(
-            "/feedback/",
+            "/api/v1/feedback/",
             json={"transaction_id": "TXN_HATEOAS_01", "analyst_label": "Confirmed Fraud"},
             headers=analyst_headers,
         )
-        response = api_test_client.get("/alerts/ctaf-export?days=30", headers=admin_headers)
+        response = api_test_client.get("/api/v1/alerts/ctaf-export?days=30", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert "_links" in data
@@ -1075,7 +956,7 @@ class TestHateoasLinks:
 
     def test_feedback_has_links(self, api_test_client, admin_headers, analyst_headers):
         api_test_client.post(
-            "/alerts/add/",
+            "/api/v1/alerts/add/",
             json={
                 "transaction_id": "TXN_HATEOAS_FB",
                 "user_id": "U1",
@@ -1088,7 +969,7 @@ class TestHateoasLinks:
             headers=admin_headers,
         )
         response = api_test_client.post(
-            "/feedback/",
+            "/api/v1/feedback/",
             json={"transaction_id": "TXN_HATEOAS_FB", "analyst_label": "Confirmed Fraud"},
             headers=analyst_headers,
         )
@@ -1127,8 +1008,7 @@ class TestOpenAPISpec:
             "/api/v1/metrics/threshold-analysis",
             "/api/v1/metrics/drift",
             "/api/v1/metrics/system-overview",
-            "/api/v1/retrain-model/",
-            "/api/v1/retrain-model/status/{job_id}",
+            "/api/v1/model/training-summary",
         ]
         for path in expected_paths:
             assert path in paths, f"Missing path in OpenAPI spec: {path}"
@@ -1137,14 +1017,3 @@ class TestOpenAPISpec:
         response = api_test_client.get("/docs")
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
-
-    def test_legacy_routes_deprecated_in_spec(self, api_test_client, admin_headers, analyst_headers):
-        response = api_test_client.get("/openapi.json")
-        spec = response.json()
-        paths = spec["paths"]
-        legacy_paths = [
-            p for p in paths if not p.startswith("/api/v1") and p not in ("/", "/health/", "/metrics", "/openapi.json")
-        ]
-        for lp in legacy_paths:
-            for method_item in paths[lp].values():
-                assert method_item.get("deprecated"), f"Legacy path {lp} should be marked deprecated"

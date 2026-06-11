@@ -5,17 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "amastan-fraud-shield"
 version = "0.1.0"
-description = "Prototype command center and target architecture for fraud detection in Tunisian digital payments"
+description = "Fraud alert review API for Tunisian digital payments"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { file = "LICENSE" }
 authors = [
-  { name = "Amastan Fraud Shield Guard", email = "contact@amastan-fsg.tn" },
+  { name = "Mohamed Reguigui" },
 ]
 dynamic = ["dependencies"]
-
-[project.scripts]
-tunisia-fraud-producer = "producer.producer:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -38,25 +35,16 @@ known_first_party = [
   "compliance",
   "dashboard",
   "ml",
-  "producer",
-  "rag_engine",
   "shared",
   "src",
-  "streaming",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=short"
-markers = [
-  "integration: requires external services such as Docker, Kafka, or Spark",
-]
 
 [tool.coverage.run]
 source = ["src", "dashboard"]
-omit = [
-  "src/streaming/consumer_demo.py",
-]
 
 [tool.coverage.report]
 fail_under = 70

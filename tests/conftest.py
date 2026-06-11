@@ -129,21 +129,6 @@ def tmp_db(tmp_path):
     """
     )
 
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pkyc_triggers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT NOT NULL,
-            account_id TEXT NOT NULL,
-            trigger_reason TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            current_risk_tier TEXT NOT NULL,
-            signals TEXT NOT NULL,
-            transaction_id TEXT
-        )
-    """
-    )
-
     conn.commit()
     conn.close()
     return db_path
@@ -261,7 +246,6 @@ def api_test_client(tmp_db, monkeypatch):
     """FastAPI TestClient with a temporary database."""
     monkeypatch.setenv("ADMIN_TOKEN", "test_admin_token")
     monkeypatch.setenv("ANALYST_TOKEN", "test_analyst_token")
-    monkeypatch.setenv("API_TOKEN", "test_admin_token")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_db.as_posix()}")
     monkeypatch.delenv("METRICS_TOKEN", raising=False)
 

@@ -57,9 +57,9 @@ jobs:
       - name: Run tests with enforced coverage
         run: |
           python -m pytest -p pytest_cov tests -m "not integration" \
-            --cov=dashboard.api \
-            --cov=shared.database \
-            --cov=shared.utils \
+            --cov=dashboard \
+            --cov=shared \
+            --cov=ml \
             --cov=compliance \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \

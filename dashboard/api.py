@@ -3,15 +3,13 @@ import hashlib
 import json
 import logging
 import os
-import threading
 import time as _time
-import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -19,11 +17,10 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, G
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 
+from compliance.deadlines import ctaf_filing_deadline
 from dashboard.monitoring import ForensicAnalyticEngine
-from rag_engine.sar_validator import ctaf_filing_deadline
 from shared.database import DATABASE_URL, Base, SessionLocal, engine
 from shared.logging_config import setup_logging
-from shared.utils import retry_failed_alerts
 from shared.version import RELEASE_CHANNEL, __version__
 
 # Initialize structured logging
@@ -35,7 +32,7 @@ security = HTTPBearer(auto_error=False)
 
 # Load API tokens from environment variables
 ANALYST_TOKEN = os.getenv("ANALYST_TOKEN")
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or os.getenv("API_TOKEN")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 METRICS_TOKEN = os.getenv("METRICS_TOKEN")
 METRICS_ALLOW_PUBLIC = os.getenv("METRICS_ALLOW_PUBLIC", "").lower() in {"1", "true", "yes"}
 
@@ -75,8 +72,7 @@ def require_scopes(scopes):
 # Database setup
 # The app uses shared.database.SessionLocal for all DB operations
 # which connects to either local SQLite or a remote Postgres URL.
-# Initialisation is now handled by Base.metadata.create_all(engine)
-# to ensure schema exists, though Alembic migrations are preferred for prod.
+# The prototype creates its schema through SQLAlchemy at startup.
 
 
 @contextmanager
@@ -92,13 +88,6 @@ def get_db_session():
 def parse_float_env(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
-def parse_int_env(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
     except ValueError:
         return default
 
@@ -295,22 +284,6 @@ FEATURE_LABELS = {
 }
 
 
-def get_champion_model_path():
-    with get_db_session() as db:
-        row = db.execute(
-            text(
-                """
-        SELECT model_path
-        FROM model_registry
-        WHERE is_champion = 1
-        ORDER BY promoted_at DESC
-        LIMIT 1
-        """
-            )
-        ).fetchone()
-        return row[0] if row else None
-
-
 class FeedbackRequest(BaseModel):
     transaction_id: str
     analyst_label: str
@@ -453,10 +426,7 @@ def parse_shap_top5(shap_payload):
     return normalized[:5]
 
 
-# Initialize monitoring with the database path
-# If using SQLite, we pass the local path; otherwise, a placeholder.
-db_path_for_monitoring = DATABASE_URL if DATABASE_URL.startswith("sqlite") else "./data/feedback.db"
-monitoring_engine = ForensicAnalyticEngine(db_path_for_monitoring)
+monitoring_engine = ForensicAnalyticEngine(SessionLocal)
 
 
 # ---------------------------------------------------------------------------
@@ -476,37 +446,25 @@ RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 # Lifespan (modern startup/shutdown)
 # ---------------------------------------------------------------------------
 @asynccontextmanager
-async def lifespan(application: FastAPI):
-    # --- startup ---
+async def lifespan(_application: FastAPI):
     logger.info("Starting Fraud Detection Command Center API")
-    # Initialize tables using SQLAlchemy
     Base.metadata.create_all(bind=engine)
-    start_dlq_retry_worker()
     yield
-    # --- shutdown ---
-    stop_event = getattr(application.state, "dlq_retry_stop", None)
-    if stop_event:
-        stop_event.set()
-    thread = getattr(application.state, "dlq_retry_thread", None)
-    if thread and thread.is_alive():
-        thread.join(timeout=2)
     logger.info("Fraud Detection Command Center API shut down")
 
 
 app = FastAPI(
     title="Tunisian Fraud Detection - Command Center API",
-    description="Real-time fraud detection and CTAF-compliant reporting for Tunisian digital payments",
+    description="Fraud alert review and reporting for Tunisian digital payments",
     version=__version__,
     lifespan=lifespan,
 )
 
-# --- CORS Middleware ---
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv(
-        "CORS_ALLOWED_ORIGINS",
-        "http://localhost:8501,https://mohamedreg-amastan-fraud-shield-api.hf.space",
-    ).split(","),
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -556,10 +514,12 @@ async def rate_limit_middleware(request: Request, call_next):
         path=path_label,
         status_code=str(response.status_code),
     ).inc()
+    elapsed = _time.perf_counter() - start_time
     api_request_latency_seconds.labels(
         method=request.method,
         path=path_label,
-    ).observe(_time.perf_counter() - start_time)
+    ).observe(elapsed)
+    monitoring_engine.record_inference_latency(elapsed * 1000)
     return response
 
 
@@ -567,8 +527,6 @@ async def rate_limit_middleware(request: Request, call_next):
 # API Router (all business endpoints under /api/v1/)
 # ---------------------------------------------------------------------------
 router = APIRouter(prefix="/api/v1", tags=["v1"])
-_retraining_jobs = {}
-_retraining_jobs_lock = threading.Lock()
 
 
 @router.get("/auth/whoami")
@@ -588,34 +546,6 @@ async def whoami(user_id: Optional[str] = Header(None), auth=Depends(require_sco
             "model_performance": "/api/v1/monitoring/model-performance/",
         },
     }
-
-
-def start_dlq_retry_worker():
-    default_enabled = DATABASE_BACKEND == "sqlite"
-    enabled = os.getenv("DLQ_RETRY_ENABLED", str(default_enabled)).lower() in {"1", "true", "yes"}
-    if not enabled:
-        logger.info("DLQ retry worker disabled")
-        return
-
-    if getattr(app.state, "dlq_retry_thread", None) and app.state.dlq_retry_thread.is_alive():
-        return
-
-    interval = max(1, parse_int_env("DLQ_RETRY_INTERVAL_SECONDS", 60))
-    max_attempts = max(1, parse_int_env("DLQ_RETRY_MAX_ATTEMPTS", 3))
-    stop_event = threading.Event()
-    app.state.dlq_retry_stop = stop_event
-
-    def retry_loop():
-        while not stop_event.is_set():
-            try:
-                retry_failed_alerts(max_attempts=max_attempts)
-            except Exception:
-                logging.exception("DLQ retry worker error")
-            stop_event.wait(interval)
-
-    thread = threading.Thread(target=retry_loop, name="dlq-retry-worker", daemon=True)
-    app.state.dlq_retry_thread = thread
-    thread.start()
 
 
 @router.post("/feedback/")
@@ -1022,7 +952,7 @@ async def get_system_stats(branch_id: Optional[str] = None, auth=Depends(require
 
 @router.get("/compliance/kpis/")
 async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
-    """Return compliance KPIs derived only from recorded alerts, SARs, feedback, and pKYC audit events."""
+    """Return compliance KPIs derived from recorded alerts, SARs, and feedback."""
     try:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         since_30d = now - timedelta(days=30)
@@ -1145,36 +1075,6 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
             reviewed_total = sum(feedback_counts.values())
             false_positives = feedback_counts.get("False Positive", 0)
 
-            if branch_id:
-                pkyc_rows = db.execute(
-                    text(
-                        """
-                SELECT pt.trigger_reason, COUNT(*)
-                FROM pkyc_triggers pt
-                JOIN high_risk_alerts hra ON hra.transaction_id = pt.transaction_id
-                WHERE pt.timestamp >= :since_30d_text
-                  AND hra.branch_id = :branch_id
-                GROUP BY pt.trigger_reason
-                ORDER BY COUNT(*) DESC, pt.trigger_reason
-                """
-                    ),
-                    {**params, "since_30d_text": since_30d.isoformat()},
-                ).fetchall()
-            else:
-                pkyc_rows = db.execute(
-                    text(
-                        """
-                SELECT trigger_reason, COUNT(*)
-                FROM pkyc_triggers
-                WHERE timestamp >= :since_30d_text
-                GROUP BY trigger_reason
-                ORDER BY COUNT(*) DESC, trigger_reason
-                """
-                    ),
-                    {"since_30d_text": since_30d.isoformat()},
-                ).fetchall()
-            pkyc_by_reason = dict(pkyc_rows)
-
             accounts_by_tier = dict(
                 db.execute(
                     text(
@@ -1208,13 +1108,12 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
             "overdue_sar_count": len(overdue_sars),
             "overdue_sars": overdue_sars,
             "sanctions_hits": sanctions_hits_30d,
-            "pkyc_triggers_by_reason": pkyc_by_reason,
             "false_positive_rate": format_percent(false_positives, reviewed_total),
             "reviewed_alerts": reviewed_total,
             "high_risk_accounts_by_tier": accounts_by_tier,
             "branch_id": branch_id,
             "generated_at": now.isoformat(),
-            "basis": "Recorded alerts, generated SAR text, analyst feedback, sanctions alerts, and pKYC audit events.",
+            "basis": "Recorded alerts, generated SAR text, analyst feedback, and sanctions alerts.",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1222,7 +1121,7 @@ async def get_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(requ
 
 @router.post("/alerts/add/")
 async def add_high_risk_alert(alert: TransactionAlert, auth=Depends(require_scopes({"admin"}))):
-    """Endpoint to add high-risk alerts from the streaming pipeline"""
+    """Store a fraud alert for analyst review."""
     try:
         alert_type = alert.alert_type or "high_risk"
         shap_payload = json.dumps(alert.shap_top5 or [])
@@ -1632,68 +1531,7 @@ async def get_system_overview(auth=Depends(require_scopes({"analyst", "admin"}))
     }
 
 
-@router.post("/retrain-model/", status_code=202)
-async def trigger_model_retraining(background_tasks: BackgroundTasks, auth=Depends(require_scopes({"admin"}))):
-    """Queue local Spark model retraining when explicitly enabled."""
-    default_enabled = DATABASE_BACKEND == "sqlite"
-    enabled = os.getenv("MODEL_RETRAINING_ENABLED", str(default_enabled)).lower() in {"1", "true", "yes"}
-    if not enabled:
-        raise HTTPException(
-            status_code=503,
-            detail="Model retraining is disabled for this deployment.",
-        )
-
-    try:
-        from src.ml.train_model import FraudModelTrainer
-
-        job_id = uuid.uuid4().hex
-        with _retraining_jobs_lock:
-            _retraining_jobs[job_id] = {
-                "job_id": job_id,
-                "status": "queued",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-
-        def run_retraining():
-            status = "failed"
-            with _retraining_jobs_lock:
-                _retraining_jobs[job_id]["status"] = "running"
-            try:
-                trainer = FraudModelTrainer()
-                success = trainer.train_champion_challenger()
-                status = "promoted" if success else "no_change"
-                logger.info("Model retraining job %s completed with status %s", job_id, status)
-            except Exception as e:
-                logger.exception("Model retraining job %s failed", job_id)
-                with _retraining_jobs_lock:
-                    _retraining_jobs[job_id]["error"] = str(e)
-            finally:
-                with _retraining_jobs_lock:
-                    _retraining_jobs[job_id]["status"] = status
-                    _retraining_jobs[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
-
-        background_tasks.add_task(run_retraining)
-
-        return {
-            "status": "queued",
-            "job_id": job_id,
-            "status_url": f"/api/v1/retrain-model/status/{job_id}",
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/retrain-model/status/{job_id}")
-async def get_retraining_status(job_id: str, auth=Depends(require_scopes({"admin"}))):
-    """Return the observable state of a queued retraining job."""
-    with _retraining_jobs_lock:
-        job = _retraining_jobs.get(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Retraining job not found")
-        return dict(job)
-
-
-@router.get("/retrain-model/summary")
+@router.get("/model/training-summary")
 async def get_retraining_summary(auth=Depends(require_scopes({"analyst", "admin"}))):
     """Return persistent training status from the model registry."""
     try:
@@ -1706,97 +1544,7 @@ async def get_retraining_summary(auth=Depends(require_scopes({"analyst", "admin"
         return {"status": "unavailable", "detail": str(e)}
 
 
-# ---------------------------------------------------------------------------
-# Register the versioned router and add backward-compatible root aliases
-# ---------------------------------------------------------------------------
 app.include_router(router)
-
-# Backward-compatible aliases: old paths (no /api/v1 prefix) redirect to v1
-# This ensures existing consumers (dashboard, producer, consumer) keep working
-# while we transition them to the new /api/v1/ paths.
-_legacy_router = APIRouter(tags=["legacy"], deprecated=True)
-
-
-@_legacy_router.get("/auth/whoami")
-async def _legacy_whoami(
-    user_id: Optional[str] = Header(None),
-    auth=Depends(require_scopes({"analyst", "admin"})),
-):
-    return await whoami(user_id, auth)
-
-
-@_legacy_router.post("/feedback/")
-async def _legacy_feedback(
-    feedback: FeedbackRequest, user_id: Optional[str] = Header(None), auth=Depends(require_scopes({"analyst", "admin"}))
-):
-    return await submit_feedback(feedback, user_id, auth)
-
-
-@_legacy_router.post("/feedback/batch/")
-async def _legacy_batch_feedback(
-    batch: BatchFeedbackRequest,
-    user_id: Optional[str] = Header(None),
-    auth=Depends(require_scopes({"analyst", "admin"})),
-):
-    return await submit_batch_feedback(batch, user_id, auth)
-
-
-@_legacy_router.get("/alerts/review-queue/")
-async def _legacy_review_queue(
-    limit: int = 100,
-    alert_type: Optional[str] = None,
-    branch_id: Optional[str] = None,
-    auth=Depends(require_scopes({"analyst", "admin"})),
-):
-    return await get_review_queue(limit, alert_type, branch_id, auth)
-
-
-@_legacy_router.post("/alerts/add/")
-async def _legacy_add_alert(alert: TransactionAlert, auth=Depends(require_scopes({"admin"}))):
-    return await add_high_risk_alert(alert, auth)
-
-
-@_legacy_router.get("/stats/")
-async def _legacy_stats(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
-    return await get_system_stats(branch_id, auth)
-
-
-@_legacy_router.get("/compliance/kpis/")
-async def _legacy_compliance_kpis(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
-    return await get_compliance_kpis(branch_id, auth)
-
-
-@_legacy_router.get("/monitoring/model-performance/")
-async def _legacy_model_perf(branch_id: Optional[str] = None, auth=Depends(require_scopes({"analyst", "admin"}))):
-    return await get_model_performance(branch_id, auth)
-
-
-@_legacy_router.get("/metrics/drift")
-async def _legacy_drift_metrics(auth=Depends(require_scopes({"analyst", "admin"}))):
-    return await get_drift_analysis(auth)
-
-
-@_legacy_router.get("/alerts/{transaction_id}/explain")
-async def _legacy_explain(transaction_id: str, auth=Depends(require_scopes({"analyst", "admin"}))):
-    return await explain_alert(transaction_id, auth)
-
-
-@_legacy_router.get("/branches/")
-async def _legacy_branches(auth=Depends(require_scopes({"analyst", "admin"}))):
-    return await list_branches(auth)
-
-
-@_legacy_router.get("/alerts/ctaf-export")
-async def _legacy_ctaf(days: int = 7, branch_id: Optional[str] = None, auth=Depends(require_scopes({"admin"}))):
-    return await export_ctaf(days, branch_id, auth)
-
-
-@_legacy_router.post("/retrain-model/", status_code=202)
-async def _legacy_retrain(background_tasks: BackgroundTasks, auth=Depends(require_scopes({"admin"}))):
-    return await trigger_model_retraining(background_tasks, auth)
-
-
-app.include_router(_legacy_router)
 
 
 @app.get("/")

@@ -2,18 +2,17 @@
 """
 Backtesting Framework for Amastan Fraud Shield Guard
 
-Replays historical transaction data through the fraud detection pipeline with
-modified rule weights or model versions to measure the impact on false positives,
-true positives, and alert volume.
+Replays historical transactions with modified rule weights and thresholds. It
+measures the impact on false positives, true positives, and alert volume.
 
-This prevents "tuning in the dark" — every rule change is validated against
+This prevents "tuning in the dark". Every rule change is validated against
 historical data before deployment.
 
 Usage:
     python scripts/backtest.py                              # Default backtest
     python scripts/backtest.py --rule velocity --weight 0.4 # Change velocity weight
     python backtest.py --date-from 2026-01-01 --date-to 2026-02-01
-    python backtest.py --model-path models/registry/new_model --output report.json
+    python backtest.py --rule velocity --weight 0.4 --output report.json
 """
 
 import argparse
@@ -90,18 +89,18 @@ class BacktestEngine:
     Replays historical data through the fraud detection pipeline.
 
     The engine:
-    1. Loads historical parquet data
+    1. Loads historical CSV data
     2. Runs it through the ORIGINAL pipeline (current rules)
-    3. Runs it through the MODIFIED pipeline (changed rules/model)
+    3. Runs it through the MODIFIED pipeline (changed rules)
     4. Compares results
     """
 
-    def __init__(self, parquet_path: str = "./data/parquet/silver_fraud_alerts"):
-        self.parquet_path = parquet_path
+    def __init__(self, data_path: str = "./data/backtest.csv"):
+        self.data_path = data_path
 
     def load_data(self, date_from: str = None, date_to: str = None) -> pd.DataFrame:
         """
-        Load historical parquet data with optional date filtering.
+        Load historical CSV data with optional date filtering.
 
         Args:
             date_from: ISO date string (e.g., "2026-01-01")
@@ -110,11 +109,11 @@ class BacktestEngine:
         Returns:
             DataFrame of historical transactions.
         """
-        path = Path(self.parquet_path)
+        path = Path(self.data_path)
         if not path.exists():
-            raise FileNotFoundError(f"Parquet data not found: {self.parquet_path}")
+            raise FileNotFoundError(f"Backtest data not found: {self.data_path}")
 
-        df = pd.read_parquet(path)
+        df = pd.read_csv(path)
         logger.info(f"Loaded {len(df):,} transactions from {path}")
 
         if "timestamp" in df.columns:
@@ -195,7 +194,6 @@ class BacktestEngine:
         df: pd.DataFrame,
         weight_changes: dict = None,
         threshold_changes: dict = None,
-        new_model_path: str = None,
         alert_threshold: float = ALERT_SCORE_THRESHOLD,
     ) -> pd.DataFrame:
         """Apply modified rules to the data."""
@@ -220,29 +218,6 @@ class BacktestEngine:
             logger.info(f"Modified thresholds: {thresholds}")
 
         result = self._apply_rules(df, "modified", weights, thresholds, alert_threshold)
-
-        if new_model_path and Path(new_model_path).exists():
-            try:
-                import joblib
-
-                model_path = Path(new_model_path)
-                artifact_path = model_path / "pipeline.pkl" if model_path.is_dir() else model_path
-                model_data = joblib.load(artifact_path)
-                model = model_data.get("model") if isinstance(model_data, dict) else model_data
-
-                feature_cols = (
-                    model_data.get("feature_columns", ["amount_tnd", "v_count", "g_dist"])
-                    if isinstance(model_data, dict)
-                    else getattr(model, "feature_names_in_", None)
-                )
-                if feature_cols:
-                    available = [c for c in feature_cols if c in result.columns]
-                    if len(available) == len(feature_cols):
-                        predictions = model.predict_proba(result[available])[:, 1]
-                        result["modified_score"] = predictions
-                        logger.info(f"Scored with new model: {artifact_path}")
-            except Exception as e:
-                logger.warning(f"New model scoring failed: {e}, using rule-based score")
 
         result["modified_alert"] = result["modified_score"] > alert_threshold
         return result
@@ -283,7 +258,6 @@ class BacktestEngine:
         self,
         weight_changes: dict = None,
         threshold_changes: dict = None,
-        new_model_path: str = None,
         date_from: str = None,
         date_to: str = None,
         alert_threshold: float = ALERT_SCORE_THRESHOLD,
@@ -294,7 +268,6 @@ class BacktestEngine:
         Args:
             weight_changes: Dict of rule name -> new weight
             threshold_changes: Dict of rule name -> new threshold
-            new_model_path: Path to a new model file
             date_from: Start date for data filtering
             date_to: End date for data filtering
             alert_threshold: Score threshold for alert generation
@@ -308,7 +281,6 @@ class BacktestEngine:
         result.changes_applied = {
             "weight_changes": weight_changes or {},
             "threshold_changes": threshold_changes or {},
-            "new_model_path": new_model_path,
             "alert_threshold": alert_threshold,
         }
 
@@ -344,7 +316,6 @@ class BacktestEngine:
             df,
             weight_changes=weight_changes,
             threshold_changes=threshold_changes,
-            new_model_path=new_model_path,
             alert_threshold=alert_threshold,
         )
         modified_metrics = self._compute_metrics(modified_df, "modified_score", "modified_alert")
@@ -391,7 +362,7 @@ class BacktestEngine:
 
         if r.delta_alert_count > r.original_alert_count * 0.5:
             issues.append(
-                f"Alert volume increased by {r.delta_alert_count} ({r.delta_alert_count/max(r.original_alert_count,1)*100:.1f}%) — may overwhelm analysts"
+                f"Alert volume increased by {r.delta_alert_count} ({r.delta_alert_count/max(r.original_alert_count,1)*100:.1f}%). This may overwhelm analysts"
             )
 
         if issues:
@@ -420,9 +391,6 @@ class BacktestEngine:
             print(f"\n  Weight changes: {result.changes_applied['weight_changes']}")
         if result.changes_applied.get("threshold_changes"):
             print(f"  Threshold changes: {result.changes_applied['threshold_changes']}")
-        if result.changes_applied.get("new_model_path"):
-            print(f"  New model: {result.changes_applied['new_model_path']}")
-
         print("\n" + "-" * 80)
         print(f"  {'METRIC':<25} {'ORIGINAL':>12} {'MODIFIED':>12} {'DELTA':>12}")
         print("-" * 80)
@@ -456,20 +424,17 @@ class BacktestEngine:
 
 def main():
     parser = argparse.ArgumentParser(description="Backtest fraud detection rules against historical data")
-    parser.add_argument(
-        "--parquet-path", type=str, default="./data/parquet/silver_fraud_alerts", help="Path to historical parquet data"
-    )
+    parser.add_argument("--data-path", type=str, default="./data/backtest.csv", help="Path to historical CSV data")
     parser.add_argument("--date-from", type=str, help="Start date (ISO)")
     parser.add_argument("--date-to", type=str, help="End date (ISO)")
     parser.add_argument("--rule", type=str, help="Rule name to modify (e.g., velocity)")
     parser.add_argument("--weight", type=float, help="New weight for the rule")
     parser.add_argument("--threshold", type=float, help="New threshold for the rule")
-    parser.add_argument("--model-path", type=str, help="Path to new model for comparison")
     parser.add_argument("--output", type=str, help="Output JSON report path")
     parser.add_argument("--alert-threshold", type=float, default=0.5, help="Alert score threshold")
     args = parser.parse_args()
 
-    engine = BacktestEngine(parquet_path=args.parquet_path)
+    engine = BacktestEngine(data_path=args.data_path)
 
     weight_changes = {}
     threshold_changes = {}
@@ -483,7 +448,6 @@ def main():
     result = engine.run(
         weight_changes=weight_changes or None,
         threshold_changes=threshold_changes or None,
-        new_model_path=args.model_path,
         date_from=args.date_from,
         date_to=args.date_to,
         alert_threshold=args.alert_threshold,

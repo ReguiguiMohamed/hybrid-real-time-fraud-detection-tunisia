@@ -1,8 +1,10 @@
 import os
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import Column, DateTime, Float, Integer, String, Text, create_engine, func
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 
@@ -27,6 +29,9 @@ engine_kwargs = {
     "pool_recycle": int(os.getenv("DATABASE_POOL_RECYCLE_SECONDS", "300")),
 }
 if DATABASE_URL.startswith("sqlite"):
+    database_path = make_url(DATABASE_URL).database
+    if database_path and database_path != ":memory:":
+        Path(database_path).parent.mkdir(parents=True, exist_ok=True)
     connect_args = {"check_same_thread": False}
     engine_kwargs = {}
 
@@ -99,55 +104,3 @@ class AuditLog(Base):
     timestamp = Column(DateTime, server_default=func.now(), index=True)
     previous_state = Column(Text)
     new_state = Column(Text)
-
-
-class ShadowModelRegistry(Base):
-    __tablename__ = "shadow_model_registry"
-
-    version_id = Column(String(256), primary_key=True)
-    model_path = Column(Text, nullable=False)
-    registered_at = Column(DateTime, server_default=func.now())
-    unregistered_at = Column(DateTime)
-    status = Column(String(64), default="shadow", index=True)
-    total_comparisons = Column(Integer, default=0)
-    avg_score_diff = Column(Float, default=0.0)
-    shadow_wins = Column(Integer, default=0)
-    champion_wins = Column(Integer, default=0)
-    total_samples = Column(Integer, default=0)
-    avg_latency_ms = Column(Float, default=0.0)
-
-
-class ShadowScoreLog(Base):
-    __tablename__ = "shadow_score_log"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    transaction_id = Column(String(256), nullable=False, index=True)
-    champion_score = Column(Float, nullable=False)
-    shadow_score = Column(Float, nullable=False)
-    score_diff = Column(Float, nullable=False)
-    champion_label = Column(Integer)
-    shadow_label = Column(Integer)
-    analyst_label = Column(String(64))
-    latency_ms = Column(Float)
-    timestamp = Column(DateTime, server_default=func.now(), index=True)
-
-
-class PKYCTrigger(Base):
-    __tablename__ = "pkyc_triggers"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    event_type = Column(String(128), nullable=False)
-    account_id = Column(String(256), nullable=False)
-    trigger_reason = Column(Text, nullable=False)
-    timestamp = Column(String(64), nullable=False, index=True)
-    current_risk_tier = Column(String(64), nullable=False)
-    signals = Column(Text, nullable=False)
-    transaction_id = Column(String(256), index=True)
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()

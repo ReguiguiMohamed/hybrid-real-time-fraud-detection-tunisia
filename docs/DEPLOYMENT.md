@@ -1,48 +1,70 @@
-# Deployment: Choose Your Path
+# Deployment
 
-## Option A — Hosted API (Hugging Face Space + Neon)
+The demo uses a Hugging Face Docker Space and Neon PostgreSQL.
 
-**Best for**: A hosted prototype API serving dashboards, analysts, and compliance tools.
+## Required Secrets
 
-| What | Details |
-|------|---------|
-| Components | FastAPI command-center API only |
-| Database | Neon PostgreSQL (free tier works) |
-| Auth | Bearer tokens (admin, analyst, metrics) |
-| Persistence | Full — alerts, feedback, KPIs survive restarts |
-| Cost | ~$0 (HF Space free tier + Neon free tier) |
-| Limits | 512MB RAM, cold starts after inactivity |
-| Retraining | Disabled by default on PostgreSQL; requires a separate Spark-capable runtime |
+Set these in the Space settings:
 
-**Setup**: see [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md#verified-hosted-deployment-hugging-face--neon)
+```text
+ADMIN_TOKEN=<random value>
+ANALYST_TOKEN=<random value>
+METRICS_TOKEN=<random value>
+DATABASE_URL=postgresql+psycopg2://USER:PASSWORD@HOST/DBNAME?sslmode=require
+```
 
----
+`ADMIN_TOKEN` can ingest alerts and export cases. `ANALYST_TOKEN` can read the
+queue and submit feedback.
 
-## Option B — Local Full-Stack (Docker Compose)
+## Deploy
 
-**Best for**: Development, demonstration, or when you need the full pipeline.
+Push to `main`.
 
-| What | Details |
-|------|---------|
-| Components | API, Streamlit dashboard, Kafka, Spark, Ollama, ChromaDB, Prometheus/Grafana |
-| Database | SQLite by default |
-| Auth | Same bearer tokens (set in `.env`) |
-| Persistence | SQLite file in `./data/` |
-| Resources | 8GB+ RAM recommended (Ollama + Spark) |
+The GitHub Actions deployment copies the runtime files to the Hugging Face
+Space. The Space builds [`Dockerfile`](../Dockerfile) and serves the API on port
+`7860`.
 
-**Setup**: `make setup && make bootstrap && make prod`
+## Check
 
----
+```powershell
+Invoke-RestMethod https://<space>.hf.space/health/
+```
 
-## Can't decide?
+Then check:
 
-- **Only need the REST API for integration?** → Option A
-- **Building/tuning the ML pipeline?** → Option B (has Spark, Ollama, backtesting)
-- **Working on the Streamlit dashboard?** → Option B
-- **Doing compliance or CTAF reporting?** → Option A (persistent Neon DB + always-on)
+- `/docs`
+- an authenticated `POST /api/v1/alerts/add/`
+- `GET /api/v1/alerts/review-queue/`
+- the inserted row in Neon
 
----
+## Grafana Cloud
 
-## What about Kubernetes?
+Grafana Cloud scrapes:
 
-Manifests in `k8s/` are **architecture scaffolding only**. Not a verified runtime. Do not deploy.
+```text
+https://<space>.hf.space/metrics
+```
+
+Use bearer authentication with `METRICS_TOKEN`. Import
+[`grafana-dashboard.json`](grafana-dashboard.json).
+
+Useful checks:
+
+```promql
+amastan_api_info
+amastan_db_metrics_scrape_success
+sum(rate(amastan_api_requests_total{status_code=~"5.."}[5m]))
+```
+
+## Limits
+
+The application creates its prototype tables with SQLAlchemy on startup. That
+is enough for the demo. It is not a production migration strategy.
+
+Before using another database:
+
+- rehearse schema changes;
+- configure backups;
+- define retention;
+- review connection limits;
+- rotate all tokens.

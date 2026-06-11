@@ -1,6 +1,6 @@
 """
 Structured JSON logging configuration for the fraud detection system.
-Provides consistent log format across all services (producer, consumer, API, dashboard).
+Provides consistent log formatting for the API.
 """
 
 import json
@@ -66,5 +66,5 @@ def setup_logging(service_name: str = "fraud-detection", level: str = "INFO") ->
     root_logger.addFilter(ServiceFilter())
 
     # Reduce noise from third-party libraries
-    for noisy in ("urllib3", "kafka", "chromadb", "sentence_transformers", "httpx"):
+    for noisy in ("urllib3", "httpx"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

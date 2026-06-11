@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: amastan
-  labels:
-    name: amastan
-    app: fraud-shield-guard
-    environment: production

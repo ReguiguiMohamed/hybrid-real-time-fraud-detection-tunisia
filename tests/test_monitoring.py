@@ -1,24 +1,29 @@
 """Tests for the ForensicAnalyticEngine monitoring module."""
 
 import json
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
-
-import pytest
 
 from monitoring import ForensicAnalyticEngine
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+
+def build_engine(db_path):
+    bind = create_engine(
+        f"sqlite:///{db_path.as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
+    return ForensicAnalyticEngine(sessionmaker(bind=bind))
 
 
 class TestPerformanceMetrics:
     def test_empty_latencies(self, tmp_db):
-        engine = ForensicAnalyticEngine(db_path=tmp_db)
+        engine = build_engine(tmp_db)
         metrics = engine.get_performance_metrics()
         assert metrics["total_calls"] == 0
         assert metrics["avg_latency_ms"] == 0
 
     def test_record_and_get_latencies(self, tmp_db):
-        engine = ForensicAnalyticEngine(db_path=tmp_db)
+        engine = build_engine(tmp_db)
         for ms in [10.0, 20.0, 30.0, 40.0, 50.0]:
             engine.record_inference_latency(ms)
 
@@ -29,13 +34,13 @@ class TestPerformanceMetrics:
 
 class TestFeedbackAnalysis:
     def test_empty_database(self, tmp_db):
-        engine = ForensicAnalyticEngine(db_path=tmp_db)
+        engine = build_engine(tmp_db)
         analysis = engine.get_feedback_analysis()
         assert analysis["total_feedback"] == 0
         assert analysis["precision"] == 0
 
     def test_with_populated_data(self, populated_db):
-        engine = ForensicAnalyticEngine(db_path=populated_db)
+        engine = build_engine(populated_db)
         analysis = engine.get_feedback_analysis()
         assert analysis["total_feedback"] == 3
         assert "Confirmed Fraud" in analysis["feedback_counts"]
@@ -44,19 +49,19 @@ class TestFeedbackAnalysis:
 
 class TestThresholdAnalysis:
     def test_empty_returns_default(self, tmp_db):
-        engine = ForensicAnalyticEngine(db_path=tmp_db)
+        engine = build_engine(tmp_db)
         result = engine.get_ml_threshold_analysis()
         assert result["optimal_threshold"] == 0.85
 
 
 class TestDistributionComparison:
     def test_disallowed_column(self, populated_db):
-        engine = ForensicAnalyticEngine(db_path=populated_db)
+        engine = build_engine(populated_db)
         result = engine.get_distribution_comparison("user_id")  # Not in whitelist
         assert "error" in result
 
     def test_allowed_column(self, populated_db):
-        engine = ForensicAnalyticEngine(db_path=populated_db)
+        engine = build_engine(populated_db)
         result = engine.get_distribution_comparison("amount_tnd")
         assert "current_values" in result
         assert "baseline_values" in result
@@ -64,7 +69,7 @@ class TestDistributionComparison:
 
 class TestDriftRetraining:
     def test_psi_detects_material_feature_drift(self, tmp_db):
-        engine = ForensicAnalyticEngine(db_path=tmp_db)
+        engine = build_engine(tmp_db)
 
         result = engine.detect_feature_drift_psi(
             "avg_amount",
@@ -78,7 +83,7 @@ class TestDriftRetraining:
         assert result["trigger_retraining"] is True
 
     def test_psi_ignores_stable_distribution(self, tmp_db):
-        engine = ForensicAnalyticEngine(db_path=tmp_db)
+        engine = build_engine(tmp_db)
 
         result = engine.detect_feature_drift_psi(
             "v_count",
@@ -91,7 +96,7 @@ class TestDriftRetraining:
         assert result["trigger_retraining"] is False
 
     def test_page_hinkley_detects_score_shift(self, tmp_db):
-        engine = ForensicAnalyticEngine(db_path=tmp_db)
+        engine = build_engine(tmp_db)
         scores = [0.05] * 20 + [0.75] * 20
 
         result = engine.page_hinkley_test(scores, delta=0.005, lambda_=0.05)
@@ -100,7 +105,7 @@ class TestDriftRetraining:
         assert result["max_statistic"] > 0.05
 
     def test_drift_trigger_writes_audit_event(self, tmp_db, tmp_path):
-        engine = ForensicAnalyticEngine(db_path=tmp_db)
+        engine = build_engine(tmp_db)
         audit_path = tmp_path / "drift_audit.jsonl"
         psi_result = engine.detect_feature_drift_psi(
             "avg_amount",
@@ -125,7 +130,7 @@ class TestDriftRetraining:
         assert len(audit["entry_hash"]) == 64
 
     def test_drift_assessment_returns_decision_shape(self, populated_db):
-        engine = ForensicAnalyticEngine(db_path=populated_db)
+        engine = build_engine(populated_db)
 
         assessment = engine.get_drift_retraining_assessment()
 

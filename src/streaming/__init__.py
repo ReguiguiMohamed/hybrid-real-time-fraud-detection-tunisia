@@ -1,2 +1,0 @@
-from streaming.consumer import FraudProcessor
-from streaming.consumer_stateful import StatefulFraudProcessor

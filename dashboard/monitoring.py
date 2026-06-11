@@ -1,15 +1,18 @@
 # dashboard/monitoring.py
+import logging
 import os
 import statistics
 from collections import deque
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
+from sqlalchemy import text
 
 from compliance.change_audit import append_change_audit_event
-from shared.utils import get_sqlite_connection
+from shared.database import SessionLocal
+
+logger = logging.getLogger(__name__)
 
 
 class ForensicAnalyticEngine:
@@ -17,10 +20,9 @@ class ForensicAnalyticEngine:
     PAGE_HINKLEY_DELTA = 0.005
     PAGE_HINKLEY_LAMBDA = 0.05
 
-    def __init__(self, db_path: Path = Path("./data/feedback.db")):
-        self.db_path = db_path
+    def __init__(self, session_factory=SessionLocal):
+        self.session_factory = session_factory
         self.inference_latencies = deque(maxlen=1000)  # Keep last 1000 measurements
-        self.drift_monitoring = {}
 
     def record_inference_latency(self, latency_ms: float):
         """Record the latency of an inference call"""
@@ -42,19 +44,17 @@ class ForensicAnalyticEngine:
     def get_feedback_analysis(self):
         """Analyze feedback patterns"""
         try:
-            conn = get_sqlite_connection(str(self.db_path))
-            cursor = conn.cursor()
-
-            # Get feedback counts
-            cursor.execute(
-                """
+            with self.session_factory() as db:
+                feedback_rows = db.execute(
+                    text(
+                        """
                 SELECT analyst_label, COUNT(*) as count
                 FROM feedback_labels
                 GROUP BY analyst_label
-            """
-            )
-
-            feedback_counts = dict(cursor.fetchall())
+                """
+                    )
+                ).fetchall()
+                feedback_counts = dict(feedback_rows)
 
             # Calculate precision based on feedback
             confirmed_fraud = feedback_counts.get("Confirmed Fraud", 0)
@@ -62,19 +62,17 @@ class ForensicAnalyticEngine:
 
             precision = confirmed_fraud / total_labeled if total_labeled > 0 else 0
 
-            # Get ML probability distribution for confirmed fraud vs false positives
-            cursor.execute(
-                """
+            with self.session_factory() as db:
+                prob_label_pairs = db.execute(
+                    text(
+                        """
                 SELECT hra.ml_probability, fl.analyst_label
                 FROM high_risk_alerts hra
                 JOIN feedback_labels fl ON hra.transaction_id = fl.transaction_id
                 WHERE fl.analyst_label IS NOT NULL
-            """
-            )
-
-            prob_label_pairs = cursor.fetchall()
-
-            conn.close()
+                """
+                    )
+                ).fetchall()
 
             return {
                 "precision": round(precision, 3),
@@ -82,8 +80,8 @@ class ForensicAnalyticEngine:
                 "total_feedback": total_labeled,
                 "prob_label_pairs": prob_label_pairs,
             }
-        except Exception as e:
-            print(f"Error getting feedback analysis: {e}")
+        except Exception:
+            logger.exception("Could not read feedback metrics")
             return {"precision": 0, "feedback_counts": {}, "total_feedback": 0, "prob_label_pairs": []}
 
     def get_ml_threshold_analysis(self):
@@ -366,37 +364,36 @@ class ForensicAnalyticEngine:
                     "error": f"Column '{feature_name}' is not allowed for distribution comparison",
                 }
 
-            conn = get_sqlite_connection(str(self.db_path))
-            cursor = conn.cursor()
-
-            # Get current period data
             current_start = (datetime.now() - timedelta(days=current_period_days)).strftime("%Y-%m-%d")
-            cursor.execute(
-                f"""
-                SELECT {feature_name}
-                FROM high_risk_alerts
-                WHERE timestamp >= ?
-                AND {feature_name} IS NOT NULL
-            """,
-                (current_start,),
-            )
-            current_values = [row[0] for row in cursor.fetchall()]
-
-            # Get baseline period data
             baseline_end = (datetime.now() - timedelta(days=current_period_days)).strftime("%Y-%m-%d")
             baseline_start = (datetime.now() - timedelta(days=baseline_period_days)).strftime("%Y-%m-%d")
-            cursor.execute(
-                f"""
+
+            with self.session_factory() as db:
+                current_rows = db.execute(
+                    text(
+                        f"""
                 SELECT {feature_name}
                 FROM high_risk_alerts
-                WHERE timestamp BETWEEN ? AND ?
+                WHERE timestamp >= :current_start
                 AND {feature_name} IS NOT NULL
-            """,
-                (baseline_start, baseline_end),
-            )
-            baseline_values = [row[0] for row in cursor.fetchall()]
+                """
+                    ),
+                    {"current_start": current_start},
+                ).fetchall()
+                baseline_rows = db.execute(
+                    text(
+                        f"""
+                SELECT {feature_name}
+                FROM high_risk_alerts
+                WHERE timestamp BETWEEN :baseline_start AND :baseline_end
+                AND {feature_name} IS NOT NULL
+                """
+                    ),
+                    {"baseline_start": baseline_start, "baseline_end": baseline_end},
+                ).fetchall()
 
-            conn.close()
+            current_values = [row[0] for row in current_rows]
+            baseline_values = [row[0] for row in baseline_rows]
 
             return {
                 "current_values": current_values,
@@ -406,8 +403,8 @@ class ForensicAnalyticEngine:
                 "current_median": statistics.median(current_values) if current_values else 0,
                 "baseline_median": statistics.median(baseline_values) if baseline_values else 0,
             }
-        except Exception as e:
-            print(f"Error getting distribution comparison: {e}")
+        except Exception:
+            logger.exception("Could not compare feature distributions")
             return {
                 "current_values": [],
                 "baseline_values": [],

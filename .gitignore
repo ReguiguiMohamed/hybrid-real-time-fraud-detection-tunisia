@@ -1,98 +1,31 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 *.egg-info/
 .pytest_cache/
-dist/
+.coverage
+coverage.xml
+htmlcov/
 build/
+dist/
 
-# Env
+# Environments and editors
 .env
 .venv/
 venv/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Notebooks
-.ipynb_checkpoints/
-
-# Temporary files
-tmp/
-checkpoint/
-pytest-cache-files-*/
-data/pytest-cache-files-*/
-data/pytest_basetemp*/
-data/pytest_tmp/
-htmlcov/
-.coverage
-coverage.xml
-backtest_report.json
-backtest-report.json
-notebooks/output_*.html
-
-# Runtime data (generated at runtime, not tracked)
-data/parquet/
-data/vector_db/
-data/feedback.db
-data/dead_letter_queue.db
-data/reports/
-data/audit/
-data/sanctions/*.csv
-*.log
-
-# ChromaDB
-chroma/
-.chroma/
-chroma_data/
-
-# Model artifacts (trained models, not tracked)
-models/registry/
-models/fraud_xgb_v1/
-models/*.pkl
-models/*.joblib
-*.h5
-*.pt
-*.bin
-
-# Spark checkpoints
-spark-warehouse/
-
-# Large outputs
-output/
-feedback/
-vector_db/
-
-# Ollama model cache
-ollama/
-
-# Compiled assets
-*.so
-*.dylib
-*.dll
-
-# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-#Claude folder
-.claude/
 
-# Session state, planning, and handoff (not for version control)
+# Runtime data
+data/
+*.db
+*.log
+backtest-report.json
+
+# Local planning notes
 CHECKPOINT.md
 FUTURE_WORK.md
 ROADMAP.md
 FINALIZATION_TODO.md
-TECHNICAL_INTERVIEW_PREP_HANDOFF.md
-test_end_to_end.py
-test_end_toend.py
-
-# Development virtual environments
-.venv/
-ci-env/
-ci-proof/
-black-24/

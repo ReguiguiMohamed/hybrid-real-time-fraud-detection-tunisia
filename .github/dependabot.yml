@@ -1,5 +1,3 @@
-name: Dependency Updates (Dependabot)
-
 version: 2
 updates:
   - package-ecosystem: "pip"
@@ -10,8 +8,6 @@ updates:
       time: "06:00"
       timezone: "Africa/Tunis"
     open-pull-requests-limit: 5
-    reviewers:
-      - "security-team"
     labels:
       - "dependencies"
       - "security"

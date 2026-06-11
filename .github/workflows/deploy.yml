@@ -10,7 +10,6 @@ on:
       - "README.md"
       - "Dockerfile"
       - ".env.example"
-      - "Dockerfile.api"
       - ".github/workflows/deploy.yml"
 
 concurrency:
@@ -59,13 +58,11 @@ jobs:
 
           echo "Copying API files from source..."
           cp "$GITHUB_WORKSPACE/README.md" .
-          cp -r "$GITHUB_WORKSPACE/Dockerfile" .
-          cp -r "$GITHUB_WORKSPACE/Dockerfile.api" .
-          cp -r "$GITHUB_WORKSPACE/.env.example" .
-          cp -r "$GITHUB_WORKSPACE/requirements.txt" .
+          cp "$GITHUB_WORKSPACE/Dockerfile" .
+          cp "$GITHUB_WORKSPACE/.env.example" .
+          cp "$GITHUB_WORKSPACE/requirements.txt" .
           cp -r "$GITHUB_WORKSPACE/dashboard" ./dashboard/
           cp -r "$GITHUB_WORKSPACE/src" ./src/
-          cp -r "$GITHUB_WORKSPACE/monitoring/metrics_exporter.py" ./monitoring/ 2>/dev/null || true
 
           git add -A
 

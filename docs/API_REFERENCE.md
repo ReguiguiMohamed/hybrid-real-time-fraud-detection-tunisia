@@ -1,160 +1,107 @@
-# Amastan Fraud Shield Guard — API Reference
+# API Reference
 
-Base URL: `/api/v1/`
+Base path: `/api/v1`
+
+Swagger: `/docs`
+
+OpenAPI: [`openapi.json`](openapi.json)
 
 ## Authentication
 
-All endpoints require a `Bearer` token in the `Authorization` header.
+Send a bearer token:
 
-| Role | Token Env Variable | Access |
-|------|--------------------|--------|
-| Admin | `ADMIN_TOKEN` / `API_TOKEN` | All endpoints |
-| Analyst | `ANALYST_TOKEN` | Read + feedback write |
+```http
+Authorization: Bearer <token>
+```
 
-Tokens are SHA-256 hashed before comparison.
+`ADMIN_TOKEN` has full access. `ANALYST_TOKEN` can read alerts and submit
+feedback. `/health/` and `/docs` are public. `/metrics` uses `METRICS_TOKEN`.
 
-## Endpoints
+## Alerts
 
-### Health & Discovery
+### `POST /api/v1/alerts/add/`
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/` | None | Root status with route links |
-| GET | `/health/` | None | Health check |
-| GET | `/docs` | None | Swagger UI |
-| GET | `/openapi.json` | None | OpenAPI 3.1 spec |
-| GET | `/metrics` | Metrics token | Prometheus metrics endpoint |
+Admin only.
 
-### Authentication
-
-#### `GET /api/v1/auth/whoami`
-
-Returns the authenticated user's role and available links.
-
-**Response:**
 ```json
 {
-  "user_id": "analyst-01",
-  "role": "ANALYST",
-  "authenticated": true,
-  "_links": { ... }
+  "transaction_id": "TXN_001",
+  "user_id": "USER_12",
+  "amount_tnd": 3200,
+  "governorate": "Tunis",
+  "payment_method": "card",
+  "timestamp": "2026-06-11T10:00:00Z",
+  "ml_probability": 0.94
 }
 ```
 
-### Alerts
+### `GET /api/v1/alerts/high-risk/`
 
-#### `POST /api/v1/alerts/add/` [Admin]
+Returns high-risk alerts.
 
-Ingest a high-risk alert from the streaming pipeline.
+### `GET /api/v1/alerts/review-queue/`
 
-**Request body:** `TransactionAlert` — transaction_id, user_id, amount_tnd, governorate, payment_method, ml_probability, timestamp, optional fields.
+Returns alerts waiting for analyst review.
 
-#### `GET /api/v1/alerts/high-risk/`
+Optional query parameters:
 
-Fetch high-risk alerts (ml_probability > 0.85). Query params: `limit` (default 50), `branch_id`.
+- `limit`
+- `alert_type`
+- `branch_id`
 
-#### `GET /api/v1/alerts/review-queue/`
+### `GET /api/v1/alerts/{transaction_id}/explain`
 
-Fetch the analyst review queue. Query params: `limit` (default 100), `alert_type`, `branch_id`.
+Returns stored SHAP values or model feature importance.
 
-#### `GET /api/v1/alerts/{transaction_id}/explain`
+### `GET /api/v1/alerts/{transaction_id}/export`
 
-Explain risk factors using SHAP feature importance or champion model feature importance.
+Exports one reviewed case.
 
-#### `GET /api/v1/alerts/{transaction_id}/export`
+### `GET /api/v1/alerts/ctaf-export`
 
-Export a single alert for compliance filing, including analyst review if available.
+Admin only. Exports confirmed cases for a selected time window.
 
-#### `GET /api/v1/alerts/ctaf-export` [Admin]
+## Feedback
 
-Export confirmed fraud alerts in CTAF-reporting format. Query params: `days` (default 7), `branch_id`.
+### `POST /api/v1/feedback/`
 
-### Feedback
-
-#### `POST /api/v1/feedback/`
-
-Submit analyst feedback on a fraud prediction.
-
-**Request body:**
 ```json
 {
   "transaction_id": "TXN_001",
   "analyst_label": "Confirmed Fraud",
-  "analyst_comment": "Pattern matches known smurfing behavior",
-  "branch_id": "Tunis-GNC"
-}
-```
-`analyst_label` must be `"Confirmed Fraud"` or `"False Positive"`.
-
-#### `POST /api/v1/feedback/batch/`
-
-Submit multiple feedback entries at once.
-
-```json
-{
-  "feedback_items": [
-    { "transaction_id": "TXN_001", "analyst_label": "Confirmed Fraud" },
-    { "transaction_id": "TXN_002", "analyst_label": "False Positive" }
-  ]
+  "analyst_comment": "Reviewed against account history"
 }
 ```
 
-### Statistics & Compliance
+`analyst_label` must be `Confirmed Fraud` or `False Positive`.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/stats/` | System statistics with optional `branch_id` filter |
-| GET | `/api/v1/compliance/kpis/` | CTAF compliance KPIs (SAR timeliness, sanctions, pKYC) |
-| GET | `/api/v1/branches/` | List distinct branch IDs with alerts |
+### `POST /api/v1/feedback/batch/`
 
-### Monitoring
+Stores several feedback items in one request.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/monitoring/model-performance/` | Precision, recall, F1 from human feedback |
-| GET | `/api/v1/metrics/performance` | Model performance metrics and drift indicators |
-| GET | `/api/v1/metrics/feedback` | Analyst feedback distribution |
-| GET | `/api/v1/metrics/threshold-analysis` | ML threshold trade-off analysis |
-| GET | `/api/v1/metrics/drift` | Feature drift and retraining assessment |
-| GET | `/api/v1/metrics/system-overview` | Aggregated system metrics |
+## Reporting
 
-### Model Management
+| Method | Path |
+|---|---|
+| `GET` | `/api/v1/stats/` |
+| `GET` | `/api/v1/compliance/kpis/` |
+| `GET` | `/api/v1/branches/` |
+| `GET` | `/api/v1/monitoring/model-performance/` |
+| `GET` | `/api/v1/metrics/performance` |
+| `GET` | `/api/v1/metrics/feedback` |
+| `GET` | `/api/v1/metrics/threshold-analysis` |
+| `GET` | `/api/v1/metrics/drift` |
+| `GET` | `/api/v1/metrics/system-overview` |
+| `GET` | `/api/v1/model/training-summary` |
 
-#### `POST /api/v1/retrain-model/` [Admin]
+## Status Codes
 
-Queue champion/challenger retraining using accumulated feedback. Returns `202`
-with a job ID. PostgreSQL deployments disable this endpoint by default because
-the hosted API image is not a Spark training runtime.
-
-#### `GET /api/v1/retrain-model/status/{job_id}` [Admin]
-
-Return the observable state of a queued job: `queued`, `running`, `no_change`,
-`promoted`, or `failed`.
-
-### Legacy Endpoints (Deprecated)
-
-Unversioned path aliases exist at `/feedback/`, `/alerts/add/`, `/stats/`, etc. These delegate to the v1 handlers and will be removed in a future release.
-
-## Error Responses
-
-| Status | Meaning |
-|--------|---------|
-| 200 | Success |
-| 401 | Unauthorized (missing/invalid token) |
-| 403 | Forbidden (valid token, wrong scope) |
-| 404 | Resource not found |
-| 422 | Validation error |
-| 429 | Rate limit exceeded |
-| 500 | Internal server error |
-
-## HATEOAS Links
-
-Responses from key endpoints include a `_links` object with related resource URLs:
-
-| Endpoint | Links |
-|----------|-------|
-| whoami | self, stats, review_queue, branches, compliance_kpis, model_performance |
-| stats | self, review_queue, compliance_kpis, model_performance, ctaf_export, branches |
-| feedback | feedback, explain, stats |
-| feedback/batch | feedback, feedback_batch, stats |
-| ctaf-export | self, stats, review_queue |
+| Code | Meaning |
+|---|---|
+| `200` | Success |
+| `401` | Missing or invalid token |
+| `403` | Wrong role |
+| `404` | Not found |
+| `422` | Invalid request |
+| `429` | Rate limit reached |
+| `500` | Server error |
