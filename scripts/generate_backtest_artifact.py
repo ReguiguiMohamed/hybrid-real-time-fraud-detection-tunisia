@@ -3,7 +3,6 @@
 import json
 import pathlib
 import sys
-import tempfile
 
 import pandas as pd
 
@@ -15,10 +14,6 @@ from scripts.backtest import BacktestEngine
 
 
 def main():
-    tmp_dir = pathlib.Path(tempfile.mkdtemp())
-    parquet_path = tmp_dir / "silver_fraud_alerts"
-    parquet_path.mkdir(parents=True)
-
     df = pd.DataFrame(
         [
             {
@@ -39,9 +34,13 @@ def main():
             },
         ]
     )
-    df.to_parquet(parquet_path / "data.parquet")
 
-    engine = BacktestEngine(parquet_path=str(parquet_path / "data.parquet"))
+    engine = BacktestEngine()
+
+    def load_fixture(*_args, **_kwargs):
+        return df.copy()
+
+    engine.load_data = load_fixture
     result = engine.run()
     pathlib.Path("backtest-report.json").write_text(
         json.dumps(
