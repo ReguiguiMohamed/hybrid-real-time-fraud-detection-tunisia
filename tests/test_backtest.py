@@ -1,9 +1,28 @@
 """Focused tests for deterministic backtest behavior."""
 
+import pathlib
+import subprocess
+import sys
+
 import pandas as pd
 import pytest
 
 from scripts.backtest import BacktestEngine
+
+
+def test_backtest_artifact_script_runs_from_any_working_directory(tmp_path):
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "generate_backtest_artifact.py")],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "backtest-report.json").is_file()
 
 
 @pytest.fixture

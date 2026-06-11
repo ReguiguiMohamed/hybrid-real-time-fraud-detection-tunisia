@@ -78,7 +78,7 @@ jobs:
           path: coverage.xml
 
       - name: Generate deterministic backtest artifact
-        run: python scripts/generate_backtest_artifact.py && git diff --exit-code -- backtest-report.json 2>/dev/null || true
+        run: python scripts/generate_backtest_artifact.py
 
       - name: Upload backtest artifact
         if: always()

@@ -2,9 +2,14 @@
 
 import json
 import pathlib
+import sys
 import tempfile
 
 import pandas as pd
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.backtest import BacktestEngine
 
@@ -46,7 +51,8 @@ def main():
                 "recommendation": result.recommendation,
             },
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     print(f"Backtest artifact: {result.total_transactions} txns, label={result.label_source}")
 

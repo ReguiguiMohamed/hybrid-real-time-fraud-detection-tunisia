@@ -2,7 +2,7 @@
 
 All notable changes to this prototype are documented here.
 
-## [0.1.0] - 2026-06-10
+## [0.1.0] - 2026-06-11
 
 ### Added
 
@@ -16,7 +16,10 @@ All notable changes to this prototype are documented here.
 
 ### Changed
 
+- Marked the portfolio prototype complete and moved the repository to maintenance mode.
+- Removed links to internal planning documents from public documentation.
 - CI now enforces formatting, static correctness, verified-slice coverage, and high-severity Bandit findings.
+- CI now fails when deterministic backtest artifact generation fails.
 - Weekly dependency and Semgrep scans are explicitly advisory reports.
 - Backtesting uses centralized prototype thresholds and honors the configured alert threshold.
 - Shadow agreement no longer claims that a model is safe to promote.
@@ -25,6 +28,8 @@ All notable changes to this prototype are documented here.
 
 ### Fixed
 
+- Backtest artifact generation now works from any caller working directory.
+- Corrected supported-version, security-scanner, and token-rotation documentation.
 - Migration checksums now use SHA-256 instead of MD5.
 - Developer dependencies include the optional integration-test packages used during collection.
 - Runtime dependencies explicitly include Faker for transaction generation.

@@ -5,13 +5,15 @@ app_port: 7860
 ---
 # Amastan Fraud Shield Guard
 
-**Version `0.1.0-prototype` — [released](https://github.com/ReguiguiMohamed/hybrid-real-time-fraud-detection-tunisia/releases/tag/v0.1.0-prototype)**
+**Version `0.1.0` — [released](https://github.com/ReguiguiMohamed/hybrid-real-time-fraud-detection-tunisia/releases/tag/v0.1.0)**
 
 A fraud-detection command center and target streaming architecture for Tunisian digital payments. The verified hosted slice is **FastAPI + SQLAlchemy + Neon PostgreSQL**. Kafka, Spark Structured Streaming, XGBoost, Ollama, ChromaDB, Streamlit, and the local monitoring stack remain development or target-architecture components until separately deployed and verified.
 
+**Project status:** portfolio prototype complete. The repository is now in maintenance mode; future work is limited to security fixes and keeping the verified hosted slice operational. Database migration rehearsal and secret rotation remain deployment-owner checks before a public demonstration or regulated use.
+
 The design stance is simple: a claim earns its place by surviving contact with a test, a failure, or a deployed endpoint. Everything else remains a possibility, not an achievement.
 
-Project documents: [API reference](docs/API_REFERENCE.md) · [deployment](docs/DEPLOYMENT.md) · [operational runbook](docs/OPERATIONAL_RUNBOOK.md) · [roadmap](ROADMAP.md) · [finalization TODO](FINALIZATION_TODO.md) · [changelog](CHANGELOG.md)
+Project documents: [API reference](docs/API_REFERENCE.md) · [deployment](docs/DEPLOYMENT.md) · [operational runbook](docs/OPERATIONAL_RUNBOOK.md) · [changelog](CHANGELOG.md) · [security policy](SECURITY.md)
 
 Built for the 2026 Tunisian digital-payments landscape: digital usage is growing, but cash still matters and adoption is uneven outside major urban areas. The 2026 Finance Law repealed the TND 5,000 cash-payment cap, so this project avoids treating that old cap as a structuring rule and uses velocity, account, rail, sanctions/PEP, and analyst-review signals instead.
 

@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 |---------| ------------------ |
-| 1.0.x   | :white_check_mark: |
+| 0.1.x   | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
@@ -23,7 +23,7 @@ You will receive a response within **48 hours**. If the issue is accepted, a pat
 ### What We Do
 
 1. **Dependency Pinning**: All dependencies are pinned to exact versions in `requirements.txt`
-2. **Automated Scanning**: CI runs `bandit` (Python AST security linter) and `pip-audit` (CVE database) on every PR
+2. **Automated Scanning**: CI runs `bandit` on every PR; scheduled workflows publish advisory `pip-audit` and Semgrep reports
 3. **PII Protection**: User identifiers are HMAC-SHA256 hashed before storage
 4. **No Secrets in Code**: All credentials are loaded from environment variables or HashiCorp Vault
 5. **Input Validation**: Pydantic schemas validate all API inputs
@@ -33,10 +33,11 @@ You will receive a response within **48 hours**. If the issue is accepted, a pat
 ### Automated Security Checks
 
 ```bash
-# Run on every commit (add to CI/CD)
-bandit -r src/ -f json --exit-code 2
+# Required CI gate
+bandit -r src dashboard scripts -lll
+
+# Advisory local reports
 pip-audit --requirement requirements.txt
-safety check -r requirements.txt
 ```
 
 ### Known Limitations
@@ -75,7 +76,7 @@ Before any public demonstration or production deployment, rotate all authenticat
 
 | Token | Location | Rotation Command / Procedure |
 |---|---|---|
-| `ADMIN_TOKEN` | HF Space Secrets → `ANALYST_TOKEN` env var | Generate new UUID; update in HF Space settings; update `.env.example` placeholder |
+| `ADMIN_TOKEN` | HF Space Secrets → `ADMIN_TOKEN` env var | Generate new UUID; update in HF Space settings; update `.env.example` placeholder |
 | `ANALYST_TOKEN` | HF Space Secrets → `ANALYST_TOKEN` env var | Generate new UUID; update in HF Space settings; update `.env.example` placeholder |
 | `METRICS_TOKEN` | HF Space Secrets + Grafana Cloud | Generate new token; update both HF Space and Grafana Cloud integration simultaneously |
 | `HF_TOKEN` | GitHub Secrets → `HF_TOKEN` | Generate HF User Access Token; update GitHub repo secret |
