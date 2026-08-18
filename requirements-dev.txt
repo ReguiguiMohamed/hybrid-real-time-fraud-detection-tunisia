@@ -1,6 +1,6 @@
 -r requirements-ci.txt
 
-bandit==1.7.10
+bandit==1.9.4
 black==24.10.0
 flake8==7.3.0
 isort==5.13.2
