@@ -121,8 +121,6 @@ docs/             API, deployment, OpenAPI, Grafana evidence
 
 ## Scope
 
-This is a portfolio prototype, not a regulated production system.
-
 Before public or production use:
 
 - rotate every token;
