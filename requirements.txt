@@ -1,7 +1,7 @@
 fastapi==0.115.0
 numpy==1.26.4
 prometheus-client==0.25.0
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.12
 pydantic==2.12.5
 scipy==1.14.0
 sqlalchemy==2.0.35
