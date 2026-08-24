@@ -5,4 +5,4 @@ psycopg2-binary==2.9.9
 pydantic==2.12.5
 scipy==1.14.0
 sqlalchemy==2.0.35
-uvicorn==0.49.0
+uvicorn==0.52.4
