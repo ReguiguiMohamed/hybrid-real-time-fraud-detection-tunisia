@@ -1,6 +1,6 @@
 fastapi==0.115.0
 numpy==1.26.4
-prometheus-client==0.25.0
+prometheus-client==0.26.0
 psycopg2-binary==2.9.9
 pydantic==2.12.5
 scipy==1.14.0
